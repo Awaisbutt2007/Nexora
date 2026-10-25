@@ -1612,6 +1612,20 @@ function wantsQuiet(text) { return QUIET_NEG.test(text) && QUIET_MSG.test(text) 
    afterwards so she can respond with text or a calmer reply. */
 const STOP_SPEECH_RE = /(?:\b(?:chup\s*kar(?:o)?|chup\s*ho(?:\s*jao)?|chup|be\s*quiet|quiet\s*(?:now|please|pls)|shut\s*up|bas\s*kar(?:o)?|band\s*kar(?:o)?|sunao\s*nahi|mat\s*bolo|stop\s*(?:talking|speaking|bolna|bol)|delete\s*voice|khamosh(?:\s*ho)?|khamoshi|sunna\s*band|meri\s*baat\s*suno|baat\s*suno|let\s*me\s*talk|let\s*me\s*speak|I\s*want\s*to\s*speak|sun\s*lo|meri\s*batein\s*suno|awaaz\s*band|speech\s*band)\b)/i
 
+/* "Pause karo" / "so jao" / "band ho jao" / "khud ko pause" / "go silent" / "sleep" /
+   "dormant" / "resume" / "jaago" / "wake up" / "dubara bolo" / "mic off karo" / "voice
+   off karo" / "sirf text" — the user is commanding the AI to change its OWN state.
+   We execute the toggle directly in the frontend (React state) so the action is
+   INSTANT and 100% reliable regardless of whether the weak model emits the correct
+   [APP:...] marker. The prompt still reaches the model so it can acknowledge
+   naturally, but we don't depend on it to actually perform the action. */
+const SELF_CONTROL_RE = /(?:\b(?:pause\s*(?:karo|kr|kar|ho\s*jao|yourself)|go\s*(?:silent|dormant|sleeping|to\s*sleep)|khud\s*ko\s*pause|dormant\s*ho\s*jao|shut\s*(?:yourself|down|off))\s*$|^(?:so\s*jao|band\s*ho\s*jao)\s*$)/i
+const SELF_RESUME_RE = /(?:\b(?:resume(?:\s*(?:karo|kr|kar))?\s*$|wake\s*(?:up|ho\s*jao|jao)\s*$|un-?pause|jaago(?:\s*khud\s*ko)?|dubara\s*(?:bolo|start|begin)|back\s*(?:to\s*life|online)|nhi\s*so\s*ya|mat\s*so|bolna\s*shuru|bolo\s*phir|start\s*(?:talking|speaking|bolna)|phir\s*se\s*bolo|wapas\s*ao)\b)/i
+const SELF_MUTE_RE = /(?:\b(?:voice\s*(?:off|band)\s*(?:karo|kr|kar)?|mute\s*(?:voice|yourself|karo))\b|^(?:sirf\s*text|only\s*text|text\s*only|type\s*only)\s*$)/i
+const SELF_UNMUTE_RE = /\b(?:voice\s*(?:on|chaloo|chalu)\s*(?:karo|kr|kar)?|un-?mute|speaking\s*(?:karo|on))\b/i
+const SELF_MICOFF_RE = /\b(?:mic\s*(?:off|band)\s*(?:karo|kr|kar)?|sunna\s*band\s*(?:karo|kr)?|stop\s*listening|mat\s*suno)\b/i
+const SELF_MICON_RE = /\b(?:mic\s*(?:on|chaloo|chalu)\s*(?:karo|kr|kar)?|sunna\s*(?:shuru|chaloo|on)|start\s*listening|resume\s*listening)\b/i
+
 /* Clipboard/picked File → downscaled JPEG data URL: keeps uploads inside the
    API's 2 MB JSON budget, shrinks what the vision model eats, and strips EXIF. */
 function fileToScaledDataUrl(file, max = 1024) {
@@ -2215,14 +2229,73 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
       setVoiceTurn(false)
       setNotice(`${aiName} chup ho gayi — aap boliye.`)
     }
+    /* Self-control: execute pause/resume/mute/mic commands DIRECTLY from the
+       user's words without waiting for the model to emit [APP:...] markers
+       (weak models often ignore that directive and make jokes instead). The
+       prompt STILL reaches the model so it can acknowledge in its reply; but
+       the ACTUAL state toggle happens here, guaranteed.
+       LENGTH GUARD: only messages ≤ 35 chars (typical voice-command length) can
+       trigger self-control — longer sentences like "tell me about text only
+       mode" or "I want to resume my studies" are NOT commands. */
+    const isShortCommand = cleanPrompt.length <= 35
+    let handledSelfControl = false
+    if (isShortCommand && SELF_CONTROL_RE.test(cleanPrompt)) {
+      setWakeEnabled(false); setSpeakReplies(false)
+      try { localStorage.setItem('nexora_speak_replies', '0') } catch { /* ignore */ }
+      cancelServerAudio()
+      if (window.speechSynthesis) { try { window.speechSynthesis.cancel() } catch { /* ignore */ } }
+      setVoiceTurn(false)
+      setNotice(`${aiName} so gayi — next message pe jaag jayegi.`)
+      handledSelfControl = true
+    } else if (SELF_RESUME_RE.test(cleanPrompt)) {
+      setWakeEnabled(true); setSpeakReplies(true)
+      try { localStorage.setItem('nexora_speak_replies', '1') } catch { /* ignore */ }
+      setNotice(`${aiName} jaag gayi!`)
+      handledSelfControl = true
+    } else if (SELF_MUTE_RE.test(cleanPrompt)) {
+      setSpeakReplies(false)
+      try { localStorage.setItem('nexora_speak_replies', '0') } catch { /* ignore */ }
+      cancelServerAudio()
+      if (window.speechSynthesis) { try { window.speechSynthesis.cancel() } catch { /* ignore */ } }
+      setNotice(`${aiName} ab sirf text mein jawab degi.`)
+      handledSelfControl = true
+    } else if (SELF_UNMUTE_RE.test(cleanPrompt)) {
+      setSpeakReplies(true)
+      try { localStorage.setItem('nexora_speak_replies', '1') } catch { /* ignore */ }
+      setNotice(`${aiName} bolna shuru kar degi.`)
+      handledSelfControl = true
+    } else if (SELF_MICOFF_RE.test(cleanPrompt)) {
+      setWakeEnabled(false)
+      setNotice(`${aiName} ka mic band — sun nahi rahi.`)
+      handledSelfControl = true
+    } else if (SELF_MICON_RE.test(cleanPrompt)) {
+      setWakeEnabled(true)
+      setNotice(`${aiName} sun rahi hai.`)
+      handledSelfControl = true
+    }
     /* Auto-resume from a PAUSE: if the AI previously paused itself (mic off +
-       voice off) and the user now types a new message, silently restore both
-       features so the conversation continues naturally. The user shouldn't
-       have to say "wake up" — typing itself is the wake signal. */
-    if (!wakeEnabled && !speakReplies) {
+       voice off) and the user now types a NEW message (not a self-control
+       command), silently restore both features so the conversation continues
+       naturally. The user shouldn't have to say "wake up" — typing itself is
+       the wake signal. Skipped when handledSelfControl is true so a pause
+       command doesn't immediately undo itself. */
+    if (!handledSelfControl && !wakeEnabled && !speakReplies) {
       setWakeEnabled(true)
       setSpeakReplies(true)
       try { localStorage.setItem('nexora_speak_replies', '1') } catch { /* ignore */ }
+    }
+    /* If a self-control command was executed by the frontend, append a brief
+       HINT so the model knows the action is ALREADY done and must just
+       acknowledge it — not refuse or joke about "existing in text". */
+    let promptForModel = cleanPrompt
+    if (handledSelfControl) {
+      const action = SELF_CONTROL_RE.test(cleanPrompt) ? 'paused (voice OFF, mic OFF)'
+        : SELF_RESUME_RE.test(cleanPrompt) ? 'resumed (voice ON, mic ON)'
+        : SELF_MUTE_RE.test(cleanPrompt) ? 'muted (voice OFF, mic still listening)'
+        : SELF_UNMUTE_RE.test(cleanPrompt) ? 'unmuted (voice ON)'
+        : SELF_MICOFF_RE.test(cleanPrompt) ? 'mic turned OFF'
+        : 'mic turned ON'
+      promptForModel = `${cleanPrompt}\n[SYSTEM: The app has ALREADY executed your ${action}. Just say a brief friendly acknowledgement — do NOT say you cannot control yourself or that you only exist in text. The action is done.]`
     }
     const imgUrls = pendingImgs.filter((p) => p.url).map((p) => p.url)
     if (streaming || pendingImgs.some((p) => p.uploading)) return
@@ -2290,7 +2363,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
     try {
       const result = await streamChat({
         token: authToken,
-        message: cleanPrompt,
+        message: promptForModel,
         assistantName: aiName,
         persona: voicePrefs.persona,
         gender: voicePrefs.gender,
