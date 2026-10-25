@@ -105,12 +105,92 @@ const VOICE_LANGUAGES = [['auto', 'Auto — mix freely (English + Urdu + Roman U
 
 /* Wake-word spoken responses. Kept as short canned lines because the goal is a
    sub-two-second earcon so it never collides with the actual streamed reply
-   that follows. Longer TTS on the real answer belongs to VoiceCall, not here. */
+   that follows. Longer TTS on the real answer belongs to VoiceCall, not here.
+
+   WHY AN ARRAY NOW: a hard-coded single "command" string was the reason the
+   user complained "har chat ke start pe AI yehi bolti hai". Every voice
+   command spoke and prefilled the bubble with the exact same canned line,
+   which read like a robot, not a companion. We rotate through six natural
+   variations per language so consecutive chats never sound identical, and
+   the visible bubble is no longer polluted by the ack (see sendPrompt).
+   The `wake` line stays singular because that fires only on a bare wake-up
+   call, which happens rarely. */
 const WAKE_ACK_LINES = {
-  en: { wake: "I'm listening.", command: 'Okay — working on it, check the chat.' },
-  ur: { wake: 'Main sun rahi hoon.', command: 'Bilkul, main chat mein ye kar rahi hoon — dekhiye.' },
-  hinglish: { wake: 'Ji, boliye.', command: 'Bilkul, main chat mein bana rahi hoon — dekhiye.' },
-  auto: { wake: 'Ji, boliye — main sun rahi hoon.', command: 'Bilkul, main chat mein kar rahi hoon — dekhiye.' },
+  en: {
+    wake: "I'm listening.",
+    command: [
+      'Okay — on it.',
+      'Sure, give me a second.',
+      'Got it, one moment.',
+      'Alright, doing it now.',
+      'Ok, working on it.',
+      'Sure thing — hang tight.',
+    ],
+  },
+  ur: {
+    wake: 'Main sun rahi hoon.',
+    command: [
+      'Ji, kar rahi hoon.',
+      'Bilkul, ek pal.',
+      'Theek hai, dekhiye.',
+      'Ho raha hai, rukiye.',
+      'Ji Zaroor, abhi.',
+      'Bataiye, kar doon.',
+    ],
+  },
+  hinglish: {
+    wake: 'Ji, boliye.',
+    command: [
+      'Theek hai, kar rahi hoon.',
+      'Ji, ek second.',
+      'Ho raha hai, ruko.',
+      'Done, dekho.',
+      'Bas kar dungi, tum bolo.',
+      'Bilkul, abhi karti hoon.',
+    ],
+  },
+  auto: {
+    wake: 'Ji, boliye — main sun rahi hoon.',
+    command: [
+      'Theek hai, kar rahi hoon.',
+      'Okay, one sec.',
+      'Ho raha hai, ruko.',
+      'Got it, ek pal.',
+      'Bas kar dungi.',
+      'Bilkul, abhi.',
+    ],
+  },
+}
+/* Rotation memory so two consecutive voice commands never hear the same ack.
+ * The last-spoken index per language is kept in module scope (not React state)
+ * because the pick happens inside the wake-word handler and we don't want a
+ * re-render just because she said "Ok" instead of "Theek hai". */
+const _lastAckIndex = { en: -1, ur: -1, hinglish: -1, auto: -1 }
+function pickRotatingAck(language) {
+  const slot = WAKE_ACK_LINES[language] || WAKE_ACK_LINES.auto
+  const list = slot.command
+  if (!Array.isArray(list) || list.length === 0) return String(list || '')
+  const key = WAKE_ACK_LINES[language] ? language : 'auto'
+  let idx = Math.floor(Math.random() * list.length)
+  /* Redraw while we accidentally land on the same one we spoke last turn —
+     a hard stop after 5 attempts keeps a two-item list honest (it can't be
+     more than 1 different from last time anyway). */
+  let attempts = 0
+  while (idx === _lastAckIndex[key] && attempts < 5) {
+    idx = Math.floor(Math.random() * list.length)
+    attempts += 1
+  }
+  _lastAckIndex[key] = idx
+  return list[idx]
+}
+/* Skip the audio ack entirely for greetings and tiny prompts. "Hi" / "hello"
+ * / "kaise ho" already get an <1s streamed reply from the model; speaking
+ * "Theek hai, kar rahi hoon" first and then "Hi! Kaise ho aap?" back-to-back
+ * feels duplicated. The chat bubble shows the real reply only, so we let the
+ * stream itself be the response. Threshold = under 12 characters. */
+function shouldSkipWakeAck(cmd) {
+  const t = String(cmd || '').trim().toLowerCase()
+  return t.length < 12
 }
 
 /* Fire a short utterance on the browser's speech engine. The voice pick, the
@@ -2789,17 +2869,23 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
         setNotice(`⏳ ${aiName} abhi reply kar rahi hai — "${cmd}" baad me dobara bolo`)
         return
       }
-      const ack = WAKE_ACK_LINES[voicePrefs.language]?.command || WAKE_ACK_LINES.auto.command
-      setNotice(`🎙 You: "${cmd}" — ${aiName}: "${ack}"`)
-      /* Order matters: speak first so the earcon is immediate, then hand to
-         sendPrompt with the same text as `spokenAck` so the bubble in the
-         chat starts with the sentence the user just heard — what the AI
-         SAID and what the AI WROTE stay identical, which is the whole point
-         of the wake flow. */
-      speakWakeLine(ack, { language: voicePrefs.language, gender: voicePrefs.gender })
-      /* Same path a typed Enter uses, so image intent, tools, credits, memory
-         and language guards all apply identically. */
-      sendPrompt(null, cmd, { spokenAck: ack })
+      /* Rotation makes every chat sound different, so she stops reading like
+         a canned line. Short greetings skip the audio ack entirely (the AI's
+         streamed reply will land within the second). */
+      const skipAck = shouldSkipWakeAck(cmd)
+      const ack = skipAck ? '' : pickRotatingAck(voicePrefs.language)
+      if (ack) {
+        setNotice(`🎙 You: "${cmd}" — ${aiName}: "${ack}"`)
+        /* Speak the audio ack — but DON'T hand it to sendPrompt as
+           `spokenAck`. The visible chat bubble should start with the AI's
+           real reply, not the pre-ack. Prefixing the canned sentence into
+           the bubble is exactly why the user perceived "har chat ka start
+           same line se hota hai". */
+        speakWakeLine(ack, { language: voicePrefs.language, gender: voicePrefs.gender })
+      } else {
+        setNotice(`🎙 You: "${cmd}"`)
+      }
+      sendPrompt(null, cmd, {})
     },
   })
   /* Bridge for the proactive effect's speak-onEnd which can't list `armNow`
