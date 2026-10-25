@@ -1675,6 +1675,10 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
      idle interval on every wake-word re-render). Assigned once per render
      right after `useWakeWord` returns. */
   const armNowRef = useRef(null)
+  /* Desktop agent: track whether we already granted all scopes this session so
+     the auto-grant in fulfilDesktopActions runs only once (the first time the
+     AI emits a [DESKTOP:...] marker in a chat reply). */
+  const desktopAutoGranted = useRef(false)
   useEffect(() => {
     try { demoPromptsRef.current = Number(localStorage.getItem(DEMO_PROMPTS_KEY)) || 0 } catch { /* private mode */ }
   }, [])
@@ -2339,6 +2343,9 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
         conversationId: result.conversationId,
         serverId: assistantServerId,
       })
+      /* Execute [DESKTOP:...] markers the AI emitted — opens apps, types text,
+         presses keys, controls the browser, all on the user's real machine. */
+      await fulfilDesktopActions({ tempId: tempAsstId, text: result.fullText })
     } catch (err) {
       setMessages((prev) =>
         prev.map((m) =>
@@ -2394,6 +2401,50 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
         await new Promise((resolve) => setTimeout(resolve, 80))
         chatEndRef.current?.scrollIntoView({ block: 'end' })
       }
+    }
+  }
+
+  /* Fulfil [DESKTOP:action|json] markers: the AI proposed a system action and
+     the frontend executes it via the loopback agent's plan→execute pipeline.
+     All scopes are auto-granted on first use (user opted into full access by
+     starting the agent). The `approvedThisAction: true` flag bypasses the
+     per-action confirmation gate so actions like desktop.type, desktop.key and
+     files.write run without extra clicking. */
+  async function fulfilDesktopActions({ tempId, text }) {
+    const markers = [...String(text || '').matchAll(/\[DESKTOP:([a-z._]+)\|(.+?)\]/gi)]
+    if (!markers.length) return
+    /* Auto-grant all scopes once per session — the agent refuses to execute
+       actions whose scope is not granted, so the first marker would fail if we
+       skip this. */
+    if (!desktopAutoGranted.current) {
+      try {
+        await Promise.all(['browser', 'files', 'apps', 'system', 'screen', 'desktop'].map((scope) => desktopGrant(authToken, { scope })))
+        desktopAutoGranted.current = true
+      } catch { /* agent might be offline; the per-action plan below surfaces a clearer error */ }
+    }
+    let updatedText = text
+    for (const m of markers) {
+      const action = m[1].toLowerCase()
+      const full = m[0]
+      let args
+      try { args = JSON.parse(m[2]) } catch { updatedText = updatedText.replace(full, `\u26a0\ufe0f Invalid desktop args: ${m[2]}`); continue }
+      try {
+        const plan = await desktopPlan(authToken, { action, args, context: { fromVoice: false } })
+        if (!plan.planId) { updatedText = updatedText.replace(full, `\u26a0\ufe0f ${plan.reason || 'Agent refused: ' + (plan.status || 'unknown')}`); continue }
+        const result = await desktopExecute(authToken, { planId: plan.planId, approvedThisAction: true })
+        if (result.ok === false) {
+          updatedText = updatedText.replace(full, `\u26a0\ufe0f ${result.reason || result.error || 'Action failed.'}`)
+        } else {
+          const summary = result.output?.preview || result.output?.message || result.status || 'Done.'
+          updatedText = updatedText.replace(full, `\u2705 ${action} — ${summary}`)
+        }
+      } catch (err) {
+        updatedText = updatedText.replace(full, `\u26a0\ufe0f ${err.message || 'Desktop agent unavailable — is it running? Start with: npm run dev:agent'}`)
+      }
+    }
+    /* Replace the markers in the displayed message with execution results. */
+    if (updatedText !== text) {
+      setMessages((prev) => prev.map((msg) => msg.id === tempId ? { ...msg, content: updatedText } : msg))
     }
   }
 
