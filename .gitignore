@@ -60,3 +60,5 @@ _facetest*.png
 .vercel/
 .env.local
 .env.*.local
+
+.vercel
