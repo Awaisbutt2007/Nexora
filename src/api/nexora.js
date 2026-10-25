@@ -307,7 +307,14 @@ export async function streamChat({ token, message, conversationId = null, assist
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error(err?.error?.message || `Chat failed (${res.status})`)
+    /* Carry status + type on the thrown Error so sendPrompt can tell an
+       out-of-credits rejection (402 insufficient_credits) apart from a rate
+       limit (429) or a plain server failure, and show a friendly recharge
+       bubble instead of a red error card. */
+    const thrown = new Error(err?.error?.message || `Chat failed (${res.status})`)
+    thrown.status = res.status
+    thrown.type = err?.error?.type || null
+    throw thrown
   }
 
   const convFromHeader = res.headers.get('X-Conversation-Id')
@@ -340,13 +347,25 @@ export async function streamChat({ token, message, conversationId = null, assist
       try {
         const json = JSON.parse(data)
         if (json.conversationId) resolvedConversationId = json.conversationId
-        if ((json.isNew != null || json.conversationId) && onMeta) onMeta(json)
+        /* Fire onMeta on ANY chunk that carries a live-wallet update too, not
+           just conversation lifecycle changes — the final `creditsRemaining`
+           chunk is how the top-of-workspace pill stays honest without an
+           extra /me fetch per reply. */
+        if ((json.isNew != null || json.conversationId || json.creditsRemaining != null || json.assistantMessageId) && onMeta) onMeta(json)
         const delta = json.choices?.[0]?.delta?.content
         if (delta) {
           fullText += delta
           if (onDelta) onDelta(delta, fullText)
         }
-        if (json.error?.message) throw new Error(json.error.message)
+        if (json.error?.message) {
+          const thrown = new Error(json.error.message)
+          thrown.type = json.error.type || null
+          /* 402 mid-stream: ensureCredits passes but a concurrent deduction
+             emptied the wallet. Treat it identically to the pre-stream HTTP
+             402 path so the UI shows the recharge bubble either way. */
+          if (json.error.type === 'insufficient_credits') thrown.status = 402
+          throw thrown
+        }
       } catch (e) {
         if (e instanceof SyntaxError) continue
         throw e
@@ -384,6 +403,11 @@ async function parseJson(res) {
       data?.error?.message || (deadGateway ? backendUnreachableText() : `Request failed (${res.status})`),
     )
     err.status = res.status
+    /* The HTTP code alone can't distinguish an out-of-credits rejection (402
+       insufficient_credits) from a rate-limit (429) or a wrong-password (401).
+       Callers need the machine-readable type to render the right UI (e.g. a
+       friendly "please recharge" chat bubble instead of a red error card). */
+    err.type = data?.error?.type || null
     throw err
   }
   return data

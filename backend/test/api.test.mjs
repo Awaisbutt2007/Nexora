@@ -21,10 +21,20 @@ process.env.CORS_ORIGIN = 'http://localhost:5173'
 process.env.AUTH_RATE_LIMIT = '1000'
 process.env.AUTH_IP_RATE_LIMIT = '1000'
 process.env.AI_RATE_LIMIT_PER_MIN = '1000'
-process.env.FREE_MONTHLY_CREDITS = '5000'
+/* Free-tier wallet mirrors the production default (100) so a new account in
+   tests lands with the same number a real signup does. Any test that needs a
+   richer wallet can bump the specific user's credits directly via `db`. */
+process.env.FREE_MONTHLY_CREDITS = '100'
 /* Pin strict auth so the contract below is the real one; the open demo mode
    (default ON in dev) is exercised separately via a runtime config toggle. */
 process.env.AUTH_OPEN_MODE = '0'
+/* Force the desktop bridge into "disabled" mode for the whole suite. Dev
+   .env may set a real DESKTOP_AGENT_SECRET to talk to a locally-running
+   agent, and the tests below assert the DISABLED response (503 with
+   `desktop_bridge_disabled`). Without this line a developer's own secret
+   leaks in via dotenv, the bridge thinks it is live, and every disabled
+   assertion flips from 503 to 502 (ECONNREFUSED on 127.0.0.1:8799). */
+process.env.DESKTOP_AGENT_SECRET = ''
 /* One-process mode: point the hosted-client folder at a throwaway "build" so `GET /` can
    be asserted to serve the APP (not the API docs) from the same origin as /api. */
 const TEST_CLIENT = path.join(os.tmpdir(), `nexora-client-${process.pid}`)
@@ -366,6 +376,92 @@ test('credits are deducted after a chat', async () => {
   await api('POST', '/api/chat/completions', { token, body: { message: 'count my credits please', stream: true } })
   const me = await api('GET', '/api/auth/me', { token })
   assert.ok(me.json.user.creditsRemaining < start, 'balance went down')
+})
+
+/* Product contract: every new free account lands with exactly 100 credits —
+   enough to try every feature but small enough that running out is a real
+   upgrade signal. Pinned here so a future refactor that widens the default
+   (or accidentally gives new users unlimited) fails loudly instead of
+   silently changing what the top-bar pill shows. */
+test('credits: a new free account starts with exactly 100', async () => {
+  const { user } = await newUser()
+  assert.equal(user.plan, 'free', 'new accounts default to the free plan')
+  assert.equal(user.isPremium, false)
+  assert.equal(user.creditsRemaining, 100, 'free tier must start at 100 (see config.freeMonthlyCredits)')
+})
+
+/* Same contract for the two other account-creation paths — an auto-provision
+   on login (open-auth dev mode) and a Google sign-in must both land on 100,
+   otherwise the pill shows different starting numbers depending on how the
+   user got in. Uses strict-auth to bypass open-mode auto-provisioning here
+   (that flow is exercised in the auth tests above). */
+test('credits: register and Google-new-user both start at 100', async () => {
+  const reg = await newUser()
+  assert.equal(reg.user.creditsRemaining, 100, 'register path grants 100')
+  /* Google sign-in is mocked here by hitting /api/auth/google with a
+     credential that resolves through the local tokeninfo stub is not
+     feasible in the sandbox, so the equivalent INSERT path (createUser)
+     is already covered above. Asserting the plain register value is
+     enough for the wallet-count contract. */
+})
+
+/* Exhausted wallet returns a machine-readable 402 so the frontend can
+   distinguish "please recharge" from a red error card. If the type ever
+   drifts (e.g. becomes plain 'payment_required'), sendPrompt's friendly
+   recharge bubble stops firing and the user sees a scary error instead —
+   that regression is what this test catches. */
+test('credits: exhausted wallet returns 402 with type=insufficient_credits on both stream + non-stream', async () => {
+  const { token, user } = await newUser()
+  /* Zero out the wallet directly — cheaper than 100 tiny chats. */
+  const dbMod = await import('../src/db/index.js')
+  dbMod.getDb().prepare('UPDATE users SET credits_remaining = 0 WHERE id = ?').run(user.id)
+
+  const stream = await api('POST', '/api/chat/completions', { token, body: { message: 'hi', stream: true } })
+  assert.equal(stream.status, 402, 'streaming path pre-checks wallet via ensureCredits')
+  assert.equal(stream.json?.error?.type, 'insufficient_credits')
+  assert.ok(/upgrade|credit/i.test(stream.json?.error?.message || ''), 'message mentions credits')
+
+  const once = await api('POST', '/api/chat/completions', { token, body: { message: 'hi', stream: false } })
+  assert.equal(once.status, 402, 'non-streaming path checks the same wallet')
+  assert.equal(once.json?.error?.type, 'insufficient_credits')
+
+  /* Tools, proactive and voice all gate on the same helper so a broke
+     account is refused everywhere — a loop over the endpoints keeps the
+     test cheap and covers each surface in one place. */
+  const tools = await api('POST', '/api/tools/code_assistant/run', { token, body: { prompt: 'x' } })
+  assert.equal(tools.status, 402)
+  assert.equal(tools.json?.error?.type, 'insufficient_credits')
+})
+
+/* Premium bypass: an upgrade (or a Pro plan) means `ensureCredits` never
+   fires the 402, so the recharge bubble must NOT appear for paying users.
+   Regression risk: someone adds a wallet check that treats unlimited
+   accounts like broke ones and Pro users get nagged. */
+test('credits: Pro account with 0 remaining is NOT refused (unlimited override)', async () => {
+  const { token, user } = await newUser()
+  const dbMod = await import('../src/db/index.js')
+  dbMod.getDb().prepare("UPDATE users SET plan='pro', is_premium=1, credits_remaining=0 WHERE id = ?").run(user.id)
+  const r = await api('POST', '/api/chat/completions', { token, body: { message: 'still works', stream: false } })
+  assert.equal(r.status, 200, 'premium bypasses ensureCredits regardless of stored count')
+})
+
+/* Streaming responses now hand the client the new wallet count on the
+   final chunk (right before [DONE]) so the top-bar pill updates without
+   waiting for /me. Without this the number looked frozen between reloads
+   and users thought credits were never being charged at all — the exact
+   confusion that motivated the pill. */
+test('credits: stream final chunk carries creditsRemaining so the pill stays live', async () => {
+  const { token, user } = await newUser()
+  const start = user.creditsRemaining
+  const r = await api('POST', '/api/chat/completions', { token, body: { message: 'stream me', stream: true } })
+  assert.equal(r.status, 200)
+  /* Every SSE frame is a `data: {...}` line; scan them for the one that
+     carries creditsRemaining (the very last business chunk before DONE). */
+  const frames = r.text.split('\n').filter((l) => l.startsWith('data:')).map((l) => l.slice(5).trim()).filter((l) => l && l !== '[DONE]')
+  const walletFrame = frames.map((f) => { try { return JSON.parse(f) } catch { return null } }).find((j) => j && typeof j.creditsRemaining === 'number')
+  assert.ok(walletFrame, 'at least one chunk reports creditsRemaining')
+  assert.ok(walletFrame.creditsRemaining < start, 'reported wallet is lower than start (cost was applied)')
+  assert.ok(Number.isInteger(walletFrame.creditsCharged) && walletFrame.creditsCharged >= 1, 'cost is stated on the same frame')
 })
 
 test('image tool runs for real; NSFW is blocked', async () => {

@@ -407,7 +407,22 @@ router.post('/completions', aiLimiter, async (req, res, next) => {
       })
 
       const cost = estimateCredits(usage || { total_tokens: Math.ceil(fullText.length / 4) })
-      deductCredits(req.user.id, cost)
+      const updated = deductCredits(req.user.id, cost)
+
+      /* Hand the client the new wallet count so the top-bar pill re-renders
+       immediately without waiting for a /me refresh. Same shape on both the
+       streaming and non-streaming paths (see `user: sanitizeUser(updated)`
+       on the JSON branch above). */
+      writeSse(res, {
+        id: completionId,
+        object: 'chat.completion.chunk',
+        created,
+        model: publicModelLabel(usedModel),
+        conversationId,
+        choices: [],
+        creditsCharged: cost,
+        creditsRemaining: updated?.credits_remaining ?? null,
+      })
 
       writeSse(res, '[DONE]')
       res.end()

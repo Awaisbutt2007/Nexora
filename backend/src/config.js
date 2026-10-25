@@ -36,7 +36,13 @@ export const config = {
      shipped primary (Groq qwen3.8-27b / OpenAI gpt-4o-mini) already reads images.
      Set AI_VISION_MODEL only if your OPENAI_MODEL is text-only. */
   visionModel: process.env.AI_VISION_MODEL || process.env.OPENAI_MODEL || 'gpt-4o-mini',
-  freeMonthlyCredits: Number(process.env.FREE_MONTHLY_CREDITS || 5000),
+  /* Free-tier starting wallet. 100 is the product contract the user sees:
+     enough to try every feature end-to-end (chat, tools, images, voice),
+     but small enough that running out is a real signal to upgrade. Any new
+     account — register, login auto-provision, Google sign-in — gets exactly
+     this many credits. Premium accounts bypass the number entirely (see
+     ensureCredits/deductCredits). */
+  freeMonthlyCredits: Number(process.env.FREE_MONTHLY_CREDITS || 100),
   /* Who built this companion — the one fact it must never lose, misattribute or
      explain. Every surface (chat, voice, and anything added later) reads it from
      here, so a rebrand is one env line, not a prompt edit across files. */

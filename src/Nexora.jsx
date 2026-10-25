@@ -404,7 +404,7 @@ const SCHEDULE_CHIP = { due: ['Due now', 'chip-due'], soon: ['Reminds tomorrow',
    modal so the price a visitor sees is the price a member is charged. `key` maps
    to the backend enum ('free' | 'pro' | 'yearly_pro'). */
 const PLANS = [
-  { key: 'free', feat: false, label: 'MONTHLY BASIC', name: 'Starter', price: '₨6,000', sub: '/ month', desc: 'Har roz ke sawal aur chhote ideas ke liye.', items: ['Helpful AI conversations', 'Everyday creative tools', '5,000 credits per month', 'Your own idea library'], cta: 'Get Starter', tint: 'outline' },
+  { key: 'free', feat: false, label: 'STARTER', name: 'Starter', price: 'FREE', sub: 'to begin', desc: 'Har roz ke sawal aur chhote ideas ke liye.', items: ['Helpful AI conversations', 'Everyday creative tools', '100 credits on sign-up — top up any time', 'Your own idea library'], cta: 'Get Starter', tint: 'outline' },
   { key: 'pro', feat: true, label: 'MOST LOVED · MONTHLY', name: 'Pro', price: '₨10,000', sub: '/ month', desc: 'Ambitious projects aur unlimited work ke liye.', items: ['Premium AI models', 'Faster image and file tools', 'No credit limit — unlimited', 'Bigger projects, longer memory'], cta: 'Get Pro', tint: 'primary' },
   { key: 'yearly_pro', feat: false, label: 'YEARLY · BEST VALUE', name: 'Yearly Pro', price: '₨80,000', sub: '/ year', desc: 'Poore saal ka magic, saste mein.', items: ['Premium AI models', 'Faster image and file tools', 'No credit limit — unlimited', 'Bigger projects, longer memory', '12 months for the price of 8'], cta: 'Get Yearly Pro', tint: 'outline' },
 ]
@@ -470,8 +470,8 @@ const testimonials = [
 
 const faqs = [
   { q: 'Hum Nexora kyu purchase karein?', a: 'Nexora ek personal AI assistant hai jismein chat, image creation, code help, file reading, planning aur memory — sab ek hi jagah milta hai. Aap ek workspace se apne poore ideas ko manage kar sakte hain. Yeh ek ordinary AI assistant se behtar hai — aap isse apni baatein share kar sakte hain, yeh aapke liye khud kaam karega, aap isko kisi bhi insaan ki voice de sakte hain, aur yeh aapke kai projects mein bhi bohat madadgar hoga.' },
-  { q: 'Kya Nexora free use kar sakte hain?', a: 'Nexora ka Starter plan sirf ₨6,000/month hai — jismein helpful AI conversations, everyday creative tools, aur 5,000 monthly credits shamil hain. Unlimited aur premium features ke liye Pro ya Yearly Pro plan le sakte hain.' },
-  { q: 'Pro aur Yearly Pro main kya extra milta hai?', a: 'Pro (₨10,000/month) aur Yearly Pro (₨80,000/year) dono main aapko premium AI models, faster image aur file tools, aur bilkul unlimited credits ka access milta hai. Yearly Pro mein 12 mahine sirf 8 ke daam mein milte hain — sabse zyada value wala plan hai.' },
+  { q: 'Kya Nexora free use kar sakte hain?', a: 'Ji haan — sign-up par aapko 100 free credits milte hain jo daily sawalon, chhote ideas aur creative tools ke liye kaafi hain. Jab credits khatam ho jayen to Pro (₨10,000/mo) ya Yearly Pro (₨80,000/yr) plan le sakte hain jismein unlimited access milta hai.' },
+  { q: 'Pro aur Yearly Pro main kya extra milta hai?', a: 'Pro (₨10,000/month) aur Yearly Pro (₨80,000/year) dono main aapko premium AI models, faster image aur file tools, aur bilkul unlimited credits ka access milta hai — 100 free credits ki hadd nahi rahti. Yearly Pro mein 12 mahine sirf 8 ke daam mein milte hain — sabse zyada value wala plan hai.' },
   { q: 'Kya meri files aur data secure hain?', a: 'Haan, aapke data aur chats aapki hi personal space main rehte hain. Nexora aapke ideas aur files ko private rakhta hai — aapka data kisi aur ke saath share nahi hota.' },
   { q: 'Mobile ya sirf desktop par chalega?', a: 'Nexora ka interface responsive design ka hai — aap desktop, tablet aur mobile dono par aaram se use kar sakte hain. Workspace aur landing page dono har screen size par optimized hain.' },
 ]
@@ -1875,6 +1875,27 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
   const userInitial = userName.charAt(0).toUpperCase()
   const userAvatar = userProfile?.avatar || null
   const isPremium = userProfile?.isPremium === true
+  /* Live wallet count shown in the top-bar pill. Two sources feed it, and both
+     matter:
+       1. userProfile.creditsRemaining — the authoritative number from the
+          server on login / me-refresh / after a non-streaming call.
+       2. The final `creditsRemaining` chunk of a streaming reply — arrives
+          before any profile refresh lands, so the pill visibly ticks down
+          the moment the answer finishes. Without this the number looked
+          "stuck" between reloads and users thought credits weren't being
+          charged at all. We prefer the streaming value when it is a real
+          number, otherwise fall back to the profile value. */
+  const [streamedCredits, setStreamedCredits] = useState(null)
+  const creditsRemaining = (() => {
+    if (isPremium) return null
+    if (typeof streamedCredits === 'number') return streamedCredits
+    const raw = Number(userProfile?.creditsRemaining)
+    return Number.isFinite(raw) ? raw : 0
+  })()
+  /* Reset the streamed override whenever the parent profile actually changes
+     (login, upgrade, /me refresh) so the freshly-loaded server number wins
+     over a stale local copy. */
+  useEffect(() => { setStreamedCredits(null) }, [userProfile?.creditsRemaining, isPremium])
   /* The name the user chose at onboarding (voice already uses it); chat must match. */
   const aiName = voicePrefs.assistantName || 'Nexora'
   /* Landing CTAs and saved sessions enter the workspace with activeView='Home', but
@@ -2539,6 +2560,19 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
             assistantServerId = meta.assistantMessageId
             setMessages((prev) => prev.map((m) => (m.id === tempAsstId ? { ...m, serverId: meta.assistantMessageId } : m)))
           }
+          /* Final-chunk wallet update — pushes the top-bar pill down without
+             waiting for a /me refresh, so the drain is visible the moment the
+             reply lands. */
+          if (typeof meta.creditsRemaining === 'number') {
+            setStreamedCredits(meta.creditsRemaining)
+            /* Also merge the fresh number onto the parent's userProfile so
+               the Settings chip (a different component scope) shows the same
+               value as the top-bar pill — otherwise the two would disagree
+               until the next /me refresh or page reload. */
+            if (userProfile && typeof onProfileUpdate === 'function') {
+              onProfileUpdate({ ...userProfile, creditsRemaining: meta.creditsRemaining })
+            }
+          }
         },
       })
 
@@ -2589,6 +2623,32 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
       /* Execute [APP:...] markers — AI pausing/muting/resuming its own voice and mic. */
       fulfilAppControls({ tempId: tempAsstId, text: result.fullText })
     } catch (err) {
+      /* Out-of-credits is NOT an error to alarm the user with — it is a normal
+         product moment. Show it as a warm assistant reply (a real chat bubble,
+         not a red error card) that explains the situation in the pinned reply
+         language and points at the Upgrade CTA, and sync the pill to zero so
+         the wallet is visibly empty before the next attempt. Every other
+         failure keeps the previous error-card behaviour. */
+      if (err?.status === 402 || err?.type === 'insufficient_credits') {
+        setStreamedCredits(0)
+        const lang = String(voicePrefs.language || 'auto').toLowerCase()
+        const rechargeLine = lang === 'ur'
+          ? 'آپ کے کریڈٹ ختم ہو گئے ہیں۔ براہ کرم کریڈٹ ری چارج کروا کر دوبارہ کوشش کریں — اپنی پروفائل آئیکن → اکاؤنٹ سیٹنگز → اپ گریڈ سے پلان بدل سکتے ہیں۔ ✨'
+          : lang === 'hinglish'
+            ? 'Aap ke credits khatam ho gaye hain 🙂 Thaham recharge karwao aur phir se milte hain — profile icon → Upgrade dabao, 2 second me ho jayega. ✨'
+            : lang === 'en'
+              ? 'You have run out of credits — please top up to keep chatting. Tap your profile icon → Upgrade to pick a plan. ✨'
+              : 'Aap ke credits khatam ho gaye hain 🙂 Thaham recharge karwao aur phir se milte hain — profile icon → Upgrade dabao, 2 second me ho jayega. ✨'
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === tempAsstId
+              ? { ...m, content: rechargeLine, streaming: false, error: false, creditsRejected: true }
+              : m,
+          ),
+        )
+        setNotice(`💳 ${aiName}: Credits khatam — upgrade panel se recharge karwao`)
+        return
+      }
       setMessages((prev) =>
         prev.map((m) =>
           m.id === tempAsstId
@@ -2930,6 +2990,23 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
               auto-arms on login (see `wakeEnabled` above) and the voice surface
               lives inside the chat composer as a small inline pill. This keeps
               the header clean and stops the mic from feeling like an opt-in. */}
+          {/* Live wallet pill — the number goes amber under 20 and red-throb at
+              0 so the user always sees the drain BEFORE a request is refused.
+              Premium accounts keep the slot but show "Unlimited" because a raw
+              count is meaningless there. Clicking opens the same upgrade panel
+              as the ✦ Upgrade button. */}
+          {isLoggedIn && (
+            <button
+              className={`header-credits-pill${isPremium ? ' credits-unlimited' : creditsRemaining === 0 ? ' credits-empty' : creditsRemaining <= 20 ? ' credits-warning' : ''}`}
+              type="button"
+              onClick={() => { if (!isPremium && onUpgrade) onUpgrade() }}
+              title={isPremium ? 'Premium — unlimited credits' : `Aap ke paas ${creditsRemaining} credits bache hain${creditsRemaining === 0 ? ' — recharge karne ke liye click karein' : ''}`}
+            >
+              <span className="credits-icon" aria-hidden="true">{isPremium ? '∞' : creditsRemaining === 0 ? '⚠️' : '✦'}</span>
+              <span className="credits-value">{isPremium ? 'Unlimited' : creditsRemaining}</span>
+              <span className="credits-label">{isPremium ? 'Plan' : 'credits'}</span>
+            </button>
+          )}
           {!isPremium && (
             <button
               className="header-upgrade-btn"

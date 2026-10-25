@@ -26,7 +26,7 @@ process.env.CORS_ORIGIN = 'http://localhost:5173'
 process.env.AUTH_RATE_LIMIT = '1000'
 process.env.AUTH_IP_RATE_LIMIT = '1000'
 process.env.AI_RATE_LIMIT_PER_MIN = '5'
-process.env.FREE_MONTHLY_CREDITS = '5000'
+process.env.FREE_MONTHLY_CREDITS = '100'
 
 let server
 let BASE
