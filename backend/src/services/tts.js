@@ -343,6 +343,27 @@ const INDIC_REWRITES = [
   [/\bpee\b/gi, 'pee'],
   [/\bpiya\b/gi, 'pee-yaa'],
   [/\bpene\b/gi, 'pee-nay'],
+  /* Frequent everyday words the English-default engine still flattens: "bhai"
+     → "bye", "baat" → "bat", the opener "achha" → "uh-chah". These three alone
+     account for most "she sounds foreign" complaints, so lock their vowels. */
+  [/\bbhai\b/gi, 'bhaa-ee'],
+  [/\bbhaiya\b/gi, 'bhaa-ya'],
+  [/\bbaat\b/gi, 'baa-t'],
+  [/\bbaatein\b/gi, 'baa-tein'],
+  [/\baccha\b/gi, 'aa-chha'],
+  [/\bachha\b/gi, 'aa-chha'],
+  [/\babhi\b/gi, 'aab-hee'],
+  [/\bchalo\b/gi, 'cha-lo'],
+  [/\bmasla\b/gi, 'muh-sla'],
+  [/\bsubah\b/gi, 'su-bah'],
+  [/\bshaam\b/gi, 'shaam'],
+  [/\bpyaari\b/gi, 'pyaa-ree'],
+  /* Gendered first-person futures (grammar-critical for the companion). The
+     engine rushes "karungi" into "ka-rung-ee"; the hyphen holds the long ū. */
+  [/\bkarunga\b/gi, 'kar-oon-gaa'],
+  [/\bkarungi\b/gi, 'kar-oon-ghee'],
+  [/\bhoonga\b/gi, 'hoo-oon-gaa'],
+  [/\bhoongi\b/gi, 'hoo-oon-ghee'],
 ]
 /* The engine reads "Bilkul" at the head of a sentence as its own word and
  * capitalises the phoneme table accordingly — so a rewrite that flattens

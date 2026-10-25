@@ -204,6 +204,24 @@ const INDIC_REWRITES = [
   [/\bbatao\b/gi, 'ba-taa-o'],
   [/\bbataye\b/gi, 'ba-taa-yay'],
   [/\bbatana\b/gi, 'ba-taa-na'],
+  /* Frequent everyday words the en-IN/en-GB browser voice still flattens: "bhai"
+     → "bye", "baat" → "bat", the opener "achha" → "uh-chah". Kept in lock-step
+     with the backend list so both engines pronounce them identically. */
+  [/\bbhai\b/gi, 'bhaa-ee'],
+  [/\bbhaiya\b/gi, 'bhaa-ya'],
+  [/\bbaat\b/gi, 'baa-t'],
+  [/\bbaatein\b/gi, 'baa-tein'],
+  [/\baccha\b/gi, 'aa-chha'],
+  [/\bachha\b/gi, 'aa-chha'],
+  [/\babhi\b/gi, 'aab-hee'],
+  [/\bchalo\b/gi, 'cha-lo'],
+  [/\bmasla\b/gi, 'muh-sla'],
+  [/\bsubah\b/gi, 'su-bah'],
+  [/\bpyaari\b/gi, 'pyaa-ree'],
+  [/\bkarunga\b/gi, 'kar-oon-gaa'],
+  [/\bkarungi\b/gi, 'kar-oon-ghee'],
+  [/\bhoonga\b/gi, 'hoo-oon-gaa'],
+  [/\bhoongi\b/gi, 'hoo-oon-ghee'],
 ]
 /* Sentence-auxiliary words the browser engine rushes at rate ≥0.9. When we
  * detect an Indic reply we ALSO shave 6 percent off rate so the extra

@@ -1780,6 +1780,9 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
   const [messages, setMessages] = useState([])
   /* Reply threading: the one AI turn the next message answers, if any. */
   const [replyTarget, setReplyTarget] = useState(null)
+  /* Which message was just copied to the clipboard, so its button can flip to a
+     "✓ Copied" confirmation for a moment without a per-message state array. */
+  const [copiedMsgId, setCopiedMsgId] = useState(null)
   const [streaming, setStreaming] = useState(false)
   const [notice, setNotice] = useState(() => selectedTool ? `✦ ${selectedTool} is selected and ready to use!` : '')
   /* Give the toast a fair stay: a notice lives 6s, and a fresh notice restarts the
@@ -2687,6 +2690,28 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
     promptInputRef.current?.focus()
   }
 
+  /* Copy a finished turn's plain text to the clipboard. Screenshots markers are
+     stripped so the pasted text is clean prose, and the button confirms with a
+     transient "✓ Copied" (reusing the same id-keyed state) so the click is felt. */
+  function copyMessage(message) {
+    const text = withoutShotMarkers(message.content || '')
+    if (!text) return
+    const done = () => {
+      setCopiedMsgId(message.id)
+      window.setTimeout(() => setCopiedMsgId((cur) => (cur === message.id ? null : cur)), 1600)
+    }
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => { /* fall through */ })
+    } else {
+      try {
+        const ta = document.createElement('textarea')
+        ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0'
+        document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta)
+        done()
+      } catch { /* ignore */ }
+    }
+  }
+
   /* One self-screenshot. Her face is rendered off-screen for the shot (no face is
      mounted once a thread is open); every other target needs the real page, so open
      it, wait out the entrance transform, photograph it, then put the user back. */
@@ -3153,6 +3178,8 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
                   /* Only a finished, real answer gets a Reply handle — never a thinking
                      bubble, an error card or the user's own turn. */
                   const replyable = !mine && !m.streaming && !m.error && Boolean(m.content)
+                  /* Any finished turn — hers or the user's — can be copied verbatim. */
+                  const copyable = !m.streaming && !m.error && Boolean(m.content)
                   return (
                     <div key={m.id} className={`chat-msg${mine ? ' mine' : ''}${m.error ? ' is-error' : ''}`} style={{ '--i': Math.min(i, 12) }}>
                       <span className="chat-msg-avatar" aria-hidden="true">{mine ? initial : '✦'}</span>
@@ -3165,7 +3192,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
                           {m.shooting ? <div className="chat-shot-caption is-pending">📸 Taking a real screenshot…</div> : null}
                           <div className="chat-text">{m.streaming && !m.content ? <span className="chat-thinking"><span className="chat-dots" aria-hidden="true"><i /><i /><i /></span><em>{aiName} is thinking…</em></span> : <>{renderChatContent(m.content)}{m.streaming ? <span className="chat-cursor" aria-hidden="true" /> : null}</>}</div>
                         </div>
-                        {m.ts || replyable ? <div className="chat-msg-meta">{m.ts ? <span className="chat-msg-time">{formatChatTime(m.ts)}</span> : null}{replyable ? <button type="button" className="chat-msg-reply" aria-label={`Reply to ${aiName}'s message`} onClick={() => startReply(m)}>↩ Reply</button> : null}</div> : null}
+                        {m.ts || replyable || copyable ? <div className="chat-msg-meta">{m.ts ? <span className="chat-msg-time">{formatChatTime(m.ts)}</span> : null}{copyable ? <button type="button" className={`chat-msg-copy${copiedMsgId === m.id ? ' copied' : ''}`} aria-label={copiedMsgId === m.id ? 'Copied to clipboard' : 'Copy message'} onClick={() => copyMessage(m)}>{copiedMsgId === m.id ? '✓ Copied' : '⧉ Copy'}</button> : null}{replyable ? <button type="button" className="chat-msg-reply" aria-label={`Reply to ${aiName}'s message`} onClick={() => startReply(m)}>↩ Reply</button> : null}</div> : null}
                       </div>
                     </div>
                   )
