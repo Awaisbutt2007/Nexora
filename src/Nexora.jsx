@@ -1604,6 +1604,14 @@ const QUIET_NEG = /\b(?:don'?t|do\s+not|stop|never|quit|cancel|avoid)\b|(?:^|\s)
 const QUIET_MSG = /\b(?:msg|msgs|message|messages|messaging|messaged|ping|pings|text|texts|texting)\b/i
 function wantsQuiet(text) { return QUIET_NEG.test(text) && QUIET_MSG.test(text) }
 
+/* "Chup kro" / "be quiet" / "sunao nahi" / "stop talking" / "bas karo" /
+   "meri baat suno" — the user is telling the AI to shut up RIGHT NOW while
+   it's currently speaking. Match any imperative that implies "cancel the
+   audio you are producing". Deliberately broad because the voice pipeline
+   must die the instant the user objects; the prompt still reaches the model
+   afterwards so she can respond with text or a calmer reply. */
+const STOP_SPEECH_RE = /(?:\b(?:chup\s*kar(?:o)?|chup\s*ho(?:\s*jao)?|chup|be\s*quiet|quiet\s*(?:now|please|pls)|shut\s*up|bas\s*kar(?:o)?|band\s*kar(?:o)?|sunao\s*nahi|mat\s*bolo|stop\s*(?:talking|speaking|bolna|bol)|delete\s*voice|khamosh(?:\s*ho)?|khamoshi|sunna\s*band|meri\s*baat\s*suno|baat\s*suno|let\s*me\s*talk|let\s*me\s*speak|I\s*want\s*to\s*speak|sun\s*lo|meri\s*batein\s*suno|awaaz\s*band|speech\s*band)\b)/i
+
 /* Clipboard/picked File → downscaled JPEG data URL: keeps uploads inside the
    API's 2 MB JSON budget, shrinks what the vision model eats, and strips EXIF. */
 function fileToScaledDataUrl(file, max = 1024) {
@@ -1662,6 +1670,11 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
   /* Demo prompt meter: how many turns this browser's demo account has already
      spent. Synced from storage on mount so a reload can't hand out a fresh allowance. */
   const demoPromptsRef = useRef(0)
+  /* Mutable bridge so the proactive effect's speak callback can reach
+     `armNow` without needing it in the effect deps (which would reset the
+     idle interval on every wake-word re-render). Assigned once per render
+     right after `useWakeWord` returns. */
+  const armNowRef = useRef(null)
   useEffect(() => {
     try { demoPromptsRef.current = Number(localStorage.getItem(DEMO_PROMPTS_KEY)) || 0 } catch { /* private mode */ }
   }, [])
@@ -1694,6 +1707,8 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
      render is how the Settings dropdown shows the truth without a sync effect. */
   const [localPrefs, setLocalPrefs] = useState(readLocalPrefs)
   const voicePrefs = useMemo(() => loadVoicePrefs(localPrefs, userProfile?.prefs), [localPrefs, userProfile?.prefs])
+    const voicePrefsRef = useRef(voicePrefs)
+    voicePrefsRef.current = voicePrefs
 
   /* Memory manager (review / edit / delete what Aira remembers) */
   const [memories, setMemories] = useState([])
@@ -1788,7 +1803,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
       const withdrewDraft = draftWithdrawnRef.current
       const composing = typedDraftRef.current
       draftWithdrawnRef.current = false
-      proactiveChat({ token: authToken, conversationId, assistantName: aiName, persona: voicePrefs.persona, gender: voicePrefs.gender, language: voicePrefs.language, composing, withdrewDraft })
+      proactiveChat({ token: authToken, conversationId, assistantName: aiName, persona: voicePrefsRef.current.persona, gender: voicePrefsRef.current.gender, language: voicePrefsRef.current.language, composing, withdrewDraft })
         .then((r) => {
           const content = (r?.content || '').trim()
           if (content) {
@@ -1799,6 +1814,17 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
             if (!(prev && prev.role === 'assistant' && String(prev.content).trim() === content)) {
               setMessages((prevMsgs) => [...prevMsgs, { id: `local_proactive_${Date.now()}`, role: 'assistant', content, ts: Date.now() }])
               setNotice(`${aiName} checked in.`)
+              /* Speak the proactive line out loud so the user HEARS her check in
+                 — not just see text appear. Same voice pipeline as a normal reply,
+                 conditioned on the toggle + no VoiceCall overlay. */
+              if (speakRepliesRef.current && !voiceOpenRef.current) {
+                speakAssistantReply(content, {
+                  language: voicePrefsRef.current.language,
+                  gender: voicePrefsRef.current.gender,
+                  authToken,
+                  onEnd: () => { armNowRef.current?.(15000); setVoiceTurn(true) }
+                })
+              }
             }
           }
           /* Re-arm the idle clock for the next window; the unanswered cap above keeps
@@ -1813,7 +1839,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
         })
     }, 6000)
     return () => clearInterval(tick)
-  }, [isLoggedIn, authToken, view, conversationId, aiName, voicePrefs.persona])
+  }, [isLoggedIn, authToken, view, conversationId, aiName])
 
   function startNewChat() {
     setConversationId(null)
@@ -2173,6 +2199,18 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
     const spokenAck = typeof extras.spokenAck === 'string' && extras.spokenAck.trim()
       ? `${extras.spokenAck.trim()}\n\n`
       : ''
+    /* "Chup kro" / "stop talking" / "meri baat suno": kill the current TTS
+       IMMEDIATELY before any other logic runs — even before the streaming
+       guard, because a previous reply may still be playing its audio while
+       the next stream has already started. The user hears her voice STOP the
+       millisecond they object, which is the whole point of a natural
+       conversation: you can interrupt someone mid-sentence. */
+    if (STOP_SPEECH_RE.test(cleanPrompt)) {
+      cancelServerAudio()
+      if (window.speechSynthesis) { try { window.speechSynthesis.cancel() } catch { /* ignore */ } }
+      setVoiceTurn(false)
+      setNotice(`${aiName} chup ho gayi — aap boliye.`)
+    }
     const imgUrls = pendingImgs.filter((p) => p.url).map((p) => p.url)
     if (streaming || pendingImgs.some((p) => p.uploading)) return
     if (!cleanPrompt && !imgUrls.length) return
@@ -2423,6 +2461,12 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
   const [speakReplies, setSpeakReplies] = useState(() => {
     try { return localStorage.getItem('nexora_speak_replies') !== '0' } catch { return true }
   })
+  /* Ref mirror so the proactive setInterval callback (which closes over
+     values from the render it was created in) always sees the live toggle. */
+  const speakRepliesRef = useRef(speakReplies)
+  speakRepliesRef.current = speakReplies
+  const voiceOpenRef = useRef(voiceOpen)
+  voiceOpenRef.current = voiceOpen
   /* The in-progress interim transcript — Chrome refines it every ~200 ms while
      the user is still speaking, so their words appear on screen before the
      recogniser commits. Cleared on every final / restart / unmount by the hook. */
@@ -2463,6 +2507,9 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
       sendPrompt(null, cmd, { spokenAck: ack })
     },
   })
+  /* Bridge for the proactive effect's speak-onEnd which can't list `armNow`
+     in its deps without resetting the idle interval every render. */
+  armNowRef.current = armNow
 
   /* Conversation loop: auto-arm the mic the moment the user lands in the
      workspace (login / page reload). The first utterance is treated as a

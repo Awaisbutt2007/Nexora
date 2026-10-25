@@ -65,11 +65,13 @@ export const TTS_LOCALE_CHAIN = {
 }
 /* Mixed-script replies need to breathe — the same sentence read at 1.05
  * through an en-IN voice is far harder to parse than one in the user's
- * native tongue. Hinglish and Urdu drop to 0.85 (was 0.92) because the
- * default engine rushes the retroflex clusters ("bh" / "gh" / "kh") and
- * every consonant run blurs. `auto` sits between because most auto replies
- * still contain 30-50 % Latin Hindi. */
-const LANG_RATE = { en: 1.05, hinglish: 0.85, ur: 0.82, auto: 0.88 }
+ * native tongue. Hinglish drops to 0.78 (from 0.85, further from the
+ * original 0.92) because the default English engine rushes consonant
+ * clusters and the user cannot follow the reply. Urdu 0.74 is even slower
+ * because the engine struggles more with Arabic-origin phonemes written in
+ * Latin script. `auto` sits at 0.82 because most auto replies still contain
+ * 30-50 % Latin Hindi. */
+const LANG_RATE = { en: 1.05, hinglish: 0.78, ur: 0.74, auto: 0.82 }
 export const MIXED_LANGUAGES = new Set(['hinglish', 'auto', 'ur'])
 /* Natural locale hint per reply language (the value we set on `utter.lang`
  * before we know which voice we're going to end up with; after picking the
@@ -87,6 +89,19 @@ const INDIC_REWRITES = [
   [/\bbilkul\b/gi, 'bil-kul'],
   [/\bshayad\b/gi, 'shaa-yad'],
   [/\bshayed\b/gi, 'shaa-yad'],
+  [/\bnahi\b/gi, 'naa-hee'],
+  [/\bnahin\b/gi, 'naa-hin'],
+  [/\bbahut\b/gi, 'baa-hut'],
+  [/\bkaise\b/gi, 'kai-seh'],
+  [/\bkaisay\b/gi, 'kai-say'],
+  [/\bsamajh\b/gi, 'sa-maj'],
+  [/\bsamjha\b/gi, 'sam-jhaa'],
+  [/\bzaroor\b/gi, 'za-roor'],
+  [/\bzarurat\b/gi, 'za-ra-rat'],
+  [/\bqismat\b/gi, 'kis-mat'],
+  [/\bmuqabla\b/gi, 'mu-qa-bla'],
+  [/\braasta\b/gi, 'raa-sta'],
+  [/\bwaqt\b/gi, 'vakht'],
 ]
 /* Keep the sentence-initial capital across the swap — "Bilkul" must become
  * "Bil-kul" not "bil-kul", otherwise the reply looks odd in the visual

@@ -166,6 +166,19 @@ const INDIC_REWRITES = [
   [/\bbilkul\b/gi, 'bil-kul'],
   [/\bshayad\b/gi, 'shaa-yad'],
   [/\bshayed\b/gi, 'shaa-yad'],
+  [/\bnahi\b/gi, 'naa-hee'],
+  [/\bnahin\b/gi, 'naa-hin'],
+  [/\bbahut\b/gi, 'baa-hut'],
+  [/\bkaise\b/gi, 'kai-seh'],
+  [/\bkaisay\b/gi, 'kai-say'],
+  [/\bsamajh\b/gi, 'sa-maj'],
+  [/\bsamjha\b/gi, 'sam-jhaa'],
+  [/\bzaroor\b/gi, 'za-roor'],
+  [/\bzarurat\b/gi, 'za-ra-rat'],
+  [/\bqismat\b/gi, 'kis-mat'],
+  [/\bmuqabla\b/gi, 'mu-qa-bla'],
+  [/\braasta\b/gi, 'raa-sta'],
+  [/\bwaqt\b/gi, 'vakht'],
 ]
 /* The engine reads "Bilkul" at the head of a sentence as its own word and
  * capitalises the phoneme table accordingly — so a rewrite that flattens
