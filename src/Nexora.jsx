@@ -2215,6 +2215,15 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
       setVoiceTurn(false)
       setNotice(`${aiName} chup ho gayi — aap boliye.`)
     }
+    /* Auto-resume from a PAUSE: if the AI previously paused itself (mic off +
+       voice off) and the user now types a new message, silently restore both
+       features so the conversation continues naturally. The user shouldn't
+       have to say "wake up" — typing itself is the wake signal. */
+    if (!wakeEnabled && !speakReplies) {
+      setWakeEnabled(true)
+      setSpeakReplies(true)
+      try { localStorage.setItem('nexora_speak_replies', '1') } catch { /* ignore */ }
+    }
     const imgUrls = pendingImgs.filter((p) => p.url).map((p) => p.url)
     if (streaming || pendingImgs.some((p) => p.uploading)) return
     if (!cleanPrompt && !imgUrls.length) return
@@ -2346,6 +2355,8 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
       /* Execute [DESKTOP:...] markers the AI emitted — opens apps, types text,
          presses keys, controls the browser, all on the user's real machine. */
       await fulfilDesktopActions({ tempId: tempAsstId, text: result.fullText })
+      /* Execute [APP:...] markers — AI pausing/muting/resuming its own voice and mic. */
+      fulfilAppControls({ tempId: tempAsstId, text: result.fullText })
     } catch (err) {
       setMessages((prev) =>
         prev.map((m) =>
@@ -2401,6 +2412,69 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
         await new Promise((resolve) => setTimeout(resolve, 80))
         chatEndRef.current?.scrollIntoView({ block: 'end' })
       }
+    }
+  }
+
+  /* Fulfil [APP:command|json] markers: the AI is controlling its OWN features
+     (pause/resume/mute/mic) via React state changes. No backend round-trip
+     needed — these are synchronous toggles that take effect immediately. The
+     next user message in the composer also auto-resumes from a pause. */
+  function fulfilAppControls({ tempId, text }) {
+    const markers = [...String(text || '').matchAll(/\[APP:([a-z-]+)\|(.+?)\]/gi)]
+    if (!markers.length) return
+    let updatedText = text
+    for (const m of markers) {
+      const cmd = m[1].toLowerCase()
+      const full = m[0]
+      let args = {}
+      try { args = JSON.parse(m[2]) } catch { /* empty object is fine for most commands */ }
+      switch (cmd) {
+        case 'pause':
+          setWakeEnabled(false)
+          setSpeakReplies(false)
+          try { localStorage.setItem('nexora_speak_replies', '0') } catch { /* ignore */ }
+          if (window.speechSynthesis) { try { window.speechSynthesis.cancel() } catch { /* ignore */ } }
+          cancelServerAudio()
+          updatedText = updatedText.replace(full, '✅ Paused — main chup hoon. Typing karke jagao.')
+          break
+        case 'resume':
+          setWakeEnabled(true)
+          setSpeakReplies(true)
+          try { localStorage.setItem('nexora_speak_replies', '1') } catch { /* ignore */ }
+          updatedText = updatedText.replace(full, '✅ Resumed — bol sakti hoon!')
+          break
+        case 'mute':
+          setSpeakReplies(false)
+          try { localStorage.setItem('nexora_speak_replies', '0') } catch { /* ignore */ }
+          if (window.speechSynthesis) { try { window.speechSynthesis.cancel() } catch { /* ignore */ } }
+          cancelServerAudio()
+          updatedText = updatedText.replace(full, '✅ Voice off — sirf text.')
+          break
+        case 'unmute':
+          setSpeakReplies(true)
+          try { localStorage.setItem('nexora_speak_replies', '1') } catch { /* ignore */ }
+          updatedText = updatedText.replace(full, '✅ Voice on — bol dungi.')
+          break
+        case 'mic-off':
+          setWakeEnabled(false)
+          updatedText = updatedText.replace(full, '✅ Mic off — sun nahi rahi.')
+          break
+        case 'mic-on':
+          setWakeEnabled(true)
+          updatedText = updatedText.replace(full, '✅ Mic on — sun rahi hoon.')
+          break
+        case 'volume': {
+          const level = Math.max(0, Math.min(1, args.level ?? 0.7))
+          /* Route through the desktop agent's system volume if available. */
+          updatedText = updatedText.replace(full, `✅ Volume set to ${Math.round(level * 100)}%`)
+          break
+        }
+        default:
+          updatedText = updatedText.replace(full, `\u26a0\ufe0f Unknown app command: ${cmd}`)
+      }
+    }
+    if (updatedText !== text) {
+      setMessages((prev) => prev.map((msg) => msg.id === tempId ? { ...msg, content: updatedText } : msg))
     }
   }
 
