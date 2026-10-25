@@ -887,6 +887,7 @@ a { color: inherit; text-decoration: none; }
 .prompt-box .prompt-mic-btn:hover { color: #f3f4ff; border-color: rgba(189,108,255,.7); border-style: solid; }
 .prompt-box .prompt-mic-btn.on { color: #0b0d1a; border-style: solid; border-color: transparent; background: linear-gradient(120deg,#ff5c8a,#bd6cff); box-shadow: 0 4px 18px rgba(255,92,138,.32); }
 .prompt-box .prompt-mic-btn.on.status-listening { animation: wakeBreathe 2.2s ease-in-out infinite; }
+.prompt-box .prompt-mic-btn.on.turn { background: linear-gradient(120deg,#4aeabc,#6cffa2); box-shadow: 0 4px 18px rgba(74,234,188,.35); animation: wakeBreathe 1.4s ease-in-out infinite; }
 .prompt-box .prompt-mic-btn.on.status-denied { background: linear-gradient(120deg,#ff8a5c,#ff5c8a); }
 .prompt-box .prompt-mic-btn.on.status-no-mic,.prompt-box .prompt-mic-btn.on.status-unsupported { background: linear-gradient(120deg,#ffb35c,#ff8a5c); }
 .prompt-box .prompt-mic-btn .prompt-mic-dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(143,115,255,.55); box-shadow: 0 0 8px rgba(143,115,255,.35); flex: 0 0 auto; }

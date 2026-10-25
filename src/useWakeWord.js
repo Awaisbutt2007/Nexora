@@ -164,9 +164,12 @@ export function useWakeWord({
     /* The effect that owns `armedUntilMs` re-runs on every enabled/language
        change; we piggy-back a setter into the ref from inside that effect. */
   }, [enabled, hasSR])
-  /* Called by the consumer when the user clicks the already-on pill: opens a
-     short push-to-talk window so their next sentence is the command. */
-  const armNow = () => { if (armNowRef.current) armNowRef.current() }
+  /* Called by the consumer when the user clicks the already-on pill OR when
+     an AI voice reply finishes playing (the conversation-loop hook): opens a
+     push-to-talk window so the next sentence is the command without needing
+     the wake word. Accepts an optional `ms` to override the default window
+     (e.g. 15 000 after a spoken reply so the user has time to think). */
+  const armNow = (ms) => { if (armNowRef.current) armNowRef.current(ms) }
 
   useEffect(() => {
     if (!enabled || !hasSR) return undefined
@@ -179,8 +182,10 @@ export function useWakeWord({
        name and the command as two finals whenever the user breathes between
        them, so without this the second half of every spoken prompt is lost. */
     let armedUntilMs = 0
-    /* Wire the external arm-now handle to this closure's mutable state. */
-    armNowRef.current = () => { armedUntilMs = Date.now() + armWindowMs }
+    /* Wire the external arm-now handle to this closure's mutable state.
+       Accepts an optional `ms` override so the conversation loop can hold
+       the window open longer after a spoken reply (default 6 s). */
+    armNowRef.current = (ms) => { armedUntilMs = Date.now() + (ms || armWindowMs) }
 
     const fireWake = (text) => {
       const now = Date.now()

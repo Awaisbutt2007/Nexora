@@ -117,17 +117,21 @@ const WAKE_ACK_LINES = {
    Hinglish lands on en-IN, not en-GB), the rate slow-down for mixed-script
    replies and the gender-pitch tweak all live in one shared helper
    (`configureUtterForSpeech` in voiceSelect.js) so the wake ack, the streamed
-   chat reply and the VoiceCall fallback pipeline sound IDENTICAL. */
-function speakWakeLine(text, { language, gender } = {}) {
-  if (typeof window === 'undefined' || !window.speechSynthesis || !text) return
+   chat reply and the VoiceCall fallback pipeline sound IDENTICAL.
+   `onEnd` fires when the utterance finishes (or immediately on error) so the
+   conversation-loop hook can re-arm the mic after the AI finishes speaking. */
+function speakWakeLine(text, { language, gender, onEnd } = {}) {
+  if (typeof window === 'undefined' || !window.speechSynthesis || !text) { onEnd?.(); return }
   try {
     /* Cancel any still-playing ack from a previous utterance — the user may
        have said the wake word twice and the second ack must not queue. */
     window.speechSynthesis.cancel()
     const utter = new SpeechSynthesisUtterance(text)
     configureUtterForSpeech(utter, window.speechSynthesis.getVoices(), { language, gender })
+    utter.onend = () => { onEnd?.() }
+    utter.onerror = () => { onEnd?.() }
     window.speechSynthesis.speak(utter)
-  } catch { /* browser blocked TTS or voices list unavailable — the visual caption still shows */ }
+  } catch { /* browser blocked TTS or voices list unavailable — the visual caption still shows */ onEnd?.() }
 }
 
 /* Auto-voice inside the workspace content: once the streamed reply lands, we
@@ -153,8 +157,8 @@ function cancelServerAudio() {
     currentServerAudio = null
   }
 }
-async function speakAssistantReply(text, { language, gender, authToken } = {}) {
-  if (typeof window === 'undefined' || !text) return
+async function speakAssistantReply(text, { language, gender, authToken, onEnd } = {}) {
+  if (typeof window === 'undefined' || !text) { onEnd?.(); return }
   const plain = String(text)
     .replace(/```[\s\S]*?```/g, ' (code shown in chat) ')
     .replace(/`([^`]+)`/g, '$1')
@@ -188,8 +192,8 @@ async function speakAssistantReply(text, { language, gender, authToken } = {}) {
       const blob = await synthesizeSpeech(authToken, { text: plain, language, gender })
       const url = URL.createObjectURL(blob)
       const audio = new window.Audio(url)
-      audio.onended = () => { try { URL.revokeObjectURL(url) } catch { /* ignore */ }; if (currentServerAudio === audio) currentServerAudio = null }
-      audio.onerror = () => { try { URL.revokeObjectURL(url) } catch { /* ignore */ }; if (currentServerAudio === audio) currentServerAudio = null }
+      audio.onended = () => { try { URL.revokeObjectURL(url) } catch { /* ignore */ }; if (currentServerAudio === audio) currentServerAudio = null; onEnd?.() }
+      audio.onerror = () => { try { URL.revokeObjectURL(url) } catch { /* ignore */ }; if (currentServerAudio === audio) currentServerAudio = null; onEnd?.() }
       currentServerAudio = audio
       await audio.play()
       return
@@ -203,7 +207,7 @@ async function speakAssistantReply(text, { language, gender, authToken } = {}) {
   }
   /* Browser TTS fallback — the same voice path wake acks use, so "her" stays
      consistent across the app on any install that lacks a live speech key. */
-  speakWakeLine(plain, { language, gender })
+  speakWakeLine(plain, { language, gender, onEnd })
 }
 
 /* The five choices the workspace remembers, in the shape the backend stores them. */
@@ -2283,7 +2287,10 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
            blob, then plays, and falls back to browser TTS on any error. The
            awaited stream is already complete, so we don't want to hold up the
            follow-up screenshot fulfilment behind a 1-3s audio round-trip. */
-        speakAssistantReply(result.fullText, { language: voicePrefs.language, gender: voicePrefs.gender, authToken })
+        /* Conversation loop: when the spoken reply finishes, arm the mic for
+           15 s so the user can just talk — no "Aira", no click. This is what
+           makes the flow feel like two humans in a real conversation. */
+        speakAssistantReply(result.fullText, { language: voicePrefs.language, gender: voicePrefs.gender, authToken, onEnd: () => { armNow(15000); setVoiceTurn(true) } })
       }
       /* She asked to be seen — so actually be seen: photograph the live app and hang
          the real shots on this turn instead of leaving a marker on screen. */
@@ -2406,6 +2413,11 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
      `sendPrompt` is a plain function declaration, so its closure is fine
      here (the hook holds it in a ref and refreshes each render). */
   const [wakeEnabled, setWakeEnabled] = useState(true)
+  /* "Your turn" indicator: true between the AI finishing a spoken reply and
+     the user starting their next utterance (or the 15 s window expiring). The
+     mic pill reads it to show "your turn" instead of "listening" so the user
+     knows they can just talk — no name, no click. */
+  const [voiceTurn, setVoiceTurn] = useState(false)
   /* Auto-voice on replies: when the stream lands, we speak the answer out
      loud. Users who prefer silence can toggle this from the composer. */
   const [speakReplies, setSpeakReplies] = useState(() => {
@@ -2451,6 +2463,29 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
       sendPrompt(null, cmd, { spokenAck: ack })
     },
   })
+
+  /* Conversation loop: auto-arm the mic the moment the user lands in the
+     workspace (login / page reload). The first utterance is treated as a
+     command without needing "Aira" — the user just talks. After every spoken
+     reply the onEnd callback in sendPrompt re-arms for 15 s so the back-and-forth
+     feels like two humans chatting, not a push-to-talk toy. */
+  useEffect(() => {
+    if (wakeEnabled && isLoggedIn && authToken) {
+      /* Small delay so the recogniser has time to fire onstart before the
+         arming window opens; otherwise the first 350 ms of speech is lost. */
+      const t = setTimeout(() => armNow(8000), 600)
+      return () => clearTimeout(t)
+    }
+    return undefined
+  }, [wakeEnabled, isLoggedIn, authToken, armNow])
+
+  /* Clear the "your turn" chip when the armed window expires so the pill
+     reverts to "listening". A 16 s timer matches the armNow(15000) below. */
+  useEffect(() => {
+    if (!voiceTurn) return undefined
+    const t = setTimeout(() => setVoiceTurn(false), 16000)
+    return () => clearTimeout(t)
+  }, [voiceTurn])
 
   return <main className="workspace-shell" id="workspace">
     {/* The floating account dock is gone — the account drawer now drops down from
@@ -2663,15 +2698,15 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
               <div className="prompt-voice-cluster" role="group" aria-label="Voice controls">
                 <button
                   type="button"
-                  className={`prompt-mic-btn${wakeEnabled ? ' on' : ''} status-${wakeStatus}`}
+                  className={`prompt-mic-btn${wakeEnabled ? ' on' : ''}${voiceTurn ? ' turn' : ''} status-${wakeStatus}`}
                   aria-pressed={wakeEnabled}
-                  aria-label={wakeEnabled ? `${aiName} is listening — click to speak now without saying the name` : `Resume listening for "${aiName}"`}
-                  title={wakeEnabled ? `Click to speak now (one-shot, no wake word needed)` : `Click to let ${aiName} hear you again`}
+                  aria-label={voiceTurn ? `${aiName} finished speaking — your turn, just talk` : wakeEnabled ? `${aiName} is listening — click to speak now without saying the name` : `Resume listening for "${aiName}"`}
+                  title={voiceTurn ? `Your turn — just start talking` : wakeEnabled ? `Click to speak now (one-shot, no wake word needed)` : `Click to let ${aiName} hear you again`}
                   onClick={() => { if (wakeEnabled) { armNow(); setNotice(`🎙 ${aiName} sun rahi hai — boliye`) } else { setWakeEnabled(true) } }}
                 >
                   <span className="prompt-mic-dot" aria-hidden="true" />
                   <span aria-hidden="true">🎙</span>
-                  <em className="prompt-mic-chip">{wakeEnabled ? (wakeStatus === 'listening' ? 'listening' : wakeStatus === 'denied' ? 'blocked' : wakeStatus === 'no-mic' ? 'no mic' : wakeStatus === 'unsupported' ? 'no STT' : 'starting') : 'paused'}</em>
+                  <em className="prompt-mic-chip">{!wakeEnabled ? 'paused' : voiceTurn ? 'your turn' : wakeStatus === 'listening' ? 'listening' : wakeStatus === 'denied' ? 'blocked' : wakeStatus === 'no-mic' ? 'no mic' : wakeStatus === 'unsupported' ? 'no STT' : 'starting'}</em>
                 </button>
                 <button
                   type="button"
