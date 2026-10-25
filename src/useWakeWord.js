@@ -115,6 +115,13 @@ export function useWakeWord({
   onCommand,
   onWake,
   onInterim,
+  /* Fires whenever STT picks up meaningful user speech (interim OR final).
+     The consumer uses this to implement BARGE-IN: if the AI is currently
+     speaking, cancel its TTS immediately so the user is never talked over.
+     Chrome's built-in AEC (acoustic echo cancellation) prevents the AI's own
+     speakers from triggering this, so only real user voice fires it. Debounced
+     to at most once every 400 ms so rapid interim events don't spam it. */
+  onUserSpeaking,
   cooldownMs = DEFAULT_COOLDOWN_MS,
   armWindowMs = DEFAULT_ARM_WINDOW_MS,
 }) {
@@ -146,12 +153,17 @@ export function useWakeWord({
   const onCommandRef = useRef(onCommand)
   const onWakeRef = useRef(onWake)
   const onInterimRef = useRef(onInterim)
+  const onUserSpeakingRef = useRef(onUserSpeaking)
   const wakeWordRef = useRef(wakeWord)
   const lastSigRef = useRef({ text: '', ts: 0 })
   const lastWakeTsRef = useRef(0)
+  /* Debounce: only fire onUserSpeaking once every 400 ms so rapid interim
+     events (Chrome emits many per second) don't spam the consumer. */
+  const lastSpeakFireRef = useRef(0)
   useEffect(() => { onCommandRef.current = onCommand }, [onCommand])
   useEffect(() => { onWakeRef.current = onWake }, [onWake])
   useEffect(() => { onInterimRef.current = onInterim }, [onInterim])
+  useEffect(() => { onUserSpeakingRef.current = onUserSpeaking }, [onUserSpeaking])
   useEffect(() => { wakeWordRef.current = wakeWord }, [wakeWord])
 
   /* Expose a one-shot "arm now" handle so the UI can flip the pill from
@@ -277,6 +289,19 @@ export function useWakeWord({
           else interimText = interimText ? `${interimText} ${t}` : t
         }
         if (interimText) onInterimRef.current?.(interimText)
+        /* Barge-in trigger: as soon as STT hears anything the user is saying
+           (real speech, not the AI's own voice — Chrome's AEC handles that),
+           notify the consumer so it can cancel TTS mid-sentence. Requires at
+           least 3 characters so single-word noise blips don't cut the AI off.
+           Debounced to 400 ms to avoid firing 20× per second. */
+        const anySpeech = (interimText && interimText.length >= 3) || (finalText && finalText.length >= 1)
+        if (anySpeech) {
+          const now = Date.now()
+          if (now - lastSpeakFireRef.current >= 400) {
+            lastSpeakFireRef.current = now
+            onUserSpeakingRef.current?.()
+          }
+        }
         if (finalText) {
           /* Clear the live caption on the final — the UI will flip to the
              "Heard: …" notice in the same render tick, so there is no flash

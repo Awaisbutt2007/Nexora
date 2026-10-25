@@ -128,10 +128,13 @@ function speakWakeLine(text, { language, gender, onEnd } = {}) {
     window.speechSynthesis.cancel()
     const utter = new SpeechSynthesisUtterance(text)
     configureUtterForSpeech(utter, window.speechSynthesis.getVoices(), { language, gender })
-    utter.onend = () => { onEnd?.() }
-    utter.onerror = () => { onEnd?.() }
+    utter.onend = () => { markAiSpeakingEnd(); onEnd?.() }
+    utter.onerror = () => { markAiSpeakingEnd(); onEnd?.() }
+    /* Stamp barge-in tracker so the wake-word hook knows real speech is on
+       the wire (and won't fire on our own echo for the first 800 ms). */
+    markAiSpeakingStart()
     window.speechSynthesis.speak(utter)
-  } catch { /* browser blocked TTS or voices list unavailable — the visual caption still shows */ onEnd?.() }
+  } catch { /* browser blocked TTS or voices list unavailable — the visual caption still shows */ markAiSpeakingEnd(); onEnd?.() }
 }
 
 /* Auto-voice inside the workspace content: once the streamed reply lands, we
@@ -150,12 +153,35 @@ function speakWakeLine(text, { language, gender, onEnd } = {}) {
    becomes impossible to follow. Cap the length so a multi-paragraph essay
    doesn't lock the mic for a minute. */
 let currentServerAudio = null
+/* Barge-in tracker: the moment the AI begins speaking we stamp `aiSpeakingSinceMs`;
+   the wake-word hook reads it (through the `onUserSpeaking` prop) so a user's
+   spoken interrupt cuts the TTS off mid-sentence — like two humans chatting.
+   We gate on an 800 ms floor after the AI starts speaking to give Chrome's AEC
+   (acoustic echo cancellation) time to lock onto the speaker signal; without
+   this the AI's own voice briefly echoes back through the mic and triggers a
+   self-cancel loop where she cuts herself off every few words. Reset to 0 on
+   the utterance's `onend` / `onerror` (or when `cancelServerAudio` runs). */
+let aiSpeakingSinceMs = 0
+function isAiSpeakingLongEnough() {
+  if (!aiSpeakingSinceMs) return false
+  /* Either server audio (a live <audio> element) or browser speechSynthesis is
+     currently producing sound. Both paths must be checked because we fall back
+     between them depending on whether a real OpenAI key is present. */
+  const serverLive = Boolean(currentServerAudio) && !currentServerAudio.paused
+  const browserLive = typeof window !== 'undefined' && window.speechSynthesis && window.speechSynthesis.speaking
+  return (serverLive || browserLive) && Date.now() - aiSpeakingSinceMs >= 800
+}
+function markAiSpeakingStart() { aiSpeakingSinceMs = Date.now() }
+function markAiSpeakingEnd() { aiSpeakingSinceMs = 0 }
 function cancelServerAudio() {
   if (currentServerAudio) {
     try { currentServerAudio.pause() } catch { /* already stopped */ }
     try { if (currentServerAudio.src && currentServerAudio.src.startsWith('blob:')) URL.revokeObjectURL(currentServerAudio.src) } catch { /* ignore */ }
     currentServerAudio = null
   }
+  /* A cancel here is either the end of a normal utterance OR a barge-in from the
+     user — either way, the AI is no longer speaking, so reset the tracker. */
+  markAiSpeakingEnd()
 }
 async function speakAssistantReply(text, { language, gender, authToken, onEnd } = {}) {
   if (typeof window === 'undefined' || !text) { onEnd?.(); return }
@@ -192,9 +218,12 @@ async function speakAssistantReply(text, { language, gender, authToken, onEnd } 
       const blob = await synthesizeSpeech(authToken, { text: plain, language, gender })
       const url = URL.createObjectURL(blob)
       const audio = new window.Audio(url)
-      audio.onended = () => { try { URL.revokeObjectURL(url) } catch { /* ignore */ }; if (currentServerAudio === audio) currentServerAudio = null; onEnd?.() }
-      audio.onerror = () => { try { URL.revokeObjectURL(url) } catch { /* ignore */ }; if (currentServerAudio === audio) currentServerAudio = null; onEnd?.() }
+      audio.onended = () => { try { URL.revokeObjectURL(url) } catch { /* ignore */ }; if (currentServerAudio === audio) currentServerAudio = null; markAiSpeakingEnd(); onEnd?.() }
+      audio.onerror = () => { try { URL.revokeObjectURL(url) } catch { /* ignore */ }; if (currentServerAudio === audio) currentServerAudio = null; markAiSpeakingEnd(); onEnd?.() }
       currentServerAudio = audio
+      /* Stamp barge-in tracker BEFORE play() so the 800 ms grace window starts
+         ticking from the moment sound actually begins on the wire. */
+      markAiSpeakingStart()
       await audio.play()
       return
     } catch (err) {
@@ -2677,6 +2706,19 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
        mangled (e.g. just "hi"), so the instruction never reaches the model. */
     language: voicePrefs.language,
     onInterim: (text) => setWakeLive(text),
+    /* Barge-in: the second the always-on mic hears the user starting to talk,
+       kill the AI's current utterance — server <audio> and browser
+       speechSynthesis both — so she stops mid-sentence and lets them speak,
+       exactly like two humans chatting. The 800 ms floor inside
+       `isAiSpeakingLongEnough` protects against her own voice echoing back
+       through the mic and cancelling herself. `voiceTurn` is cleared so the
+       pill flips from "your turn" back to "listening" for the user's input. */
+    onUserSpeaking: () => {
+      if (!isAiSpeakingLongEnough()) return
+      cancelServerAudio()
+      if (window.speechSynthesis) { try { window.speechSynthesis.cancel() } catch { /* ignore */ } }
+      setVoiceTurn(false)
+    },
     onWake: (raw) => {
       const heard = (raw || aiName).trim()
       const ack = WAKE_ACK_LINES[voicePrefs.language]?.wake || WAKE_ACK_LINES.auto.wake
