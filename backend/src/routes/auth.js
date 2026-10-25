@@ -221,8 +221,16 @@ router.post('/password', authLimiter, requireAuth, async (req, res, next) => {
       return res.status(401).json({ error: { message: 'Current password is incorrect', type: 'auth_error' } })
     }
     const hash = await bcrypt.hash(body.newPassword, 10)
-    db.prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?').run(hash, nowIso(), req.user.id)
-    res.json({ user: sanitizeUser(row) })
+    /* Rotating the password is the "someone may have my account" moment: stamp a
+       session floor so every token issued BEFORE now stops working (an attacker's
+       stolen token dies), then mint a fresh one — its iat is at/after the floor, so
+       the person who just proved the old password stays signed in. The client must
+       adopt the returned token. */
+    const stamp = nowIso()
+    db.prepare('UPDATE users SET password_hash = ?, tokens_valid_after = ?, updated_at = ? WHERE id = ?')
+      .run(hash, stamp, stamp, req.user.id)
+    const updated = sanitizeUser(db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id))
+    res.json({ user: updated, token: signToken(updated) })
   } catch (err) {
     next(err)
   }

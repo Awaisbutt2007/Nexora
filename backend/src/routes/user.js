@@ -1,6 +1,6 @@
 import { Router } from 'express'
 import { z } from 'zod'
-import { PLANS, REPLY_LANGUAGES } from '../config.js'
+import { config, PLANS, REPLY_LANGUAGES } from '../config.js'
 import { getDb, nowIso } from '../db/index.js'
 import { requireAuth, sanitizeUser } from '../middleware/auth.js'
 import { upgradePlan } from '../services/credits.js'
@@ -63,6 +63,17 @@ router.post('/upgrade', (req, res, next) => {
       plan: z.enum(['free', 'pro', 'yearly_pro']),
     })
     const body = schema.parse(req.body)
+    /* On a public deployment with no wired payment provider, a self-service upgrade
+       would mint unlimited premium credits for free. Refuse UPGRADES (a downgrade to
+       'free' is always fine) until billing is configured; dev/test keep the demo. */
+    if (config.nodeEnv === 'production' && !config.paymentsEnabled && body.plan !== 'free') {
+      return res.status(503).json({
+        error: {
+          message: "Plan changes aren't available on this server yet — billing isn't configured. Your current plan keeps working as usual; contact the site owner to enable upgrades.",
+          type: 'payment_unavailable',
+        },
+      })
+    }
     const row = upgradePlan(req.user.id, body.plan)
     res.json({
       user: sanitizeUser(row),

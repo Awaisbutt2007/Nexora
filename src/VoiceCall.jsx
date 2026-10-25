@@ -1,16 +1,35 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { logVoiceTurn, requestVoiceToken } from './api/nexora.js'
+import { chatOnce, logVoiceTurn, requestVoiceToken } from './api/nexora.js'
+import { configureUtterForSpeech } from './voiceSelect.js'
 import './VoiceCall.css'
 
-/* Aira — live speech-to-speech over the OpenAI Realtime API (WebRTC).
+/* Aira — live speech-to-speech over the OpenAI Realtime API (WebRTC), with an
+   automatic FALLBACK pipeline for servers that cannot do realtime.
 
-   The browser mints a short-lived client secret from our backend, opens a peer
-   connection straight to the provider, and streams mic audio both ways. Turn
-   detection, interruption cancelling and conversation truncation happen
-   server-side (docs: WebRTC sessions manage the output buffer themselves).
-   The waveform is drawn from REAL analyser data — flat line means silence. */
+   Two execution modes, one UI:
+   - `realtime` — the browser mints a short-lived client secret from our backend,
+     opens a peer connection straight to the provider, and streams mic audio both
+     ways. Turn detection, interruption cancelling and truncation happen
+     server-side. The waveform is drawn from REAL analyser data.
+   - `pipeline` — used whenever `/api/voice/realtime/token` returns 503
+     `voice_unavailable` (Groq-only keys, no key at all, or a provider that has
+     no realtime endpoint). SpeechRecognition (Chrome/Edge built-in) captures the
+     user's turn, a one-shot chat call streams text back, and speechSynthesis
+     speaks it aloud. No extra cost, no merchant key required — the call actually
+     connects instead of showing "voice not available".
+   The mode is chosen once at connect-time from the token response and never
+   flips mid-call, so teardown and mute handling stay predictable. */
 
 const REALTIME_CALLS_URL = 'https://api.openai.com/v1/realtime/calls'
+
+/* SpeechRecognition and speechSynthesis are locale-tagged, not language-named.
+   'hinglish' has no locale so we pick hi-IN (the closest supported Urdu/Hindi
+   neighbour in every mainstream engine); 'auto' defaults to en-US because that
+   recogniser has the widest accent coverage and code-switching still works. */
+const REC_LOCALES = { en: 'en-US', ur: 'ur-PK', hinglish: 'hi-IN', auto: 'en-US' }
+/* SYN_LOCALES was removed — speakText now delegates locale selection to
+   the shared `configureUtterForSpeech` helper (voiceSelect.js) which
+   honours an accent-preference chain instead of a single hard locale. */
 
 /* The call copy speaks the assistant's real name, never a hard-coded "Aira", so a
    renamed companion stays consistent with the Talk button that opened the call. */
@@ -33,6 +52,11 @@ export default function VoiceCall({ authToken, user, prefs = {}, onClose }) {
   const [turns, setTurns] = useState([])
   const [secondsLeft, setSecondsLeft] = useState(0)
   const [muted, setMuted] = useState(false)
+  /* `mode` mirrors modeRef for the render tree — the "Free browser voice"
+     chip only shows after startPipeline() flips it, so a realtime call keeps
+     its original copy. modeRef is what the async callbacks read (state
+     closures in event handlers lag by a render). */
+  const [mode, setMode] = useState('realtime')
 
   const pcRef = useRef(null)
   const dcRef = useRef(null)
@@ -49,6 +73,14 @@ export default function VoiceCall({ authToken, user, prefs = {}, onClose }) {
   const phaseRef = useRef('requesting-mic')
   useEffect(() => { phaseRef.current = phase }, [phase])
 
+  /* Pipeline-mode extras — inert in realtime mode. `modeRef` gates every
+     pipeline-only code path (recognition callbacks, mute, teardown) so a shared
+     UI can flip cleanly between the two engines without branch-heavy logic. */
+  const modeRef = useRef('realtime')
+  const recognitionRef = useRef(null)
+  const mutedRef = useRef(false)
+  useEffect(() => { mutedRef.current = muted }, [muted])
+
   const teardown = useCallback(() => {
     cancelAnimationFrame(rafRef.current)
     clearInterval(timerRef.current)
@@ -62,6 +94,19 @@ export default function VoiceCall({ authToken, user, prefs = {}, onClose }) {
     ctxRef.current = null
     inAnalyserRef.current = null
     outAnalyserRef.current = null
+    /* Pipeline shutdown: nulling the handlers BEFORE stop() prevents the
+       onend callback from re-arming recognition after the overlay is gone.
+       speechSynthesis.cancel() also silences any in-flight sentence the user
+       never got to hear. Both are safe no-ops in realtime mode. */
+    if (recognitionRef.current) {
+      recognitionRef.current.onstart = null
+      recognitionRef.current.onresult = null
+      recognitionRef.current.onerror = null
+      recognitionRef.current.onend = null
+      try { recognitionRef.current.stop() } catch { /* already stopped */ }
+      recognitionRef.current = null
+    }
+    if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel()
   }, [])
 
   useEffect(() => () => teardown(), [teardown])
@@ -98,9 +143,19 @@ export default function VoiceCall({ authToken, user, prefs = {}, onClose }) {
         for (let i = 0; i < scratch.length; i += 2) peak = Math.max(peak, Math.abs(scratch[i] - 128) / 128)
         return peak
       }
-      const outPeak = read(outAnalyserRef.current) || 0
+      /* In realtime mode the peer connection's remote stream feeds outAnalyserRef
+         and the bars mirror true provider amplitude. Pipeline mode has no visible
+         audio graph (speechSynthesis output cannot be tapped) so we drive the
+         OUTPUT bars from the speaking state instead — the visual is honest about
+         "Aira is talking right now" without pretending to see real amplitude
+         that we cannot observe. */
+      const speakingState = micState === 'speaking'
+      const realOut = read(outAnalyserRef.current) || 0
+      const outPeak = realOut > 0
+        ? realOut
+        : (modeRef.current === 'pipeline' && speakingState ? 0.45 + 0.3 * Math.sin(performance.now() / 190) : 0)
       const inPeak = (micState !== 'muted' && read(inAnalyserRef.current)) || 0
-      const speaking = micState === 'speaking'
+      const speaking = speakingState
       const bw = w / bars.length
       for (let i = 0; i < bars.length; i += 1) {
         /* travelling ripple scaled by the REAL peak — animation never lies */
@@ -213,14 +268,26 @@ export default function VoiceCall({ authToken, user, prefs = {}, onClose }) {
       audioCtx.createMediaStreamSource(stream).connect(inAnalyserRef.current)
 
       setPhase('connecting')
-      const session = await requestVoiceToken(authToken, {
-        voice: prefs.voice,
-        language: prefs.language,
-        assistantName: prefs.assistantName,
-        persona: prefs.persona || undefined,
-        gender: prefs.gender,
-        conversationId: convRef.current,
-      })
+      /* Two possible outcomes here: a real ephemeral client secret (realtime
+         path) or a 503 `voice_unavailable` from the server because the key is
+         Groq-only / not an OpenAI key. In the second case we do NOT surface the
+         error to the user — we transparently fall into the browser-pipeline
+         mode so a call still connects. Any other failure (network, 401, etc.)
+         keeps re-throwing so the real problem is visible. */
+      let session = null
+      try {
+        session = await requestVoiceToken(authToken, {
+          voice: prefs.voice,
+          language: prefs.language,
+          assistantName: prefs.assistantName,
+          persona: prefs.persona || undefined,
+          gender: prefs.gender,
+          conversationId: convRef.current,
+        })
+      } catch (tokenErr) {
+        if (tokenErr.status !== 503) throw tokenErr
+      }
+      if (!session) return startPipeline()
       convRef.current = session.conversationId || convRef.current
 
       const pc = new RTCPeerConnection()
@@ -298,6 +365,156 @@ export default function VoiceCall({ authToken, user, prefs = {}, onClose }) {
   }
   connectRef.current = connect
 
+  /* ---- Pipeline mode (browser-native STT → chat → TTS) ----
+
+     Activated by connect() when the realtime token endpoint returns 503. The
+     UI (waveform, captions, timer, end call) is the same; only the state
+     driver changes — a one-shot SpeechRecognition instance per turn, a
+     `chatOnce()` call and a SpeechSynthesisUtterance. Because there is no
+     server-side voice engine here, the transcript persistence still uses
+     /voice/realtime/turn so a spoken exchange lands in history identically
+     to a realtime call. */
+  function startPipeline() {
+    const SR = typeof window !== 'undefined' && (window.SpeechRecognition || window.webkitSpeechRecognition)
+    if (!SR) {
+      /* No realtime AND no browser STT — genuinely nothing to fall back to.
+         Show the real reason instead of the previous "voice not available"
+         line that used to blame the server. */
+      throw new Error('This browser has no built-in speech recognition. Open Nexora in Chrome or Edge to use voice calls.')
+    }
+    modeRef.current = 'pipeline'
+    setMode('pipeline')
+    setPhase('live')
+    setMicState('listening')
+    /* 30-minute cap matches the server default so a forgotten open tab still
+       closes cleanly. It is a wall-clock timer, not a provider quota. */
+    setSecondsLeft(1800)
+    timerRef.current = setInterval(() => setSecondsLeft((left) => Math.max(0, left - 1)), 1000)
+    startListeningTurn()
+  }
+
+  /* pickVoiceFor was removed — speakText now uses the shared
+     `configureUtterForSpeech` helper in voiceSelect.js so the wake ack,
+     the streamed chat reply and the VoiceCall pipeline all apply the
+     SAME gender-first + accent-chain + rate discipline. */
+  /* Each listening turn is a fresh one-shot recogniser. One-shots are more
+     reliable than continuous mode for our turn-taking use (Chrome's
+     continuous mode sometimes stalls after silence). We accept a shorter
+     single-utterance budget and re-arm immediately on end. */
+  function startListeningTurn() {
+    if (phaseRef.current !== 'live' || modeRef.current !== 'pipeline') return
+    if (mutedRef.current) { setMicState('muted'); return }
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition
+    const rec = new SR()
+    rec.lang = REC_LOCALES[prefs.language] || 'en-US'
+    rec.continuous = false
+    rec.interimResults = true
+    rec.maxAlternatives = 1
+    let finalText = ''
+    rec.onstart = () => { if (phaseRef.current === 'live') setMicState('listening') }
+    rec.onresult = (event) => {
+      let interim = ''
+      for (let i = event.resultIndex; i < event.results.length; i += 1) {
+        const r = event.results[i]
+        if (r.isFinal) finalText += r[0].transcript
+        else interim += r[0].transcript
+      }
+      const shown = (finalText || interim).trim()
+      liveRef.current.user = shown
+      setUserLive(shown)
+    }
+    rec.onerror = (event) => {
+      /* 'no-speech' and 'aborted' are routine (silence between turns, or our
+         own stop() when the user hits End call) — just re-arm. 'not-allowed'
+         and 'service-not-allowed' mean the user refused the mic for STT, so
+         stop the loop instead of hammering the API. */
+      if (event.error === 'no-speech' || event.error === 'aborted') return
+      if (event.error === 'not-allowed' || event.error === 'service-not-allowed') {
+        setErrorText('Microphone permission was blocked for speech recognition. Allow it in the browser and retry.')
+        setPhase('error')
+        teardown()
+        return
+      }
+      /* Network / audio capture hiccups: brief backoff, then try again —
+         a single flaky frame should not kill the whole call. */
+      setTimeout(() => startListeningTurn(), 500)
+    }
+    rec.onend = () => {
+      if (phaseRef.current !== 'live' || modeRef.current !== 'pipeline') return
+      recognitionRef.current = null
+      const text = finalText.trim()
+      if (!text) { startListeningTurn(); return }
+      setUserLive('')
+      handlePipelineTurn(text)
+    }
+    recognitionRef.current = rec
+    try { rec.start() } catch { /* already running; the pending onend will re-arm */ }
+  }
+
+  async function handlePipelineTurn(userText) {
+    setMicState('thinking')
+    liveRef.current.user = userText
+    liveRef.current.aira = ''
+    setAiraLive('')
+    try {
+      const out = await chatOnce(authToken, {
+        message: userText,
+        conversationId: convRef.current,
+        assistantName: prefs.assistantName,
+        persona: prefs.persona,
+        gender: prefs.gender,
+        language: prefs.language,
+      })
+      /* Cell may have been closed while the chat call was in-flight. */
+      if (phaseRef.current !== 'live' || modeRef.current !== 'pipeline') return
+      const aiText = (out.text || '').trim()
+      convRef.current = out.conversationId || convRef.current
+      if (!aiText) { startListeningTurn(); return }
+      liveRef.current.aira = aiText
+      setAiraLive(aiText)
+      speakText(aiText, () => {
+        if (phaseRef.current !== 'live' || modeRef.current !== 'pipeline') return
+        pushTurn(userText, aiText, false)
+        liveRef.current = { ...liveRef.current, user: '', aira: '' }
+        setUserLive('')
+        setAiraLive('')
+        startListeningTurn()
+      })
+    } catch (err) {
+      if (phaseRef.current !== 'live' || modeRef.current !== 'pipeline') return
+      /* A transient failure (rate limit, credit shortfall, network) shouldn't
+         lock the user out — reflect the reason inline and keep listening. */
+      setErrorText(err.message || 'Nexora could not answer that turn.')
+      pushTurn(userText, '(no reply)', false)
+      liveRef.current = { ...liveRef.current, user: '', aira: '' }
+      setUserLive('')
+      setAiraLive('')
+      startListeningTurn()
+    }
+  }
+
+  function speakText(text, onDone) {
+    if (!window.speechSynthesis) { onDone(); return }
+    /* Voice list is populated asynchronously on some engines. Triggering
+       getVoices() early forces the load; a subsequent call inside the handler
+       will find it. Not fatal if the voice list is still empty. */
+    window.speechSynthesis.cancel()
+    const utter = new SpeechSynthesisUtterance(text)
+    /* Shared with the chat's auto-spoken replies so "her" sounds the same in
+       both places: same gender-first picker, same per-language accent chain
+       (Hinglish on a Windows-only-English install lands on en-IN, not en-GB),
+       same 0.92 rate for mixed-script intelligibility. */
+    configureUtterForSpeech(utter, window.speechSynthesis.getVoices(), { language: prefs.language, gender: prefs.gender })
+    let settled = false
+    const finish = () => { if (!settled) { settled = true; onDone() } }
+    /* Both onend and onerror should complete the turn; double-fire is guarded
+       because some engines emit end-after-error.  */
+    utter.onstart = () => { if (phaseRef.current === 'live' && modeRef.current === 'pipeline') setMicState('speaking') }
+    utter.onend = finish
+    utter.onerror = finish
+    window.speechSynthesis.speak(utter)
+  }
+
   function endCall(reason) {
     clearInterval(timerRef.current)
     if (reason === 'time') setErrorText('Time limit reached — the conversation was saved.')
@@ -318,12 +535,30 @@ export default function VoiceCall({ authToken, user, prefs = {}, onClose }) {
   }, [phase, secondsLeft])
 
   function toggleMute() {
-    const track = micRef.current?.getAudioTracks()[0]
-    if (!track) return
     const next = !muted
-    track.enabled = !next
+    const track = micRef.current?.getAudioTracks()[0]
+    if (track) track.enabled = !next
+    /* Write the ref inline BEFORE the pipeline branch — setMuted is async and
+       the [muted] effect below only runs after React commits, so
+       startListeningTurn() would otherwise read the stale `true` and immediately
+       re-mute the call (silently, with the headline stuck on "Muted…"). Same
+       reason phaseRef and modeRef are updated inline elsewhere here. */
+    mutedRef.current = next
     setMuted(next)
-    setMicState(next ? 'muted' : 'listening')
+    /* Realtime: the provider sees a silent stream, that is enough. Pipeline:
+     * SpeechRecognition is a separate capture, so muting means actively
+     * stopping it (which fires onend) and NOT re-arming until unmuted. */
+    if (modeRef.current === 'pipeline') {
+      if (next) {
+        try { recognitionRef.current?.stop() } catch { /* no-op */ }
+        setMicState('muted')
+      } else {
+        setMicState('listening')
+        startListeningTurn()
+      }
+    } else {
+      setMicState(next ? 'muted' : 'listening')
+    }
   }
 
   const aiName = prefs.assistantName || 'Aira'
@@ -354,7 +589,7 @@ export default function VoiceCall({ authToken, user, prefs = {}, onClose }) {
           {airaLive && <p><b>{aiName}</b> {airaLive}<span className="chat-cursor" aria-hidden="true" /></p>}
         </div>
 
-        {phase === 'live' && <p className="voice-timer">{fmt(secondsLeft)} left · this call is live, not a demo</p>}
+        {phase === 'live' && <p className="voice-timer">{fmt(secondsLeft)} left · {mode === 'pipeline' ? 'Free browser voice (no realtime key needed)' : 'this call is live, not a demo'}</p>}
 
         <div className="voice-actions">
           {phase === 'error' && <button type="button" className="voice-btn primary" onClick={connect}>Retry</button>}

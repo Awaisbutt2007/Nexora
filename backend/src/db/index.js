@@ -103,12 +103,34 @@ function migrate(database) {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
+   /* Manual Easypaisa / JazzCash upgrade requests (no merchant gateway). A user
+       records the transaction id after sending money to the owner's wallet; the
+       owner approves or rejects it and ONLY then is the plan changed (see
+       routes/billing.js). The plan is never touched by the requester - status
+       starts pending and an approve is the sole path that grants premium. */
+    CREATE TABLE IF NOT EXISTS billing_requests (
+      id TEXT PRIMARY KEY,
+      user_id TEXT NOT NULL,
+      plan TEXT NOT NULL CHECK (plan IN ('pro', 'yearly_pro')),
+      method TEXT NOT NULL CHECK (method IN ('easypaisa', 'jazzcash')),
+      amount INTEGER NOT NULL,
+      txn_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'approved', 'rejected')),
+      created_at TEXT NOT NULL,
+      reviewed_at TEXT,
+      reviewed_by TEXT,
+      note TEXT,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    );
+
     CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, created_at ASC);
     CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id);
     CREATE INDEX IF NOT EXISTS idx_tool_runs_user ON tool_runs(user_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_voice_prints_user ON voice_prints(user_id, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_user ON scheduled_tasks(user_id, due_at ASC);
+    CREATE INDEX IF NOT EXISTS idx_billing_requests_user ON billing_requests(user_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_billing_requests_status ON billing_requests(status, created_at DESC);
   `)
 
   // Lightweight column migrations for existing databases
@@ -125,6 +147,15 @@ function migrate(database) {
        and is cleared on logout — so someone who picked "Urdu first" silently came
        back to 'auto' on the next device and read Roman replies as a broken setting. */
     database.exec('ALTER TABLE users ADD COLUMN prefs_json TEXT')
+  }
+  if (!userColumns.includes('tokens_valid_after')) {
+    /* Session floor for "change my password = log out every other device". A JWT is
+       keyed only on the user id, so without this a token stolen before a password
+       rotation stayed valid for its full 7-day life even after the owner changed it.
+       Set to the rotation instant on password change; requireAuth rejects any token
+       issued (iat) before it. NULL for every existing account = no floor, so the
+       migration never logs anyone out on upgrade. */
+    database.exec('ALTER TABLE users ADD COLUMN tokens_valid_after TEXT')
   }
 
   /* User-attached reference images live as /uploads paths in a JSON array so a

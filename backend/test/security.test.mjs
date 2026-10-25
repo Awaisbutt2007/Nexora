@@ -103,6 +103,32 @@ test('security: proactive endpoint refuses a conversation the caller does not ow
   assert.equal(r.json?.error?.type, 'not_found')
 })
 
+/* Voice prints are sensitive biometric-adjacent audio. They live in uploads/ next to
+   the (deliberately public) chat images, so the /uploads static route must NOT hand a
+   voice_* file to whoever knows its name: anonymous → 401, a different authenticated
+   user → 404 (existence never confirmed), and only the owner → 200. */
+test('security: a stored voice sample is readable only by its authenticated owner', async () => {
+  const a = await newUser()
+  const b = await newUser()
+  // Deterministic >=256-byte body so the local DSP embedding builds a print (mock mode).
+  const bytes = new Uint8Array(2048)
+  for (let i = 0; i < bytes.length; i += 1) bytes[i] = i % 251
+  const form = new FormData()
+  form.append('sample', new Blob([bytes], { type: 'audio/webm' }), 'probe.webm')
+  form.append('label', 'owner print')
+  const en = await fetch(`${BASE}/api/voice/enroll`, { method: 'POST', headers: { Authorization: `Bearer ${a.token}` }, body: form })
+  assert.equal(en.status, 201)
+  const { id: printId, samplePath } = await en.json()
+  const fileUrl = `${BASE}/${samplePath}`
+  try {
+    assert.equal((await fetch(fileUrl)).status, 401, 'no token is refused, not served from static')
+    assert.equal((await fetch(fileUrl, { headers: { Authorization: `Bearer ${b.token}` } })).status, 404, 'a non-owner cannot pull another user\'s sample')
+    assert.equal((await fetch(fileUrl, { headers: { Authorization: `Bearer ${a.token}` } })).status, 200, 'the owner still reaches their own print')
+  } finally {
+    await fetch(`${BASE}/api/voice/prints/${printId}`, { method: 'DELETE', headers: { Authorization: `Bearer ${a.token}` } })
+  }
+})
+
 test('privacy: one user cannot read OR write into another user\'s conversation via completions', async () => {
   const a = await newUser()
   const b = await newUser()
@@ -203,6 +229,29 @@ test('security: production refuses a localhost CORS_ORIGIN', () => {
 test('security: production boots with a strong secret + real origin', () => {
   const r = loadConfigProd({ JWT_SECRET: 'a'.repeat(48), CORS_ORIGIN: 'https://app.nexora.example' })
   assert.match(r.stdout, /NO_THROW/)
+})
+
+/* The demo open-auth mode ignores passwords and provisions any unknown email — an
+   authentication bypass if it ever ships. Production must force it OFF even when
+   AUTH_OPEN_MODE is left explicitly on, while dev/test keep the demo behaviour. */
+test('security: production forces demo open-auth OFF even if AUTH_OPEN_MODE is left on', () => {
+  const script = `import('./src/config.js').then((m)=>console.log('OPENAUTH=' + m.config.openAuth)).catch((e)=>{console.log('THREW');process.stderr.write(String(e&&e.message||e))})`
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: BACKEND_ROOT,
+    encoding: 'utf8',
+    env: { ...process.env, NODE_ENV: 'production', JWT_SECRET: 'a'.repeat(48), CORS_ORIGIN: 'https://app.nexora.example', AUTH_OPEN_MODE: '1' },
+  })
+  assert.match(r.stdout, /OPENAUTH=false/, 'openAuth must be false in production regardless of AUTH_OPEN_MODE')
+})
+
+test('security: non-production keeps the demo open-auth available (AUTH_OPEN_MODE unset)', () => {
+  const script = `import('./src/config.js').then((m)=>console.log('OPENAUTH=' + m.config.openAuth)).catch((e)=>{console.log('THREW')})`
+  const r = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+    cwd: BACKEND_ROOT,
+    encoding: 'utf8',
+    env: { ...process.env, NODE_ENV: 'development', AUTH_OPEN_MODE: '' },
+  })
+  assert.match(r.stdout, /OPENAUTH=true/, 'the demo/dev sign-in must remain available outside production')
 })
 
 /* ── Identity and information-disclosure controls ───────────────────────────

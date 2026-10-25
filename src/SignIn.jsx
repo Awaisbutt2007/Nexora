@@ -217,6 +217,10 @@ export default function SignIn({ onBack, onLoginSuccess, targetLabel }) {
           password: 'demo1234',
         })
       }
+      /* Fresh demo session = fresh allowance: clear the prompt meter the workspace
+         reads (key shared with Nexora.jsx DEMO_PROMPTS_KEY) so a returning demo
+         isn't dropped straight into the upsell. */
+      try { localStorage.removeItem('nexora_demo_prompts') } catch { /* private mode */ }
       finishAuth(
         { ...data, user: { ...data.user, isDemo: true } },
         'Demo mode ready — try Chat!',

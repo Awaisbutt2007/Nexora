@@ -19,9 +19,9 @@ action, and this agent — not the model — decides whether it is allowed.
 | **Loopback only** | `config.js` refuses to boot unless `AGENT_HOST` is `127.0.0.1` / `localhost` / `::1`. No LAN/public bind is possible. |
 | **Authenticated** | Every mutating route requires `Authorization: Bearer <AGENT_SECRET>`. Missing secret → routes `503` (fail-closed); wrong token → `401`. The browser never learns this secret. |
 | **No arbitrary execution** | There is no shell endpoint. Actions come from a fixed **allowlist** (`allowlist.js`); unknown actions are rejected. Apps launch via `execFile` with fixed argv from an executable map — never a command string. |
-| **Default-deny permissions** | Four scopes — `browser`, `files`, `apps`, `system` — all start **off**. An action needs its scope granted *and*, for destructive actions, an explicit per-action approval. |
+| **Default-deny permissions** | Six scopes — `browser`, `files`, `apps`, `system`, `screen`, `desktop` — all start **off**. An action needs its scope granted *and*, for destructive actions, an explicit per-action approval. |
 | **Preview before act** | Two-step `plan` → `execute`. `plan` validates + returns a human-readable preview and a short-lived `planId` (5-min TTL, single-use). |
-| **Always-confirm** | Delete/overwrite, form submit, restart, shutdown require explicit approval even when the scope is granted. |
+| **Always-confirm** | Delete/overwrite, form submit, restart, shutdown — and typing text or pressing a key combination — require explicit approval even when the scope is granted. |
 | **Voice cannot arm power** | `system.restart` / `system.shutdown` are rejected when the request came from voice (`fromVoice: true`). |
 | **File containment** | Reads/writes are confined to allowed dirs, checked **after** `realpath` (symlink/traversal escapes throw `PathEscapeError`). |
 | **Redacted audit** | `audit/*.jsonl` records events, never result bodies. Secret-shaped keys (`password`, `token`, `cookie`, `value`, `content`, …), bearer tokens and long hex strings are masked. |
@@ -238,6 +238,9 @@ inside this folder and safe to delete.
 | List / read / write / organize files | `files.*` | files | Implemented — containment enforced; write refuses overwrite; organize is dry-run unless `apply` |
 | System info | `system.info` | system | Implemented — **verified live** (real OS facts) |
 | Restart / shutdown | `system.restart`, `system.shutdown` | system | Implemented — **always-confirm + voice-blocked** |
+| Screen observation | `screen.capture` | screen | Implemented — .NET/PowerShell capture; ephemeral (saved only on request). Allowlist + gating **unit-tested**; live capture is a **manual Windows step** (real screen required) |
+| Mouse / keyboard control | `desktop.move`, `desktop.click`, `desktop.scroll`, `desktop.type`, `desktop.key` | desktop | Implemented — coords validated vs the real screen, safe-combo allowlist, `type`/`key` always-confirm, no Win/Ctrl+Alt+Del surface. Validation + gating **unit-tested**; real input is a **manual Windows step** |
+| Vision inspection | backend `/api/desktop/screen/inspect` | screen | Implemented — captures, sends the image to the vision model, returns a TEXT report only (image never stored); on-screen text is treated as untrusted |
 | Emergency stop | `POST /stop` | — | Implemented (cancels running actions, recalls a scheduled power action) |
 | Natural-language → action | backend `/api/desktop/intent` | — | Implemented (model proposes; agent still validates) |
 
@@ -281,7 +284,9 @@ calls. The agent tests mount an ephemeral loopback server with a throwaway secre
 
 ## 14. What this deliberately does NOT do
 
-- No unrestricted shell, PowerShell, filesystem, or mouse/keyboard control.
+- No unrestricted shell, filesystem browsing, or arbitrary command execution. (Screen
+  and mouse/keyboard control exist, but only as the fixed, default-deny, coordinate-
+  validated `screen.*`/`desktop.*` actions above — never a free-form command.)
 - No reading/exporting browser passwords, cookies, or session tokens.
 - No storing, requesting, revealing, or auto-typing your Windows password.
 - No bypassing the lock screen, Windows Hello, UAC, Defender, or endpoint protection.

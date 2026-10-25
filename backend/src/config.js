@@ -77,11 +77,43 @@ export const config = {
   authRateLimit: Math.max(1, Number(process.env.AUTH_RATE_LIMIT || 8)),
   authIpRateLimit: Math.max(1, Number(process.env.AUTH_IP_RATE_LIMIT || 30)),
   authRateWindowMs: Math.max(60000, Math.round((Number(process.env.AUTH_RATE_WINDOW_SECONDS || 300) || 300) * 1000)),
-  /* Open demo auth (ON by default): ANY email/password signs in — login
-     auto-provisions unknown accounts and ignores wrong passwords, register
-     skips format/length rules. Set AUTH_OPEN_MODE=0 to restore the strict
-     validation contract before any real launch. */
-  openAuth: process.env.AUTH_OPEN_MODE !== '0',
+  /* Open demo auth (ON by default in dev/test): ANY email/password signs in — login
+     auto-provisions unknown accounts and ignores wrong passwords, register skips
+     format/length rules. Set AUTH_OPEN_MODE=0 to restore the strict validation
+     contract. This is a DEMO convenience, not an auth system: left on in a real
+     deployment it is an outright authentication bypass (anyone who types any email —
+     including a victim's — is signed straight in as that user). So it is forced OFF
+     whenever NODE_ENV=production, no matter what AUTH_OPEN_MODE says; same fail-fast
+     philosophy as the JWT/CORS guards below, but non-fatal so an existing deploy
+     keeps booting instead of crashing on a forgotten env line. */
+  openAuth: process.env.AUTH_OPEN_MODE !== '0' && (process.env.NODE_ENV || 'development') !== 'production',
+  /* Billing is a demo today: /api/user/upgrade hands out unlimited Pro credits for
+     free off a client call. Fine locally, but a public deployment must not mint
+     premium access without a payment. Plan UPGRADES are refused in production until a
+     real provider is wired up — set PAYMENT_PROVIDER (or STRIPE_SECRET_KEY) once live
+     billing exists (the flag is false otherwise). Downgrades to 'free' are always
+     allowed, and dev/test keep the demo upgrade so its tests stay green. */
+  paymentsEnabled: Boolean(process.env.PAYMENT_PROVIDER || process.env.STRIPE_SECRET_KEY),
+  /* ── Manual Easypaisa / JazzCash payments (no merchant gateway) ────────────
+     A hosted checkout needs a registered merchant account the owner doesn't have
+     yet, so upgrades are taken manually: the app shows the owner's wallet number(s)
+     plus the plan price, the user sends the money in their OWN Easypaisa/JazzCash
+     app and submits the transaction id, and the owner approves it. Nothing is
+     enabled until at least one number is set, no money moves on its own, and no
+     plan changes automatically — approval is a deliberate authenticated admin
+     action (see routes/billing.js). The self-serve /user/upgrade stays refused for
+     paid plans in production, so a user can never mint Pro by calling it directly. */
+  seller: {
+    accountName: (process.env.SELLER_ACCOUNT_NAME || '').trim().slice(0, 60),
+    easypaisa: (process.env.SELLER_EASYPAISA_NUMBER || '').trim().slice(0, 24),
+    jazzcash: (process.env.SELLER_JAZZCASH_NUMBER || '').trim().slice(0, 24),
+  },
+  manualPaymentsEnabled: Boolean((process.env.SELLER_EASYPAISA_NUMBER || '').trim() || (process.env.SELLER_JAZZCASH_NUMBER || '').trim()),
+  /* Who may approve upgrade requests. Accepts a user id (usr_…) OR an account
+     email, matched case-insensitively, so the operator can self-designate with the
+     address they already sign in with instead of hunting for an opaque id. Entries
+     are compared to the authenticated user, never taken from the request body. */
+  adminUserIds: (process.env.ADMIN_USER_IDS || '').split(',').map((s) => s.trim()).filter(Boolean),
   /* Per-user throttle for expensive AI endpoints (chat/tools/proactive). Credits
      cap total spend; this caps request burst so one client can't hammer the paid
      provider in a tight loop. Generous default so normal use never trips it. */
@@ -241,6 +273,13 @@ export function systemPromptFor({ assistantName, userName, persona, language, ge
     : `Match the user's language — reply in whatever they use (English, Urdu, Roman Urdu or Hinglish).`
   lines.push(languageRule)
   lines.push(`You have PERSISTENT MEMORY. The "Known user context" list is saved across every conversation, and the earlier messages in this thread are real history you can recall. Do NOT say you have no memory, cannot see the user's name, or need them to log in again — if something is in your context, use it.`)
+  /* Balance the memory line above. A small model that is told to "use what is in
+     your context", at the low temperature a pinned reply-language forces (see
+     services/ai.js), will latch onto its own most detailed earlier answer and
+     re-serve it to every new message ("maine pehle hi jawab de diya hai") — it reads
+     repeating itself as memory. This makes clear memory is for FACTS about the user,
+     never a licence to dodge the message they just sent by copying an old reply. */
+  lines.push(`ANSWER THE NEWEST MESSAGE, FRESH: whatever the user just wrote is what you respond to RIGHT NOW — treat it as a new request even if it reminds you of an earlier topic. NEVER say you have "already answered this" and never point them back to a previous reply instead of actually answering, and NEVER copy or lightly reword something you already said in this thread. A different question deserves a genuinely different answer that addresses exactly what they just asked. Repeating an earlier answer is a failure, not memory — use your memory only for real facts about the user, never to avoid answering what is in front of you.`)
   lines.push(`You can be taught: when the user says "remember …" or "yad rakho …", the app saves that fact to memory automatically, so it will be in your context now and in future chats.`)
   lines.push(`You can generate images. When the user asks for an image, picture, drawing or wallpaper, reply with one short line and then a markdown image EXACTLY like: ![short title](IMAGE:a detailed English description of the scene). Never say you cannot create images.`)
   /* Self-screenshots: the app can photograph its own live UI from the inside, so a
@@ -286,4 +325,19 @@ export function isLoopbackUrl(rawUrl) {
   } catch {
     return false
   }
+}
+
+/* Is this caller allowed to approve upgrade requests? Takes the authenticated
+   user object (or a bare id) and matches it against config.adminUserIds by id OR
+   lower-cased email. Fail-closed: an empty allowlist, a missing user or no email
+   never grants admin — so a forgotten ADMIN_USER_IDS simply means nobody can
+   approve, rather than everyone being able to. */
+export function isAdmin(user) {
+  if (!user || !config.adminUserIds.length) return false
+  const id = typeof user === 'string' ? user : user.id
+  const email = typeof user === 'string' ? '' : String(user.email || '').toLowerCase()
+  return config.adminUserIds.some((entry) => {
+    const e = String(entry).toLowerCase()
+    return e === String(id).toLowerCase() || (email && e === email)
+  })
 }

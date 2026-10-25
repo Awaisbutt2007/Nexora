@@ -6,6 +6,8 @@ import * as browser from './browser.js'
 import * as apps from './apps.js'
 import * as fsops from './fsops.js'
 import * as system from './system.js'
+import * as screen from './screen.js'
+import * as input from './input.js'
 
 /* A PLAN is a validated, previewed intent with a short-lived id. Execution is a
    separate call that must present the plan id (and, for alwaysConfirm actions, an
@@ -154,6 +156,19 @@ export class Agent {
       case 'system.info': return system.info()
       case 'system.restart': return system.restart(args, signal)
       case 'system.shutdown': return system.shutdown(args, signal)
+
+      // Screen observation — the bytes are returned in-memory to the caller; the
+      // execute() audit already drops result bodies, and nothing is written to
+      // disk unless the user explicitly passed save:true.
+      case 'screen.capture': return screen.capture({ ...args, screenshotDir: `${this.config.rootDir}/screenshots`, signal })
+
+      // Desktop control — each handler re-validates coordinates against the real
+      // screen and only ever reaches the OS through execFile/PowerShell fixed argv.
+      case 'desktop.move': return input.move(args, { signal })
+      case 'desktop.click': return input.click(args, { signal })
+      case 'desktop.scroll': return input.scroll(args, { signal })
+      case 'desktop.type': return input.type(args, { signal })
+      case 'desktop.key': return input.key(args, { signal })
 
       default: throw new Error(`No handler wired for allowlisted action "${def.id}".`)
     }

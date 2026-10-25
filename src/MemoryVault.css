@@ -2,12 +2,33 @@
    Palette is the project's: violet #bd6cff → cyan #5fd0ff on panel fill
    rgba(10,14,28,.73). Nothing here invents a colour. */
 
-/* Gate: the closed door. One heading, three lines, one button, dead centre */
-.vault-page { display: flex; flex-direction: column; align-items: center; }.vault-gate { width: 100%; display: flex; flex-direction: column; align-items: center; text-align: center; padding: clamp(10px,3vh,34px) 0 clamp(6px,2vh,18px); }.vault-gate .settings-icon { margin-bottom: 12px; }.vault-gate h2 { max-width: 21ch; margin: 0; text-align: center; }.vault-gate p { max-width: 56ch; margin: 10px 0 0; color: #949bb3; font-size: 14px; line-height: 1.65; text-align: start; }.vault-gate-actions { display: flex; flex-direction: column; align-items: center; gap: 11px; margin-top: clamp(20px,4vh,36px); }.vault-gate-hint { color: #7f87a3; font-size: 12.5px; }
+/* Gate: the closed door. One heading, three lines, one button, dead centre.
+   `justify-content: center` on the page is what puts the gate in the middle
+   of the panel vertically. Once the stage replaces the gate, `.vault-stage`
+   has `flex: 1` and eats the free space itself, so this rule is inert on the
+   brain view — no regression there. */
+.vault-page { display: flex; flex-direction: column; align-items: center; justify-content: center; }.vault-gate { width: 100%; display: flex; flex-direction: column; align-items: center; text-align: center; padding: clamp(10px,3vh,34px) 0 clamp(6px,2vh,18px); }.vault-gate .settings-icon { margin-bottom: 12px; }.vault-gate h2 { max-width: 21ch; margin: 0; text-align: center; }.vault-gate p { max-width: 56ch; margin: 10px 0 0; color: #949bb3; font-size: 14px; line-height: 1.65; text-align: start; }.vault-gate-actions { display: flex; flex-direction: column; align-items: center; gap: 11px; margin-top: clamp(20px,4vh,36px); }.vault-gate-hint { color: #7f87a3; font-size: 12.5px; }
 .vault-open { min-height: 52px; padding: 0 30px; display: inline-flex; align-items: center; gap: 11px; border: 0; border-radius: 999px; color: #fff; background: linear-gradient(105deg,#bd42ef 0%,#794cff 58%,#5267ff 100%); font: 600 15px 'Space Grotesk',sans-serif; cursor: pointer; box-shadow: 0 8px 30px rgba(130,65,248,.4); transition: transform .22s,box-shadow .25s,opacity .2s; }.vault-open:hover { transform: translateY(-2px); box-shadow: 0 14px 44px rgba(147,81,255,.55); }.vault-open span { color: #d9c4ff; font-size: 17px; }.vault-open:disabled { opacity: .45; cursor: not-allowed; transform: none; box-shadow: none; }
 
-/* Stage: the WebGL brain fills it, the HTML labels float over it */
-.vault-stage { position: relative; width: 100%; height: clamp(400px,60vh,660px); border: 1px solid rgba(149,162,215,.13); border-radius: 18px; overflow: hidden; background: radial-gradient(ellipse 70% 60% at 50% 46%,rgba(52,28,96,.5),rgba(7,10,22,.9) 72%); }.vault-scene { position: absolute; inset: 0; }
+/* The vault owns the whole page: break out of the shared 1160px content rail and
+   drop the panel chrome so the brain runs edge to edge and fills the height.
+   The old `14px clamp(12px,2vw,28px) 18px` inset left a ~32px dark gutter above
+   and below and up to ~56px total horizontally, which read as a smaller card
+   floating in the workspace instead of the full-bleed vault the design calls
+   for. 4 / 6 / 4 keeps just enough air so the stage's rounded corners and the
+   topbar's border-bottom don't visually clash on very wide displays. */
+.workspace-content:has(.vault-page) { width: 100%; max-width: none; padding: 4px clamp(4px,0.4vw,8px) 6px; }
+/* `.memory-page` from Nexora.css still carries the old rail (`max-width: 1160px`)
+   — strip it here so the vault-page itself isn't capped even after the parent
+   breaks out. Specificity 0-2-0 beats `.memory-page` 0-1-0 so this wins by
+   selector, not by source order. */
+.memory-page.vault-page { width: 100%; max-width: none; padding: 0; border: 0; border-radius: 0; background: transparent; overflow: hidden; }
+
+/* Stage: the WebGL brain fills it edge-to-edge, the HTML labels float over it.
+   No border, no rounded corners — the outer gutter was removed above so a
+   card radius here would visually fight the panel edges and reintroduce the
+   "not full width/height" feel the previous rule was trying to eliminate. */
+.vault-stage { position: relative; width: 100%; flex: 1; min-height: 0; height: auto; border: 0; border-radius: 0; overflow: hidden; background: radial-gradient(ellipse 70% 60% at 50% 46%,rgba(52,28,96,.5),rgba(7,10,22,.9) 72%); }.vault-scene { position: absolute; inset: 0; }
 .vault-labels { position: absolute; inset: 0; opacity: 0; pointer-events: none; }
 .vault-node { position: absolute; left: 0; top: 0; pointer-events: auto; display: inline-flex; align-items: center; gap: 7px; max-width: 220px; padding: 7px 13px; border: 1px solid rgba(189,108,255,.24); border-radius: 12px; background: rgba(10,14,28,.73); color: #e7e8f4; font: 500 12.5px 'Space Grotesk',sans-serif; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; transform: translate(-50%,-50%); transition: border-color .2s,color .2s,box-shadow .2s; }.vault-node > i { font-style: normal; color: #bd6cff; }.vault-node > b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }.vault-node:hover { color: #fff; border-color: rgba(189,108,255,.75); box-shadow: 0 0 24px rgba(138,92,255,.4); }.vault-node[data-kind='chat'] { border-color: rgba(95,208,255,.26); }.vault-node[data-kind='chat'] > i { color: #5fd0ff; }.vault-node[data-kind='chat']:hover { border-color: rgba(95,208,255,.75); box-shadow: 0 0 24px rgba(95,208,255,.35); }.vault-node.is-selected { color: #fff; border-color: rgba(216,196,255,.95); background: rgba(24,18,48,.9); box-shadow: 0 0 30px rgba(160,110,255,.55); }
 
@@ -41,7 +62,7 @@
 /* Phone: the map gets the taller stage, the sheet becomes a bottom sheet and
    the label chips stop competing for room */
 @media (max-width: 720px) {
-  .vault-stage { height: clamp(360px,52vh,480px); }
+  .vault-stage { min-height: 420px; }
   .vault-node { max-width: 148px; font-size: 11.5px; padding: 6px 10px; }
   .vault-legend { display: none; }
   .vault-sheet { right: 8px; left: 8px; bottom: 8px; width: auto; }

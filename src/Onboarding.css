@@ -60,11 +60,16 @@
 
 .onboarding-steps {
   display: flex;
+  /* The wizard reads as one symmetric column, so the step chips are centred as
+     a group rather than hugging the left inset the old rule gave them. */
+  justify-content: center;
+  flex-wrap: wrap;
   gap: clamp(14px, 4vw, 42px);
   list-style: none;
-  /* the line is edge to edge, but the labels keep the page's side inset */
-  margin: 14px clamp(24px, 7vw, 90px) 0;
+  /* the line is edge to edge, but the labels sit centred under it */
+  margin: 14px auto 0;
   padding: 0;
+  width: 100%;
 }
 
 .onboarding-steps li {
@@ -583,20 +588,31 @@
 }
 
 /* ===== Reveal: centered stage + spoken intro ===== */
+/* Everything lives on the vertical centre line and is sized to FIT the
+   viewport (no scroll, no reflow when the buttons fade in). The face is kept
+   deliberately small so portrait + greeting + button row all sit on one screen
+   at common laptop heights. */
 .onboarding-body.reveal {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   text-align: center;
-  gap: clamp(8px, 2.4vh, 22px);
+  gap: clamp(6px, 1.8vh, 16px);
+  padding-block: clamp(8px, 2vh, 24px);
   overflow: hidden; /* the reveal is sized to fit — never scrolls, never shows a bar */
 }
 
 .onboarding-body.reveal .onboarding-visual {
   order: -1;
-  /* Kept small enough that portrait + greeting + buttons all fit one screen */
-  width: min(52vw, 360px, 34vh);
+  /* Force true horizontal centring: the base rule leans on `justify-self`
+     (a grid-only property that does nothing once the body is flex), which is
+     why the face drifted right. `align-self` + auto margins centre it on the
+     flex cross-axis regardless. */
+  align-self: center;
+  margin-inline: auto;
+  /* Smaller than before (was min(52vw,360px,34vh)) so the whole reveal fits */
+  width: min(38vw, 250px, 28vh);
 }
 
 .onboarding-body.reveal .onboarding-copy {
@@ -607,8 +623,8 @@
 }
 
 .onboarding-body.reveal .onboarding-copy h1 {
-  margin: 0 0 18px;
-  font-size: clamp(21px, 3vw, 33px);
+  margin: 0 0 12px;
+  font-size: clamp(20px, 2.7vw, 30px);
   line-height: 1.22;
 }
 
@@ -616,7 +632,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 18px;
+  gap: 14px;
   /* the row needs a real width to spread across, otherwise it shrinks to its
      two buttons and space-between has no free space to distribute */
   width: 100%;
@@ -626,10 +642,19 @@
 /* The footer buttons are invisible (but still hold their space, so the
    greeting never jumps) until the spoken intro completes and `.show` lands. */
 .reveal-actions {
+  /* Centre the Back + Enter pair as one cluster on the reveal screen instead of
+     pinning them to opposite edges — the user reads this final screen as a
+     single symmetric column. min-height reserves the row's height while the
+     buttons are still `visibility: hidden`, so revealing them causes no jump. */
+  justify-content: center;
+  min-height: 52px;
   visibility: hidden;
   opacity: 0;
   transition: opacity 0.45s ease;
 }
+
+.onboarding-body.reveal .reveal-actions .voice-back { margin-right: 0; }
+.onboarding-body.reveal .reveal-actions .onboarding-continue { margin-left: 0; }
 
 .reveal-actions.show {
   visibility: visible;
@@ -640,13 +665,26 @@
   .onboarding-body {
     grid-template-columns: 1fr;
     align-content: center;
+    justify-items: center;
+    text-align: center;
+    gap: clamp(14px, 3vh, 28px);
     overflow-y: auto;
   }
+
+  /* The wizard's left column was built for a two-column split; on one column it
+     must centre too, otherwise the form/voice block hugs the left edge. */
+  .onboarding-copy { align-items: center; width: 100%; }
+  .onboarding-form { margin-inline: auto; }
+  .form-actions, .voice-footer { justify-content: center; }
 
   .onboarding-visual {
     width: min(76vw, 340px);
     order: -1;
   }
+
+  /* Reveal keeps its own tighter sizing; just make sure it never exceeds the
+     narrow phone width. */
+  .onboarding-body.reveal .onboarding-visual { width: min(60vw, 240px, 30vh); }
 
   .onboarding-steps span {
     display: none;
@@ -655,4 +693,12 @@
   .onboarding-steps li {
     gap: 0;
   }
+}
+
+/* Short viewports (laptops in the 720–800px band, landscape phones): shrink the
+   reveal face further so the portrait + greeting + buttons always stay on one
+   screen and the layout never has to scroll or jump. */
+@media (max-height: 720px) {
+  .onboarding-body.reveal .onboarding-visual { width: min(34vw, 210px, 26vh); }
+  .onboarding-body.reveal .onboarding-copy h1 { margin-bottom: 8px; }
 }

@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { validateRequest } from '../src/allowlist.js'
+import { validateRequest, secretArgKeys } from '../src/allowlist.js'
 import { redact } from '../src/audit.js'
 import { PermissionManager } from '../src/permissions.js'
 import { resolveWithinAllowed, PathEscapeError, organize } from '../src/fsops.js'
@@ -42,6 +42,53 @@ test('allowlist: destructive actions carry alwaysConfirm', () => {
     assert.equal(v.ok, true, `${id} should be valid`)
     assert.equal(v.def.alwaysConfirm, true, `${id} must always confirm`)
   }
+})
+
+/* ── screen observation + desktop control allowlist (no OS is touched here) ── */
+
+test('screen.capture validates and applies safe defaults', () => {
+  const v = validateRequest('screen.capture', {})
+  assert.equal(v.ok, true)
+  assert.equal(v.args.maxWidth, 1920)
+  assert.equal(v.args.save, false, 'must NOT save to disk unless explicitly asked')
+  assert.equal(v.args.monitor, 'primary')
+})
+
+test('screen.capture refuses an absurd maxWidth', () => {
+  assert.equal(validateRequest('screen.capture', { maxWidth: 100000 }).ok, false)
+})
+
+test('desktop coordinates are validated as whole pixels in range', () => {
+  assert.equal(validateRequest('desktop.click', { x: 100, y: 200 }).ok, true)
+  assert.equal(validateRequest('desktop.click', { x: -10, y: 5 }).ok, false, 'negative rejected')
+  assert.equal(validateRequest('desktop.click', { x: 12.5, y: 5 }).ok, false, 'fractional rejected')
+  assert.equal(validateRequest('desktop.click', { x: 999999, y: 5 }).ok, false, 'out of range rejected')
+})
+
+test('desktop.click applies button + double defaults', () => {
+  const v = validateRequest('desktop.click', { x: 10, y: 20 })
+  assert.equal(v.args.button, 'left')
+  assert.equal(v.args.double, false)
+  assert.equal(validateRequest('desktop.click', { x: 10, y: 20, button: 'side4' }).ok, false, 'unknown button rejected')
+})
+
+test('desktop.key only accepts the fixed safe combinations', () => {
+  assert.equal(validateRequest('desktop.key', { combo: 'ctrl+c' }).ok, true)
+  assert.equal(validateRequest('desktop.key', { combo: 'win+r' }).ok, false, 'no Win-key surface')
+  assert.equal(validateRequest('desktop.key', { combo: 'ctrl+alt+delete' }).ok, false, 'no secure-attention sequence')
+})
+
+test('desktop.type is always-confirm and its text is a secret (never logged)', () => {
+  const v = validateRequest('desktop.type', { text: 'hello world' })
+  assert.equal(v.ok, true)
+  assert.equal(v.def.alwaysConfirm, true)
+  assert.deepEqual(secretArgKeys(v.def), ['text'])
+  assert.ok(!v.def.preview(v.args).includes('hello world'), 'preview must not echo the typed text')
+})
+
+test('desktop.type rejects control characters (Enter/Tab belong in desktop.key)', () => {
+  assert.equal(validateRequest('desktop.type', { text: 'a\nb' }).ok, false)
+  assert.equal(validateRequest('desktop.type', { text: 'a\tb' }).ok, false)
 })
 
 test('audit redact: secret-ish keys and bearer tokens never leak', () => {
@@ -225,6 +272,17 @@ test('voice context may never arm a power action', async () => {
   const p = await api('POST', '/actions/plan', { body: { action: 'system.restart', context: { fromVoice: true } } })
   assert.equal(p.json.ok, false)
   assert.equal(p.json.status, 'voice_blocked')
+})
+
+test('desktop.type is gated twice: needs its scope AND a fresh confirm', async () => {
+  const p = await api('POST', '/actions/plan', { body: { action: 'desktop.type', args: { text: 'secret note' } } })
+  assert.equal(p.json.ok, true)
+  assert.equal(p.json.needsScope, 'desktop')
+  assert.equal(p.json.needsConfirm, true)
+  // scope not granted → execute is refused before anything reaches the OS
+  const denied = await api('POST', '/actions/execute', { body: { planId: p.json.planId, approvedThisAction: true } })
+  assert.equal(denied.status, 403)
+  assert.equal(denied.json.status, 'permission_denied')
 })
 
 test('audit endpoint returns redacted entries — no file bodies or secrets', async () => {

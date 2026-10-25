@@ -59,7 +59,7 @@ export function createApp({ config: cfg = config, permissions } = {}) {
 
   app.post('/permissions/grant', requireAgent, (req, res) => {
     const body = z.object({
-      scope: z.enum(['browser', 'files', 'apps', 'system']).optional(),
+      scope: z.enum(['browser', 'files', 'apps', 'system', 'screen', 'desktop']).optional(),
       allowedDir: z.string().max(500).optional(),
       approvedAppId: z.string().max(40).optional(),
       allowedHost: z.string().max(120).optional(),
@@ -74,7 +74,7 @@ export function createApp({ config: cfg = config, permissions } = {}) {
 
   app.post('/permissions/revoke', requireAgent, (req, res) => {
     const body = z.object({
-      scope: z.enum(['browser', 'files', 'apps', 'system']).optional(),
+      scope: z.enum(['browser', 'files', 'apps', 'system', 'screen', 'desktop']).optional(),
       allowedDir: z.string().max(500).optional(),
     }).parse(req.body || {})
     let snap = perms.snapshot()

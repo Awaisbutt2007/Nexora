@@ -199,6 +199,21 @@ export async function listConversations(token) {
   return parseJson(res)
 }
 
+/* Create a conversation upfront with an explicit title. Used by the Tools grid
+   so a tool click opens a chat whose row in the sidebar already reads
+   "Image Generator" / "Code Assistant" / etc. instead of waiting for the first
+   user message to become the title. Backend reuses the id on the very next
+   streamChat call because the completions route only INSERTs when
+   `conversationId` is null. */
+export async function createConversation(token, title) {
+  const res = await fetch(`${API_BASE}/api/conversations`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify(title ? { title } : {}),
+  })
+  return parseJson(res)
+}
+
 export async function getConversation(token, id) {
   const res = await fetch(`${API_BASE}/api/conversations/${id}`, { headers: authHeaders(token) })
   return parseJson(res)
@@ -233,6 +248,38 @@ export async function upgradePlan(token, plan = 'pro') {
     method: 'POST',
     headers: authHeaders(token),
     body: JSON.stringify({ plan }),
+  })
+  return parseJson(res)
+}
+
+/* Manual Easypaisa / JazzCash billing. The owner publishes wallet numbers + the
+   site stays payment-free to run until they do; a paid plan is granted only after
+   the owner approves a submitted transaction id. `status` drives the whole flow. */
+export async function billingStatus(token) {
+  const res = await fetch(`${API_BASE}/api/billing/status`, { headers: authHeaders(token) })
+  return parseJson(res)
+}
+
+export async function billingRequest(token, { plan, method, txnId }) {
+  const res = await fetch(`${API_BASE}/api/billing/request`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ plan, method, txnId }),
+  })
+  return parseJson(res)
+}
+
+export async function billingRequests(token, status) {
+  const q = status ? `?status=${encodeURIComponent(status)}` : ''
+  const res = await fetch(`${API_BASE}/api/billing/requests${q}`, { headers: authHeaders(token) })
+  return parseJson(res)
+}
+
+export async function billingReview(token, { id, decision, note }) {
+  const res = await fetch(`${API_BASE}/api/billing/review`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ id, decision, ...(note ? { note } : {}) }),
   })
   return parseJson(res)
 }
@@ -367,6 +414,68 @@ export async function logVoiceTurn(token, { conversationId, userText, assistantT
     body: JSON.stringify({ conversationId, userText, assistantText }),
   })
   return parseJson(res)
+}
+
+/** Ask the server to synthesize `text` with its OpenAI speech engine and get an
+ *  audio Blob back. This is what turns the chat's auto-spoken reply from an
+ *  English voice mangling Latin-script Hindi into genuinely natural Hinglish.
+ *
+ *  Errors are typed so the caller can decide whether to fall back to browser
+ *  TTS silently (503 = server not configured) or surface a message (402 = out
+ *  of credits, 429 = rate limit). `err.status` matches the HTTP code; `err.type`
+ *  is the backend's error.type when one was sent. A 200 always resolves with a
+ *  Blob (audio/mpeg) — an empty body is treated as a provider failure. */
+export async function synthesizeSpeech(token, { text, language, gender, voice }) {
+  const res = await fetch(`${API_BASE}/api/voice/synth`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({ text, language, gender, voice: voice || undefined }),
+  })
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}))
+    const err = new Error(data?.error?.message || `Voice synthesis failed (${res.status})`)
+    err.status = res.status
+    err.type = data?.error?.type || null
+    throw err
+  }
+  const blob = await res.blob()
+  if (!blob || blob.size === 0) {
+    const err = new Error('Voice synthesis returned no audio')
+    err.status = 502
+    err.type = 'tts_provider_error'
+    throw err
+  }
+  return blob
+}
+
+/* One-shot, non-streaming chat call used by the free browser-voice fallback (see
+   VoiceCall.jsx). The realtime WebRTC path is missing on Groq-only servers, so the
+   mic → SpeechRecognition → chat → speechSynthesis loop needs the reply as a plain
+   string, not an SSE stream. `stream: false` on /api/chat/completions is the same
+   server-side path the streaming call uses, minus the frame writing, so credits,
+   memory and language parsing all still apply — no hidden inconsistency. Returns
+   { text, conversationId, isNew } so the caller can hold the thread open across
+   turns without resending history. */
+export async function chatOnce(token, { message, conversationId = null, assistantName, persona, gender, language }) {
+  const res = await fetch(`${API_BASE}/api/chat/completions`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({
+      message,
+      conversationId,
+      stream: false,
+      assistantName: assistantName || undefined,
+      persona: persona || undefined,
+      gender: gender || undefined,
+      language: language || undefined,
+    }),
+  })
+  const data = await parseJson(res)
+  return {
+    text: data.choices?.[0]?.message?.content || '',
+    conversationId: data.conversationId || null,
+    isNew: Boolean(data.isNew),
+  }
 }
 
 export async function listMemories(token) {
@@ -504,6 +613,18 @@ export async function desktopStop(token) {
 
 export async function desktopAudit(token, limit = 50) {
   const res = await fetch(`${API_BASE}/api/desktop/audit?limit=${Number(limit) || 50}`, { headers: authHeaders(token) })
+  return parseJson(res)
+}
+
+/* Screen observation. capture returns an ephemeral preview (data URL, not stored);
+   inspect returns only Aira's text report about the screen. */
+export async function desktopScreenCapture(token, { save = false } = {}) {
+  const res = await fetch(`${API_BASE}/api/desktop/screen/capture`, { method: 'POST', headers: authHeaders(token), body: JSON.stringify({ save }) })
+  return parseJson(res)
+}
+
+export async function desktopScreenInspect(token, { question, save = false, assistantName } = {}) {
+  const res = await fetch(`${API_BASE}/api/desktop/screen/inspect`, { method: 'POST', headers: authHeaders(token), body: JSON.stringify({ question, save, assistantName }) })
   return parseJson(res)
 }
 

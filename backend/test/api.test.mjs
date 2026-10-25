@@ -134,6 +134,116 @@ test('auth never serializes the password hash', async () => {
   assert.ok(!('password' in me.json.user) && !('password_hash' in me.json.user))
 })
 
+test('billing: production blocks a free self-upgrade until a provider is configured, dev/test allow it', async () => {
+  const { config } = await import('../src/config.js')
+  const { token } = await newUser()
+  try {
+    /* Production with no payment provider: upgrades refused, downgrade to free allowed. */
+    config.nodeEnv = 'production'
+    config.paymentsEnabled = false
+    const up = await api('POST', '/api/user/upgrade', { token, body: { plan: 'pro' } })
+    assert.equal(up.status, 503, 'self-upgrade must be refused on an unbilled production server')
+    assert.equal(up.json.error.type, 'payment_unavailable')
+    const down = await api('POST', '/api/user/upgrade', { token, body: { plan: 'free' } })
+    assert.equal(down.status, 200, 'downgrading to free is always allowed')
+    /* Once a provider IS configured, the same upgrade succeeds. */
+    config.paymentsEnabled = true
+    const paid = await api('POST', '/api/user/upgrade', { token, body: { plan: 'pro' } })
+    assert.equal(paid.status, 200)
+    assert.equal(paid.json.user.isPremium, true)
+  } finally {
+    config.nodeEnv = 'test'
+    config.paymentsEnabled = false
+  }
+})
+
+test('billing: manual Easypaisa request → admin approve grants the plan to the requester', async () => {
+  const { config } = await import('../src/config.js')
+  const requester = await newUser('Payer')
+  const admin = await newUser('Owner')
+  const prev = { enabled: config.manualPaymentsEnabled, seller: config.seller, admins: config.adminUserIds }
+  try {
+    // Both endpoints need a token.
+    assert.equal((await api('GET', '/api/billing/status')).status, 401)
+    assert.equal((await api('POST', '/api/billing/request', { body: { plan: 'pro', method: 'easypaisa', txnId: 'ABC12345' } })).status, 401)
+
+    // Payments disabled → a clear 503, never a silent plan change.
+    config.manualPaymentsEnabled = false
+    const off = await api('POST', '/api/billing/request', { token: requester.token, body: { plan: 'pro', method: 'easypaisa', txnId: 'ABC12345' } })
+    assert.equal(off.status, 503)
+    assert.equal(off.json.error.type, 'payment_unavailable')
+
+    // Enable Easypaisa only, and make the owner an approver by EMAIL.
+    config.seller = { accountName: 'Owner Store', easypaisa: '0300-1234567', jazzcash: '' }
+    config.manualPaymentsEnabled = true
+    config.adminUserIds = [admin.email]
+
+    const status = await api('GET', '/api/billing/status', { token: requester.token })
+    assert.equal(status.status, 200)
+    assert.equal(status.json.isAdmin, false, 'a payer is not an approver')
+    assert.equal(status.json.manualEnabled, true)
+    assert.deepEqual(status.json.methods.map((m) => m.id), ['easypaisa'], 'only a configured wallet is offered')
+
+    // Invalid: 'free' is not a requestable paid plan; unconfigured method; bad txn id.
+    assert.equal((await api('POST', '/api/billing/request', { token: requester.token, body: { plan: 'free', method: 'easypaisa', txnId: 'ABC12345' } })).status, 400)
+    assert.equal((await api('POST', '/api/billing/request', { token: requester.token, body: { plan: 'pro', method: 'jazzcash', txnId: 'ABC12345' } })).status, 400)
+    assert.equal((await api('POST', '/api/billing/request', { token: requester.token, body: { plan: 'pro', method: 'easypaisa', txnId: 'bad tid!' } })).status, 400)
+
+    // A valid request is stored pending and does NOT change the plan.
+    const req = await api('POST', '/api/billing/request', { token: requester.token, body: { plan: 'pro', method: 'easypaisa', txnId: 'TX99887766' } })
+    assert.equal(req.status, 201)
+    assert.equal(req.json.request.status, 'pending')
+    assert.equal((await api('GET', '/api/auth/me', { token: requester.token })).json.user.isPremium, false, 'requesting never grants premium')
+
+    // A non-admin can neither list nor review.
+    assert.equal((await api('GET', '/api/billing/requests', { token: requester.token })).status, 403)
+    assert.equal((await api('POST', '/api/billing/review', { token: requester.token, body: { id: req.json.request.id, decision: 'approve' } })).status, 403)
+
+    // The admin sees the pending row, joined to the payer's email.
+    const list = await api('GET', '/api/billing/requests?status=pending', { token: admin.token })
+    assert.equal(list.status, 200)
+    assert.ok(list.json.data.some((r) => r.id === req.json.request.id && r.userEmail === requester.email))
+
+    // Approving grants the plan to the REQUESTER (not the approver) and marks it.
+    const ok = await api('POST', '/api/billing/review', { token: admin.token, body: { id: req.json.request.id, decision: 'approve' } })
+    assert.equal(ok.status, 200)
+    assert.equal(ok.json.request.status, 'approved')
+    const granted = await api('GET', '/api/auth/me', { token: requester.token })
+    assert.equal(granted.json.user.isPremium, true)
+    assert.equal(granted.json.user.plan, 'pro')
+    assert.equal((await api('GET', '/api/auth/me', { token: admin.token })).json.user.isPremium, false, 'approving never upgrades the approver')
+
+    // Reviewing an already-decided request is refused.
+    assert.equal((await api('POST', '/api/billing/review', { token: admin.token, body: { id: req.json.request.id, decision: 'approve' } })).status, 409)
+  } finally {
+    config.manualPaymentsEnabled = prev.enabled
+    config.seller = prev.seller
+    config.adminUserIds = prev.admins
+  }
+})
+
+test('billing: admin reject leaves the requester on their free plan', async () => {
+  const { config } = await import('../src/config.js')
+  const payer = await newUser('Payer2')
+  const admin = await newUser('Owner2')
+  const prev = { enabled: config.manualPaymentsEnabled, seller: config.seller, admins: config.adminUserIds }
+  try {
+    config.seller = { accountName: '', easypaisa: '', jazzcash: '0345-7654321' }
+    config.manualPaymentsEnabled = true
+    config.adminUserIds = [admin.user.id]
+    const req = await api('POST', '/api/billing/request', { token: payer.token, body: { plan: 'yearly_pro', method: 'jazzcash', txnId: 'RV1234567' } })
+    assert.equal(req.status, 201)
+    const rej = await api('POST', '/api/billing/review', { token: admin.token, body: { id: req.json.request.id, decision: 'reject', note: 'no payment seen' } })
+    assert.equal(rej.status, 200)
+    assert.equal(rej.json.request.status, 'rejected')
+    assert.equal((await api('GET', '/api/auth/me', { token: payer.token })).json.user.isPremium, false)
+  } finally {
+    config.manualPaymentsEnabled = prev.enabled
+    config.seller = prev.seller
+    config.adminUserIds = prev.admins
+  }
+})
+
 test('protected routes reject missing / forged tokens', async () => {
   assert.equal((await api('GET', '/api/conversations')).status, 401)
   assert.equal((await api('GET', '/api/memory', { token: 'not.a.jwt' })).status, 401)
@@ -197,6 +307,24 @@ test('account: change password needs the current one, then the old stops working
   const e = ok.json.user.email
   assert.equal((await api('POST', '/api/auth/login', { body: { email: e, password: 'secret123' } })).status, 401)
   assert.equal((await api('POST', '/api/auth/login', { body: { email: e, password: 'brandnew1' } })).status, 200)
+})
+
+/* Rotating a password must evict every older session (a stolen token is the whole
+   reason someone changes it) while keeping the person who just proved the old
+   password signed in via a freshly-minted token. JWT `iat` is second-granular, so
+   advance the clock a full second to guarantee the stale token predates the floor. */
+test('auth: changing the password revokes older tokens but the fresh one survives', async () => {
+  const { token: oldToken, email: e } = await newUser()
+  await new Promise((resolve) => setTimeout(resolve, 1200))
+  const ok = await api('POST', '/api/auth/password', { token: oldToken, body: { currentPassword: 'secret123', newPassword: 'brandnew1' } })
+  assert.equal(ok.status, 200)
+  assert.ok(ok.json.token, 'a fresh token is handed back so the current session survives')
+  // The pre-rotation token is now dead against an authenticated route.
+  assert.equal((await api('GET', '/api/auth/me', { token: oldToken })).status, 401)
+  // The freshly-issued token still works and belongs to the same account.
+  const me = await api('GET', '/api/auth/me', { token: ok.json.token })
+  assert.equal(me.status, 200)
+  assert.equal(me.json.user.email, e.toLowerCase())
 })
 
 test('chat streams SSE and terminates with [DONE]', async () => {
@@ -330,6 +458,30 @@ test('desktop bridge: validates the NL intent request before calling the model (
   const r = await api('POST', '/api/desktop/intent', { token, body: { utterance: '' } })
   assert.equal(r.status, 400)
   assert.equal(r.json.error.type, 'invalid_request_error')
+})
+
+test('desktop bridge: screen capture + inspect require auth and fail closed (no live agent)', async () => {
+  // No token → behind requireAuth.
+  assert.equal((await api('POST', '/api/desktop/screen/capture')).status, 401)
+  assert.equal((await api('POST', '/api/desktop/screen/inspect')).status, 401)
+  const { token } = await newUser()
+  // Authenticated but the bridge is disabled (no DESKTOP_AGENT_SECRET) → 503, and
+  // nothing is ever written to disk because no capture actually runs.
+  const c = await api('POST', '/api/desktop/screen/capture', { token })
+  assert.equal(c.status, 503)
+  assert.equal(c.json.error.type, 'desktop_bridge_disabled')
+  const i = await api('POST', '/api/desktop/screen/inspect', { token, body: { question: 'what is on my screen' } })
+  assert.equal(i.status, 503)
+})
+
+test('desktop bridge: the new screen/desktop scopes are valid (reach the agent, not a 400)', async () => {
+  const { token } = await newUser()
+  for (const scope of ['screen', 'desktop']) {
+    const r = await api('POST', '/api/desktop/permissions/grant', { token, body: { scope } })
+    assert.equal(r.status, 503, `${scope} is accepted; a disabled bridge is 503, not a validation 400`)
+  }
+  const bad = await api('POST', '/api/desktop/permissions/grant', { token, body: { scope: 'not-a-scope' } })
+  assert.equal(bad.status, 400)
 })
 
 test('stream cancellation: a pre-aborted signal produces no deltas (mock mode)', async () => {
@@ -520,3 +672,120 @@ test('schedule: auth guard, CRUD, ownership, reminders and dedup', async () => {
   assert.equal((await api('DELETE', `/api/schedule/${t1.id}`, { token })).status, 204)
   assert.equal((await api('GET', '/api/schedule', { token })).json.data.length, 2)
 })
+
+/* ── Server-side TTS (/api/voice/synth) ────────────────────────────────
+ * The test env forces OPENAI_API_KEY='', so `isTtsAvailable()` is false and every
+ * request must answer with the honest 503 `tts_unavailable` shim — that is the
+ * exact signal the frontend uses to fall through to browser TTS without any
+ * user-visible error. These tests pin that contract plus the auth/validation
+ * surface around it; the happy path (real OpenAI key) is out of scope here
+ * because a test suite that paid per call is not a test suite. */
+test('tts: requires auth', async () => {
+  const r = await api('POST', '/api/voice/synth', { body: { text: 'hello' } })
+  assert.equal(r.status, 401)
+})
+
+test('tts: 503 tts_unavailable in mock mode (empty key)', async () => {
+  const { token } = await newUser()
+  const r = await api('POST', '/api/voice/synth', { token, body: { text: 'Bilkul, main kar dungi', language: 'hinglish', gender: 'female' } })
+  assert.equal(r.status, 503)
+  assert.equal(r.json.error.type, 'tts_unavailable')
+  /* The client's fallback trigger reads `.message`, so it must be non-empty
+     and phrased as a normal-sounding reason, not a stack trace. */
+  assert.ok(r.json.error.message && r.json.error.message.length > 20)
+})
+
+test('tts: schema validation — empty text and oversize both 400', async () => {
+  const { token } = await newUser()
+  const empty = await api('POST', '/api/voice/synth', { token, body: { text: '   ' } })
+  assert.equal(empty.status, 400, 'blank text is a schema failure, not a 503')
+  const long = await api('POST', '/api/voice/synth', { token, body: { text: 'x'.repeat(2000) } })
+  assert.equal(long.status, 400, 'text above the 1200 cap is refused BEFORE the provider check')
+})
+
+test('tts: unknown language enum 400', async () => {
+  const { token } = await newUser()
+  const r = await api('POST', '/api/voice/synth', { token, body: { text: 'hi', language: 'klingon' } })
+  assert.equal(r.status, 400)
+})
+
+/* ── Hinglish naturalness pass (services/tts.js pure helpers) ───────────
+ * The user's core complaint is "AI ki Hinglish voice original nahi lagti".
+ * These don't hit the network — they pin the text + instructions shaping
+ * that makes the difference between an American reading Hindi and a native
+ * code-switcher. Keep them honest: check specific substrings, not exact
+ * equality, so a future wording tweak to INDIC_CORE doesn't break the test
+ * as long as the phoneme rules are still there. */
+const tts = await import('../src/services/tts.js')
+
+test('tts: prepareTextForSpeech rewrites the three Indic mispronunciations and is idempotent', () => {
+  const raw = 'Bilkul, main kyun aaoon? Shayad kal milte hain.'
+  const one = tts.prepareTextForSpeech(raw, { language: 'hinglish' })
+  assert.match(one, /bil-kul/i, 'bilkul gets a syllable break')
+  assert.match(one, /kayun/i, 'kyun becomes kayun')
+  assert.match(one, /shaa-yad/i, 'shayad becomes shaa-yad')
+  /* Re-running must not double-rewrite ("bil-kul"→"bil--kul") — critical
+     because the client already normalizes then the server does again. */
+  const two = tts.prepareTextForSpeech(one, { language: 'hinglish' })
+  assert.equal(one, two, 'normalization is idempotent')
+})
+
+test('tts: prepareTextForSpeech keeps the sentence-initial capital on rewrites', () => {
+  /* "Bilkul" as the first word must NOT lose its leading capital — the
+     engine's prosody uses the capital as a sentence-start marker. Same for
+     "Kyun" and "Shayad". */
+  const out = tts.prepareTextForSpeech('Bilkul theek. Kyun nahi? Shayad haan.', { language: 'hinglish' })
+  assert.match(out, /^Bil-kul/, 'Bilkul keeps its capital B')
+  assert.match(out, /\bKayun\b/, 'Kyun keeps its capital K')
+  assert.match(out, /\bShaa-yad\b/, 'Shayad keeps its capital S')
+})
+
+test('tts: prepareTextForSpeech does not touch plain English replies', () => {
+  const raw = 'Kubernetes is running fine, but the API key is missing.'
+  const out = tts.prepareTextForSpeech(raw, { language: 'en' })
+  /* English path only strips URLs and normalizes punctuation — no word
+     rewrites — so "but" / "is" / "API" stay intact. */
+  assert.match(out, /but the API key is missing/, 'no Indic rewrite fires on en')
+})
+
+test('tts: prepareTextForSpeech expands symbols and demotes punctuation', () => {
+  const raw = 'Save 50% — visit https://nexora.ai/pricing NOW!!!'
+  const out = tts.prepareTextForSpeech(raw, { language: 'en' })
+  assert.doesNotMatch(out, /https\:/, 'URL is replaced with a spoken placeholder')
+  assert.match(out, /percent/, 'percent sign expands')
+  assert.doesNotMatch(out, /!!!/, 'runs of exclaim collapse to one terminator')
+  /* FULL-CAPS is spelled letter-by-letter by the engine unless we demote it. */
+  assert.doesNotMatch(out, /\bNOW\b/, 'NOW → Now (acronym list only keeps real abbrevs)')
+})
+
+test('tts: buildTtsInstructions carries the phoneme rules for Hinglish', () => {
+  const spec = tts.buildTtsInstructions({ language: 'hinglish', gender: 'female' })
+  assert.match(spec, /retroflex/i, 'engine told which t/d/n to use')
+  assert.match(spec, /penult/, 'stress rule stated')
+  assert.match(spec, /Indian-English/, 'accent baseline set')
+  assert.match(spec, /NOT cartoon-cutesy/, 'female voice is grounded, not cutesy')
+  const male = tts.buildTtsInstructions({ language: 'hinglish', gender: 'male' })
+  assert.match(male, /adult male/i)
+})
+
+test('tts: pickTtsVoice honours gender and language hint', () => {
+  assert.equal(tts.pickTtsVoice({ gender: 'male', language: 'hinglish' }), 'echo')
+  assert.equal(tts.pickTtsVoice({ gender: 'female', language: 'hinglish' }), 'nova')
+  /* Explicit allowed voice still wins. */
+  assert.equal(tts.pickTtsVoice({ voice: 'shimmer', gender: 'male' }), 'shimmer')
+  /* Unknown voice falls through to the gender pick, never returns garbage. */
+  assert.equal(tts.pickTtsVoice({ voice: 'bogus', gender: 'female' }), 'nova')
+})
+
+test('tts: synth accepts a language and still 503s on mock key (no leak)', async () => {
+  /* Contract pin: any user with a Hinglish setting that hits this server with
+     a Groq key must get the SAME tts_unavailable shape as before, so the
+     client keeps falling through to browser TTS. The route accepts `language`
+     without complaint. */
+  const { token } = await newUser()
+  const r = await api('POST', '/api/voice/synth', { token, body: { text: 'Aap kaise hain', language: 'hinglish', gender: 'female' } })
+  assert.equal(r.status, 503)
+  assert.equal(r.json.error.type, 'tts_unavailable')
+})
+
+

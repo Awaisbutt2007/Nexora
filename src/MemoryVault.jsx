@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 import * as THREE from 'three'
 import { getConversation } from './api/nexora.js'
-import ChatPop from './ChatPop.jsx'
 import './MemoryVault.css'
 /* ─────────────────────────────────────────────────────────────────────────────
    The Memory vault.
@@ -16,14 +14,10 @@ import './MemoryVault.css'
    a fact was actually spoken in that thread.
    ───────────────────────────────────────────────────────────────────────────── */
 
-/* Must match `mv-spill` in MemoryVault.css: the screen is fully blind from ~30%
-   to ~72% of that run, which is the "nothing is visible" beat the brief asked
-   for. 2.5s — long enough to read as light, short enough that nobody thinks the
-   app hung. */
-const FLASH_MS = 2500
-/* The brain starts assembling just before the light begins to recede, so no one
-   ever looks up at an empty stage. */
-const FORM_DELAY = 1.75
+/* The door opens straight onto the assembling brain — no white light flash.
+   FORM_DELAY is the short beat before particles begin their flight so the
+   (now full-page) stage has laid out at its final size. */
+const FORM_DELAY = 0.5
 const FORM_SECONDS = 1.9
 const PARTICLES = 9000
 /* Provenance is read from the locally saved messages, thread by thread, so a
@@ -92,7 +86,7 @@ function brainDirection(out) {
   out[2] = z
 }
 
-export default function MemoryVault({ aiName, isLoggedIn, authToken, facts, chats, quick = {} }) {
+export default function MemoryVault({ aiName, isLoggedIn, authToken, facts, chats }) {
   const [phase, setPhase] = useState('gate')
   const [selected, setSelected] = useState(null)
   const [ledgerOpen, setLedgerOpen] = useState(false)
@@ -118,14 +112,6 @@ export default function MemoryVault({ aiName, isLoggedIn, authToken, facts, chat
   useEffect(() => {
     try { reduceRef.current = window.matchMedia('(prefers-reduced-motion: reduce)').matches } catch { /* no matchMedia */ }
   }, [])
-
-  /* One timer per door opening, held in an effect so it is cleared when the view
-     is switched mid-flash. */
-  useEffect(() => {
-    if (phase !== 'flash') return undefined
-    const timer = setTimeout(() => setPhase('brain'), FLASH_MS)
-    return () => clearTimeout(timer)
-  }, [phase])
 
   /* Escape shuts the detail sheet — the map is a mouse-and-drag surface, so the
      keyboard needs the same out it has everywhere else in the workspace. */
@@ -175,8 +161,8 @@ export default function MemoryVault({ aiName, isLoggedIn, authToken, facts, chat
     const factList = memories.slice(0, FACT_LIMIT)
     const chatList = conversations.slice(0, CHAT_LIMIT)
     const nodes = [
-      ...factList.map((m, i) => ({ id: `fact:${m.id}`, kind: 'fact', label: m.key, sub: m.value, ref: m, pos: orbit(i, factList.length, 2.62, 0.5, 0.4, 0.34) })),
-      ...chatList.map((c, i) => ({ id: `chat:${c.id}`, kind: 'chat', label: c.title, sub: new Date(c.updatedAt).toLocaleString(), ref: c, pos: orbit(i, chatList.length, 3.16, -0.34, 0.4 + Math.PI / Math.max(chatList.length, 1), 0.5) })),
+      ...factList.map((m, i) => ({ id: `fact:${m.id}`, kind: 'fact', label: m.key, sub: m.value, ref: m, pos: orbit(i, factList.length, 3.35, 0.5, 0.4, 0.34) })),
+      ...chatList.map((c, i) => ({ id: `chat:${c.id}`, kind: 'chat', label: c.title, sub: new Date(c.updatedAt).toLocaleString(), ref: c, pos: orbit(i, chatList.length, 4.0, -0.34, 0.4 + Math.PI / Math.max(chatList.length, 1), 0.5) })),
     ]
     const seen = new Set()
     const edges = []
@@ -193,7 +179,7 @@ export default function MemoryVault({ aiName, isLoggedIn, authToken, facts, chat
 
   const wiredCount = useMemo(() => new Set(graph.edges.map((e) => e.from)).size, [graph])
 
-  const openDoor = () => { formedOnceRef.current = false; setPhase(reduceRef.current ? 'brain' : 'flash') }
+  const openDoor = () => { formedOnceRef.current = false; setPhase('brain') }
   const closeDoor = () => { setPhase('gate'); setSelected(null) }
 
   const nodeById = (id) => graph.nodes.find((n) => n.id === id)
@@ -515,20 +501,6 @@ export default function MemoryVault({ aiName, isLoggedIn, authToken, facts, chat
         <span className="vault-legend" aria-hidden="true"><em className="lg-fact">◈ memory</em><em className="lg-chat">⧗ chat</em></span>
         <button type="button" className="vault-ledger-btn" aria-expanded={ledgerOpen} onClick={() => setLedgerOpen((isOpen) => !isOpen)}>{ledgerOpen ? 'Hide' : 'Manage'} the ledger</button>
       </div>
-      {/* Quick actions / Continue chat, docked under the topline so it never covers
-          "Manage the ledger". It only exists while the door is open — behind the
-          closed door nothing but the button is on screen — and because the panel
-          steals depth from the brain it can be folded to a small round handle. */}
-      {quick.setOpen && <ChatPop
-        collapsible
-        open={quick.open}
-        setOpen={quick.setOpen}
-        conversations={conversations}
-        onNewChat={quick.newChat}
-        onOpenChat={chats.open}
-        onPrompt={quick.prompt}
-        onTalk={quick.talk}
-      />}
       {selectedNode ? <div className="vault-sheet" role="dialog" aria-label={selectedNode.kind === 'fact' ? 'Memory detail' : 'Conversation detail'}>
         <header><span aria-hidden="true">{selectedNode.kind === 'fact' ? '◈' : '⧗'}</span><b>{selectedNode.label}</b><button type="button" className="vault-sheet-close" aria-label="Close detail" onClick={() => setSelected(null)}>×</button></header>
         {selectedNode.kind === 'fact' ? <p className="vault-sheet-value">{selectedNode.sub}</p> : <small className="vault-sheet-when">{selectedNode.sub}</small>}
@@ -605,6 +577,5 @@ export default function MemoryVault({ aiName, isLoggedIn, authToken, facts, chat
         </section>
       </div>
     </div>}
-    {phase === 'flash' && createPortal(<div className="vault-flash"><div className="vault-flash-core" /><i className="vault-flash-seam" aria-hidden="true" /></div>, document.body)}
   </section>
 }

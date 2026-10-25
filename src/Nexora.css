@@ -250,10 +250,54 @@ a { color: inherit; text-decoration: none; }
 @media (max-width: 720px) { .chat-hero-corner, .chat-hero-online, .chat-hero-bond { display: none; } }
 /* Keep the whole Home hero on one screen — no scrollbar, input never clipped or overlapped */
 .workspace-content:has(.chat-page) { padding-bottom: 32px; }
+/* Same treatment for the account/settings page: the 142px bottom padding is only
+   there to clear the fixed mobile nav, which is hidden on desktop — so on the
+   Settings view it left a dead band under the (flex:1) panel. Let it fill. */
+.workspace-content:has(.settings-panel) { padding-bottom: 32px; }
 @media (max-height: 660px) { .chat-hero-corner, .chat-hero-online { display: none; } .chat-hero-sub { margin: 6px 0 12px; } .chat-hero-starters { gap: 6px; } .chat-hero-bond { display: none; } }
 
 /* Modal */
 .modal-backdrop { position: fixed; z-index: 100; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(2,3,12,.78); backdrop-filter: blur(14px); animation: fade-in .2s both; }.login-dialog { width: min(100%,440px); position: relative; padding: 38px; border: 1px solid rgba(158,135,255,.32); border-radius: 20px; background: radial-gradient(ellipse at 100% 0%,rgba(109,55,174,.2),transparent 43%),#0c1021; box-shadow: 0 30px 100px rgba(0,0,0,.65); animation: dialog-in .3s both; }.login-dialog .brand { margin-bottom: 32px; }.modal-close { position: absolute; top: 16px; right: 16px; font-size: 22px; width: 36px; height: 36px; }.login-dialog h2 { margin: 0; font: 600 32px 'Space Grotesk',sans-serif; }.dialog-copy { margin: 10px 0 24px; color: #9ca2bb; font-size: 14px; line-height: 1.6; }.login-form { display: grid; gap: 16px; }.login-form label { display: grid; gap: 8px; color: #d4d5e3; font-size: 12px; font-weight: 500; }.login-form input { width: 100%; height: 46px; padding: 0 14px; outline: none; border: 1px solid rgba(157,166,219,.22); border-radius: 10px; color: white; background: #090d1a; font-size: 14px; transition: border-color .2s, box-shadow .2s; }.login-form input:focus { border-color: #9c72ff; box-shadow: 0 0 0 4px rgba(138,92,255,.15); }.login-footnote { margin: 22px 0 0; color: #8f96b0; text-align: center; font-size: 13px; }.login-footnote button { padding: 0; border: 0; color: #c5a6ff; background: none; cursor: pointer; font-size: inherit; font-weight: 500; transition: color .2s; }.login-footnote button:hover { color: white; }
+
+/* Pricing modal — the same plan cards the landing uses, in a centered dialog. */
+.pricing-backdrop { z-index: 120; align-items: center; }
+.pricing-modal { position: relative; width: min(920px,100%); max-height: 90vh; overflow-y: auto; scrollbar-width: none; padding: 34px clamp(18px,3vw,34px) 30px; border: 1px solid rgba(158,135,255,.32); border-radius: 22px; background: radial-gradient(ellipse at 100% 0%,rgba(109,55,174,.2),transparent 43%),#0c1021; box-shadow: 0 30px 100px rgba(0,0,0,.65); animation: dialog-in .3s both; }
+.pricing-modal::-webkit-scrollbar { display: none; }
+.pricing-modal .eyebrow { margin: 0 0 8px; }
+.pricing-modal h2 { margin: 0; font: 600 30px 'Space Grotesk',sans-serif; color: #fff; }
+.pricing-modal h2 span { background: linear-gradient(100deg,#bd6cff,#5fd0ff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.pricing-sub { margin: 10px 0 0; color: #9ca2bb; font-size: 14px; }
+.pricing-close { position: absolute; top: 16px; right: 16px; width: 36px; height: 36px; border: 0; border-radius: 10px; font-size: 22px; color: #b8bed8; background: rgba(255,255,255,.06); cursor: pointer; transition: color .2s,background .2s; }
+.pricing-close:hover { color: #fff; background: rgba(255,255,255,.14); }
+.pricing-grid { margin-top: 24px; }
+.pricing-notice { display: flex; align-items: center; gap: 8px; margin: 16px 0 0; padding: 11px 14px; border: 1px solid rgba(180,150,255,.42); border-radius: 12px; background: rgba(120,80,220,.16); color: #e4d8ff; font-size: 13px; }
+.pricing-notice span { color: #b9a2ff; }
+.pricing-error { display: flex; align-items: center; gap: 8px; margin: 16px 0 0; padding: 11px 14px; border: 1px solid rgba(255,140,160,.4); border-radius: 12px; background: rgba(200,60,80,.14); color: #ffc2cc; font-size: 13px; }
+.pricing-error span { color: #ff8ea1; }
+.pricing-muted { margin: 10px 0 0; color: #8f96ae; font-size: 12.5px; line-height: 1.5; }
+.pricing-pay { margin-top: 8px; }
+.pricing-back { margin: 4px 0 10px; padding: 7px 12px; border: 1px solid rgba(149,162,215,.2); border-radius: 10px; background: transparent; color: #949bb3; font: 600 12.5px 'Space Grotesk',sans-serif; cursor: pointer; }.pricing-back:hover { color: #fff; }
+.pricing-pay h2 { margin: 0; font: 600 24px 'Space Grotesk',sans-serif; color: #fff; }.pricing-pay h2 span { background: linear-gradient(100deg,#bd6cff,#5fd0ff); -webkit-background-clip: text; background-clip: text; color: transparent; }
+.pricing-pay-form { display: flex; flex-direction: column; gap: 12px; margin-top: 18px; }
+.pricing-methods { display: flex; gap: 10px; flex-wrap: wrap; }
+.pricing-method { padding: 9px 16px; border: 1px solid rgba(149,162,215,.24); border-radius: 10px; background: rgba(10,14,28,.6); color: #c3c9e0; font: 600 13px 'Space Grotesk',sans-serif; cursor: pointer; transition: border-color .2s,color .2s; }.pricing-method.selected { border-color: rgba(95,208,255,.6); color: #eaf6ff; background: rgba(95,208,255,.12); }
+.pricing-sendto { padding: 14px 16px; border: 1px solid rgba(189,108,255,.3); border-radius: 14px; background: rgba(120,80,220,.1); }
+.pricing-sendto-label { display: block; color: #c9b6ff; font-size: 12.5px; font-weight: 600; margin-bottom: 8px; }
+.pricing-number { display: flex; align-items: center; gap: 12px; }.pricing-number code { flex: 1; font-family: ui-monospace,'JetBrains Mono',monospace; font-size: 19px; letter-spacing: .04em; color: #fff; word-break: break-all; }
+.pricing-copy { padding: 7px 12px; border: 1px solid rgba(95,208,255,.4); border-radius: 9px; background: rgba(95,208,255,.12); color: #bfeaff; font: 600 12px 'Space Grotesk',sans-serif; cursor: pointer; }
+.pricing-txn-label { color: #949bb3; font-size: 12px; font-weight: 600; margin-bottom: -6px; }
+.pricing-pending { margin-top: 18px; padding: 16px 18px; border: 1px solid rgba(250,204,21,.34); border-radius: 14px; background: rgba(250,204,21,.08); }.pricing-pending strong { display: block; color: #fde68a; font-size: 15px; margin-bottom: 8px; }.pricing-pending p { margin: 0 0 6px; color: #e7e8f4; font-size: 13.5px; line-height: 1.55; }.pricing-pending code { font-family: ui-monospace,'JetBrains Mono',monospace; color: #fde68a; }
+.billing-admin-tag { margin-left: 6px; padding: 2px 8px; border-radius: 999px; background: rgba(95,208,255,.18); color: #bfeaff; font-size: 10.5px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; vertical-align: middle; }
+.billing-warn { margin: 10px 0 0; padding: 9px 12px; border: 1px solid rgba(250,204,21,.34); border-radius: 10px; background: rgba(250,204,21,.08); color: #fde68a; font-size: 12.5px; }
+.billing-filters { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+.billing-filter { padding: 6px 13px; border: 1px solid rgba(149,162,215,.22); border-radius: 9px; background: transparent; color: #949bb3; font: 600 12px 'Space Grotesk',sans-serif; cursor: pointer; }.billing-filter.selected { border-color: rgba(95,208,255,.55); color: #eaf6ff; background: rgba(95,208,255,.12); }
+.billing-list { list-style: none; margin: 12px 0 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.billing-item { display: flex; align-items: center; justify-content: space-between; gap: 14px; flex-wrap: wrap; padding: 12px 14px; border: 1px solid rgba(149,162,215,.18); border-radius: 12px; background: rgba(10,14,28,.55); }
+.billing-item-main { display: flex; flex-direction: column; gap: 3px; min-width: 200px; flex: 1; }.billing-item-main strong { color: #f3f4ff; font-size: 13.5px; }
+.billing-plan { color: #c9b6ff; font-size: 13px; font-weight: 600; }.billing-method,.billing-time { color: #8f96ae; font-size: 12px; }.billing-method code { font-family: ui-monospace,'JetBrains Mono',monospace; color: #bfeaff; }.billing-note { color: #fde68a; font-size: 12px; }
+.billing-actions { display: flex; align-items: center; gap: 8px; }
+.billing-reject { padding: 8px 14px; border: 1px solid rgba(255,99,132,.4); border-radius: 10px; background: rgba(255,99,132,.1); color: #ffb3c0; font: 600 12.5px 'Space Grotesk',sans-serif; cursor: pointer; }.billing-reject:disabled { opacity: .5; cursor: default; }
+.billing-state { padding: 4px 12px; border-radius: 999px; font-size: 11.5px; font-weight: 700; text-transform: capitalize; }.billing-state.is-approved { background: rgba(74,222,128,.16); color: #86efac; }.billing-state.is-rejected { background: rgba(255,99,132,.16); color: #ffb3c0; }
 
 /* Animations */
 @keyframes rise-in { from { opacity: 0; transform: translateY(16px); } to { opacity: 1; transform: translateY(0); } }
@@ -831,8 +875,34 @@ a { color: inherit; text-decoration: none; }
 @keyframes chatBlink { 0%,50% { opacity: 1; } 50.01%,100% { opacity: 0; } }
 @keyframes chatShimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
 
-.chat-stop-btn { flex: 0 0 auto; margin-left: 8px; padding: 8px 14px; border: 1px solid rgba(255,120,140,.5); border-radius: 12px; color: #ffd0d8; background: rgba(200,60,80,.22); cursor: pointer; font: 600 12.5px 'Space Grotesk',sans-serif; transition: all .18s; }
-.chat-stop-btn:hover { color: #fff; border-color: rgba(255,140,160,.85); background: rgba(220,70,95,.4); }
+.prompt-box .chat-stop-btn { flex: 0 0 auto; margin-left: 8px; width: auto; height: 44px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; padding: 0 16px; border: 1px solid rgba(255,120,140,.5); border-radius: 999px; color: #ffd0d8; background: rgba(200,60,80,.22); box-shadow: none; cursor: pointer; font: 600 13px/1 'Space Grotesk',sans-serif; white-space: nowrap; transition: all .18s; }
+.prompt-box .chat-stop-btn:hover { transform: none; color: #fff; border-color: rgba(255,140,160,.85); background: rgba(220,70,95,.4); box-shadow: none; }
+
+/* Auto-voice cluster inside the composer: mic pill, Talk button, speak-replies toggle.
+   Replaces the old header Wake/Talk buttons so the voice surface lives inside the
+   chat content. Compact by default; hides the visible chip status below 780px so the
+   prompt-box never overflows on mobile. */
+.prompt-voice-cluster { flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; margin-left: 6px; }
+.prompt-box .prompt-mic-btn { flex: 0 0 auto; width: auto; height: 34px; display: inline-flex; align-items: center; gap: 6px; padding: 0 12px 0 10px; border: 1px dashed rgba(143,115,255,.42); border-radius: 999px; color: #a4aecb; background: transparent; font-size: 11.5px; font-weight: 600; letter-spacing: .2px; white-space: nowrap; cursor: pointer; transition: color .2s, border-color .2s, background .2s, box-shadow .2s; }
+.prompt-box .prompt-mic-btn:hover { color: #f3f4ff; border-color: rgba(189,108,255,.7); border-style: solid; }
+.prompt-box .prompt-mic-btn.on { color: #0b0d1a; border-style: solid; border-color: transparent; background: linear-gradient(120deg,#ff5c8a,#bd6cff); box-shadow: 0 4px 18px rgba(255,92,138,.32); }
+.prompt-box .prompt-mic-btn.on.status-listening { animation: wakeBreathe 2.2s ease-in-out infinite; }
+.prompt-box .prompt-mic-btn.on.status-denied { background: linear-gradient(120deg,#ff8a5c,#ff5c8a); }
+.prompt-box .prompt-mic-btn.on.status-no-mic,.prompt-box .prompt-mic-btn.on.status-unsupported { background: linear-gradient(120deg,#ffb35c,#ff8a5c); }
+.prompt-box .prompt-mic-btn .prompt-mic-dot { width: 7px; height: 7px; border-radius: 50%; background: rgba(143,115,255,.55); box-shadow: 0 0 8px rgba(143,115,255,.35); flex: 0 0 auto; }
+.prompt-box .prompt-mic-btn.on .prompt-mic-dot { background: #fff0f5; box-shadow: 0 0 10px rgba(255,255,255,.85); }
+.prompt-box .prompt-mic-btn .prompt-mic-chip { font-style: normal; font-size: 10px; letter-spacing: .3px; text-transform: lowercase; opacity: .88; }
+.prompt-box .prompt-talk-btn { flex: 0 0 auto; width: auto; height: 34px; display: inline-flex; align-items: center; gap: 6px; padding: 0 13px; border: 1px solid rgba(149,162,215,.22); border-radius: 999px; color: #c7cce0; background: rgba(10,14,28,.6); font: 600 12px/1 'Space Grotesk',sans-serif; white-space: nowrap; cursor: pointer; transition: border-color .2s, color .2s, background .2s; }
+.prompt-box .prompt-talk-btn:hover { border-color: rgba(189,108,255,.6); color: #fff; background: rgba(130,95,220,.15); }
+.prompt-box .prompt-speak-btn { flex: 0 0 auto; width: 34px; height: 34px; display: inline-flex; align-items: center; justify-content: center; padding: 0; border: 1px solid rgba(149,162,215,.22); border-radius: 50%; color: #c7cce0; background: rgba(10,14,28,.6); font-size: 14px; cursor: pointer; transition: border-color .2s, color .2s, background .2s, transform .15s; }
+.prompt-box .prompt-speak-btn:hover { border-color: rgba(95,208,255,.6); color: #fff; transform: scale(1.05); }
+.prompt-box .prompt-speak-btn.on { color: #7ee0ff; border-color: rgba(95,208,255,.55); background: rgba(95,208,255,.08); }
+@media (max-width: 780px) { .prompt-box .prompt-voice-cluster { gap: 4px; margin-left: 4px; } .prompt-box .prompt-mic-btn { padding: 0 8px 0 6px; } .prompt-box .prompt-mic-btn .prompt-mic-chip { display: none; } }
+/* Ultra-narrow phones (≤420px): the mic chip is already hidden above, but the row's
+   fixed parts (spark + attach + cluster + send + 12px gaps + 20px left pad) still summed
+   past the viewport, so the round Send button drifted ~3px OUTSIDE the .prompt-box edge.
+   Tighten the row gap/padding and the cluster so every circle stays inside the pill at 360px. */
+@media (max-width: 420px) { .prompt-row { gap: 8px; padding-left: 12px; } .prompt-box .prompt-voice-cluster { gap: 3px; margin-left: 2px; } .prompt-box .prompt-talk-btn { padding: 0 10px; } }
 
 .chat-new-thread {
   align-self: center;
@@ -958,6 +1028,10 @@ a { color: inherit; text-decoration: none; }
 .desktop-notice { margin-top: 12px; padding: 10px 14px; border-radius: 10px; background: rgba(95,208,255,.1); border: 1px solid rgba(95,208,255,.24); color: #bfeaff; font-size: 13px; }
 .desktop-run,.desktop-perms,.desktop-audit { display: flex; flex-direction: column; gap: 14px; margin-top: 12px; }
 .desktop-card { display: flex; flex-direction: column; gap: 8px; padding: 16px; border: 1px solid rgba(149,162,215,.13); border-radius: 14px; background: rgba(10,14,28,.6); }
+.desktop-active { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; padding: 10px 14px; border-radius: 12px; background: rgba(95,208,255,.08); border: 1px solid rgba(95,208,255,.3); color: #bfeaff; font-size: 13px; }.desktop-active kbd { font-family: ui-monospace,'JetBrains Mono',monospace; background: rgba(0,0,0,.35); border: 1px solid rgba(149,162,215,.28); border-bottom-width: 2px; border-radius: 5px; padding: 1px 5px; font-size: 11px; color: #e7e8f4; }.desktop-running { margin-left: auto; color: #fde68a; font-size: 12.5px; }
+.desktop-screen-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.desktop-shot { margin: 4px 0 0; }.desktop-shot img { width: 100%; max-height: 340px; object-fit: contain; border: 1px solid rgba(149,162,215,.2); border-radius: 10px; background: #05070f; }.desktop-shot figcaption { margin-top: 6px; color: #8f96ae; font-size: 11.5px; }
+.desktop-report { padding: 12px 14px; border-radius: 12px; background: rgba(189,108,255,.08); border: 1px solid rgba(189,108,255,.26); color: #e7e8f4; font-size: 13.5px; line-height: 1.55; }.desktop-report strong { display: block; color: #c9b6ff; font-size: 12.5px; margin-bottom: 6px; }.desktop-report p { margin: 0; white-space: pre-wrap; }
 .desktop-label { color: #949bb3; font-size: 12px; font-weight: 600; letter-spacing: .02em; }
 .desktop-select { align-self: flex-start; max-width: 100%; padding: 10px 12px; border: 1px solid rgba(149,162,215,.2); border-radius: 10px; background: rgba(10,14,28,.9); color: #f3f4ff; font: 500 13px 'Space Grotesk',sans-serif; cursor: pointer; }
 .desktop-args { font-family: ui-monospace,'JetBrains Mono',monospace; font-size: 12.5px; min-height: 96px; scrollbar-width: none; }.desktop-args::-webkit-scrollbar { display: none; }
@@ -986,6 +1060,27 @@ a { color: inherit; text-decoration: none; }
 /* ── Live voice call: topbar Talk control, voice settings, memory manager ── */
 .header-voice-btn { display: inline-flex; align-items: center; gap: 7px; padding: 9px 16px; border-radius: 999px; border: 1px solid rgba(143,115,255,.48); color: #f3f4ff; background: linear-gradient(120deg,rgba(189,108,255,.16),rgba(95,208,255,.12)); font-size: 13px; font-weight: 600; cursor: pointer; transition: transform .2s, border-color .2s, box-shadow .2s; }.header-voice-btn:hover { transform: translateY(-2px); border-color: rgba(189,108,255,.75); box-shadow: 0 8px 24px rgba(138,92,255,.3); }.header-voice-btn span { font-size: 11px; color: #9fdcff; animation: pulseGlow 2.4s ease-in-out infinite; }
 @keyframes pulseGlow { 0%,100% { opacity: .55; } 50% { opacity: 1; } }
+
+/* Wake-word toggle: same silhouette as Talk but reads as a switch. OFF is a
+   muted outline; ON flips to a filled magenta pill + red "listening" dot so a
+   glance tells the user whether the mic is hot — the affordance an always-on
+   recorder demands. */
+.header-wake-btn { display: inline-flex; align-items: center; gap: 7px; padding: 9px 14px; border-radius: 999px; border: 1px dashed rgba(143,115,255,.38); color: #a4aecb; background: transparent; font-size: 12.5px; font-weight: 600; cursor: pointer; transition: color .2s, border-color .2s, background .2s, box-shadow .2s; }
+.header-wake-btn:hover { color: #f3f4ff; border-color: rgba(189,108,255,.6); border-style: solid; }
+.header-wake-btn.on { color: #0b0d1a; border: 1px solid transparent; background: linear-gradient(120deg,#ff5c8a,#bd6cff); box-shadow: 0 6px 22px rgba(255,92,138,.35); }
+.header-wake-btn.on.status-listening { animation: wakeBreathe 2.2s ease-in-out infinite; }
+.header-wake-btn.on.status-denied { background: linear-gradient(120deg,#ff8a5c,#ff5c8a); }
+.header-wake-btn.on.status-no-mic { background: linear-gradient(120deg,#ffb35c,#ff8a5c); }
+.header-wake-btn.on.status-unsupported { background: linear-gradient(120deg,#ffb35c,#ff8a5c); }
+@keyframes wakeBreathe { 0%,100% { box-shadow: 0 6px 22px rgba(255,92,138,.28); } 50% { box-shadow: 0 6px 30px rgba(255,92,138,.6); } }
+.wake-chip { margin-left: 4px; padding: 2px 8px; border-radius: 999px; background: rgba(0,0,0,.28); color: #fff0f5; font-size: 10px; font-weight: 500; font-style: normal; letter-spacing: .4px; text-transform: lowercase; }
+/* Floating live-transcript caption. Sits above the toast so the interim text never fights with the Heard confirmation for the same pixel row. */
+.wake-live-caption { position: fixed; left: 50%; transform: translateX(-50%); top: 88px; z-index: 60; display: inline-flex; align-items: center; gap: 8px; max-width: min(70vw, 620px); padding: 8px 16px; border-radius: 999px; background: linear-gradient(120deg,rgba(255,92,138,.16),rgba(189,108,255,.16)); border: 1px solid rgba(255,92,138,.38); color: #fff0f5; font-size: 13px; font-weight: 500; box-shadow: 0 8px 28px rgba(0,0,0,.32); backdrop-filter: blur(14px); pointer-events: none; animation: wakeCaptionIn .18s ease-out; unicode-bidi: plaintext; }
+.wake-live-caption em { font-style: normal; color: #ffb8cc; font-size: 11px; letter-spacing: .4px; text-transform: uppercase; margin-right: 4px; }
+.wake-live-dot { width: 8px; height: 8px; border-radius: 50%; background: #ff5c8a; box-shadow: 0 0 10px rgba(255,92,138,.9); animation: wakeDotPulse 1.1s ease-in-out infinite; flex: 0 0 auto; }
+@keyframes wakeCaptionIn { from { opacity: 0; transform: translateX(-50%) translateY(-6px); } to { opacity: 1; transform: translateX(-50%) translateY(0); } }
+@keyframes wakeDotPulse { 0%,100% { transform: scale(1); opacity: .85; } 50% { transform: scale(1.4); opacity: 1; } }
+@media (max-width: 720px) { .wake-live-caption { top: 76px; font-size: 12px; padding: 6px 12px; max-width: 84vw; } }
 
 .settings-voice-grid { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 18px; align-items: flex-start; }.settings-field { display: flex; flex-direction: column; gap: 7px; font-size: 12px; letter-spacing: .4px; color: #8f96ae; }.settings-field select { min-width: min(320px, 78vw); padding: 11px 14px; border-radius: 12px; border: 1px solid rgba(143,115,255,.48); background: rgba(10,14,28,.73); color: #f3f4ff; font-size: 14px; outline: none; cursor: pointer; }.settings-field select:focus { border-color: rgba(189,108,255,.7); box-shadow: 0 0 0 3px rgba(138,92,255,.12); }.settings-note { width: 100%; margin: 2px 0 0; font-size: 12.5px; line-height: 1.5; color: #949bb3; }
 
@@ -1040,7 +1135,19 @@ textarea.settings-input { min-height: 84px; padding: 12px 14px; line-height: 1.5
 
 /* Chosen AI portrait floats above the live thread; the thread shrinks to fit it */
 .chat-face { flex: 0 0 auto; display: grid; place-items: center; padding: 2px 0 8px; }.chat-face-stage { width: clamp(170px,32vh,260px); aspect-ratio: 1; }.chat-face .nano-particles { width: 100%; height: 100%; aspect-ratio: 1; filter: drop-shadow(0 0 26px rgba(200,208,224,.28)); }
-@media (max-height: 600px) { .chat-face { display: none; } }
+/* Only collapse the portrait on SHORT, NARROW screens (phones) — on the desktop
+   two-column layout below it is a persistent panel and must never auto-hide. */
+@media (max-height: 600px) and (max-width: 899px) { .chat-face { display: none; } }
+/* Wide screens: dock the AI portrait as a persistent LEFT panel (the "drawer" —
+   it stays open) and let the live thread + composer fill the RIGHT column at full
+   height, so a single reply is no longer squeezed under a giant face. */
+@media (min-width: 900px) {
+  .chat-page.has-thread { display: grid; grid-template-columns: minmax(240px,32%) minmax(0,1fr); grid-template-rows: minmax(0,1fr) auto; column-gap: 26px; align-items: stretch; justify-items: stretch; }
+  .chat-page.has-thread .chat-face { grid-column: 1; grid-row: 1 / span 2; min-height: 0; padding: 16px; border: 1px solid rgba(149,162,215,.12); border-radius: 16px; background: radial-gradient(ellipse 72% 60% at 50% 44%,rgba(52,28,96,.42),transparent 74%); }
+  .chat-page.has-thread .chat-face-stage { width: min(100%,380px); height: auto; }
+  .chat-page.has-thread .chat-body { grid-column: 2; grid-row: 1; min-height: 0; }
+  .chat-page.has-thread .prompt-box { grid-column: 2; grid-row: 2; width: 100%; margin: 16px 0 0; }
+}
 
 /* History toolbar — search + delete-all behind a two-step confirm */
 .history-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; width: 100%; margin-top: 18px; }.history-search { flex: 1; min-width: 200px; display: flex; align-items: center; gap: 8px; height: 42px; padding: 0 14px; border: 1px solid rgba(149,162,215,.18); border-radius: 11px; background: rgba(9,13,26,.9); transition: border-color .2s, box-shadow .2s; }.history-search:focus-within { border-color: rgba(170,135,255,.6); box-shadow: 0 0 0 3px rgba(138,92,255,.1); }.history-search > span { color: #8f96ae; font-size: 16px; }.history-search input { flex: 1; min-width: 0; border: 0; outline: 0; color: #f8f6ff; background: transparent; font-size: 14px; }.history-search input::placeholder { color: #8d94b2; }.history-search input::-webkit-search-cancel-button { -webkit-appearance: none; appearance: none; }.history-clear-all { margin-left: auto; height: 42px; padding: 0 16px; border: 1px solid rgba(255,99,132,.34); border-radius: 11px; color: #ff8ea1; background: rgba(255,99,132,.08); cursor: pointer; font-size: 13px; font-weight: 500; transition: all .2s; }.history-clear-all:hover { color: #fff; background: rgba(255,99,132,.2); border-color: rgba(255,99,132,.55); }.history-confirm { margin-left: auto; display: flex; align-items: center; gap: 10px; height: 42px; padding: 0 6px 0 14px; border: 1px solid rgba(255,99,132,.34); border-radius: 11px; background: rgba(255,99,132,.08); color: #ffc2cd; font-size: 13px; }.history-confirm-yes { height: 32px; padding: 0 12px; border: 0; border-radius: 8px; color: #fff; background: linear-gradient(130deg,#ff5c7f,#c0356a); cursor: pointer; font-size: 12px; transition: filter .2s; }.history-confirm-yes:hover { filter: brightness(1.1); }.history-confirm-no { height: 32px; padding: 0 12px; border: 1px solid rgba(149,162,215,.22); border-radius: 8px; color: #c7cce0; background: transparent; cursor: pointer; font-size: 12px; transition: all .2s; }.history-confirm-no:hover { color: #fff; border-color: rgba(160,125,255,.5); }
@@ -1054,5 +1161,16 @@ textarea.settings-input { min-height: 84px; padding: 12px 14px; line-height: 1.5
 
 @media (max-width: 720px) {
   .header-voice-btn { padding: 8px 12px; font-size: 12px; }
+  .header-wake-btn { padding: 8px 10px; font-size: 11.5px; }
+  .header-wake-btn .wake-chip { display: none; }
+}
+
+/* Below 780px the topbar's three buttons (Wake + Talk + Upgrade) plus the
+   account avatar start to overflow off-screen and Talk/Upgrade become
+   unclickable. Trim the Wake label to icon-only (title/aria still read "Wake"
+   for screen readers), which pulls the whole actions cluster back inside. */
+@media (max-width: 780px) {
+  .header-wake-btn { padding: 8px 10px; }
+  .header-wake-btn .wake-label { display: none; }
 }
 

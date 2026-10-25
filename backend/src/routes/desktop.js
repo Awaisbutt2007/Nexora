@@ -1,7 +1,9 @@
 import { Router } from 'express'
 import { z } from 'zod'
 import { requireAuth } from '../middleware/auth.js'
+import { aiLimiter } from '../middleware/rateLimit.js'
 import { desktopAgent } from '../services/desktopAgent.js'
+import { captureScreen, inspectScreen } from '../services/desktopScreen.js'
 import { translateIntent } from '../services/desktopNl.js'
 
 const router = Router()
@@ -30,7 +32,7 @@ router.get('/apps', async (_req, res, next) => {
 })
 
 const grantSchema = z.object({
-  scope: z.enum(['browser', 'files', 'apps', 'system']).optional(),
+  scope: z.enum(['browser', 'files', 'apps', 'system', 'screen', 'desktop']).optional(),
   allowedDir: z.string().trim().max(500).optional(),
   approvedAppId: z.string().trim().max(40).optional(),
   allowedHost: z.string().trim().max(120).optional(),
@@ -86,6 +88,30 @@ router.post('/intent', async (req, res, next) => {
     // Hand the candidate to the agent for authoritative validation + preview.
     const plan = await desktopAgent.plan({ action: intent.action, args: intent.args, context: { fromVoice: body.fromVoice } })
     res.json({ kind: 'plan', proposed: { action: intent.action, args: intent.args }, plan })
+  } catch (err) { next(err) }
+})
+
+/* ── Screen observation ─────────────────────────────────────────────────────
+   Both go through the agent's plan→execute gate, so nothing is captured unless
+   the user has granted the "screen" scope. The capture is ephemeral: /inspect
+   returns only Aira's text report and never the image; /capture returns the data
+   URL solely so the user can preview their own screen, still unsaved. */
+router.post('/screen/capture', aiLimiter, async (req, res, next) => {
+  try {
+    const body = z.object({ save: z.boolean().default(false) }).parse(req.body || {})
+    const shot = await captureScreen(body)
+    res.json({ ok: true, width: shot.width, height: shot.height, format: shot.format, bytes: shot.bytes, saved: shot.saved || null, dataUrl: shot.dataUrl })
+  } catch (err) { next(err) }
+})
+
+router.post('/screen/inspect', aiLimiter, async (req, res, next) => {
+  try {
+    const body = z.object({
+      question: z.string().trim().max(1000).optional(),
+      save: z.boolean().default(false),
+      assistantName: z.string().trim().max(40).optional(),
+    }).parse(req.body || {})
+    res.json({ ok: true, ...(await inspectScreen({ ...body, userName: req.user.name })) })
   } catch (err) { next(err) }
 })
 

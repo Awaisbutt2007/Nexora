@@ -15,13 +15,20 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
+  /* `safe center` = centre the card when it fits, but fall back to flex-start
+     (top-aligned) when it is taller than the viewport, so the top of a short
+     screen is never clipped out of reach. */
+  justify-content: safe center;
   padding: 20px;
   background: radial-gradient(ellipse at 50% 6%, rgba(37, 40, 111, 0.52), transparent 50%),
               radial-gradient(ellipse at 85% 90%, rgba(120, 50, 220, 0.28), transparent 45%),
               radial-gradient(ellipse at 15% 85%, rgba(40, 180, 255, 0.2), transparent 45%),
               #050611;
-  overflow: hidden !important;
+  /* Scroll vertically when the card is taller than the viewport (short windows,
+     landscape phones); the scrollbar stays visually hidden but the content is
+     reachable. Horizontal overflow is never wanted. */
+  overflow-x: hidden;
+  overflow-y: auto !important;
   scrollbar-width: none !important;
   -ms-overflow-style: none !important;
   font-family: 'Space Grotesk', 'DM Sans', system-ui, -apple-system, sans-serif;
@@ -194,7 +201,7 @@
               inset 0 1px 1px 0 rgba(255, 255, 255, 0.12);
   overflow: hidden !important;
   display: flex;
-  margin: auto;
+  margin: 0 auto;
   animation: authCardFloatIn 0.65s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
@@ -666,6 +673,7 @@
     width: 100%;
     max-width: 420px;
     flex-direction: column;
+    flex-shrink: 0;
   }
 
   .form-container {
@@ -673,6 +681,13 @@
     width: 100%;
     height: auto;
     padding: 30px 20px;
+    /* Stacked layout: the sliding panel no longer needs its overflow clip, and
+       the card must not flex-shrink the form (that hard-centred the content and
+       cut the top of the "Sign In" heading on short screens). Let it size to its
+       content and top-align; the wrapper scrolls the whole card if it overflows. */
+    flex-shrink: 0;
+    overflow: visible !important;
+    justify-content: flex-start;
   }
 
   .sign-in-container,

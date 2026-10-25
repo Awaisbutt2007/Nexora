@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { SAFE_KEYS } from './input.js'
 
 /* ────────────────────────────────────────────────────────────────────────────
    THE ALLOWLIST is the single source of truth for what the agent can do. There
@@ -14,7 +15,12 @@ import { z } from 'zod'
    the scope has already been granted.
    ──────────────────────────────────────────────────────────────────────────── */
 
-export const SCOPES = ['browser', 'files', 'apps', 'system']
+export const SCOPES = ['browser', 'files', 'apps', 'system', 'screen', 'desktop']
+
+/* A single coordinate is a non-negative whole pixel, generously capped so an
+   absurd value fails fast. The exact on-screen bounds are enforced again at
+   dispatch time against the real resolution (see input.js → assertOnScreen). */
+const coord = z.number().int().min(0).max(30000)
 
 const httpUrl = z.string().trim().url().refine(
   (u) => /^https?:\/\//i.test(u),
@@ -188,6 +194,75 @@ export const ACTIONS = [
     description: 'Shut down the PC after explicit confirmation (never from ambiguous voice).',
     args: z.object({ note: z.string().trim().max(200).optional() }),
     preview: () => `⚠ SHUT DOWN the computer. Close unsaved work first — this is disruptive.`,
+  },
+
+  /* ── SCREEN OBSERVATION ─────────────────────────────────────────────────── */
+  {
+    id: 'screen.capture',
+    scope: 'screen',
+    risk: 'low',
+    // Read-only and scope-gated; the UI still shows a preview + Approve before it
+    // runs. Nothing is written to disk unless the user explicitly sets save:true.
+    alwaysConfirm: false,
+    description: 'Look at the current screen so Aira can describe what she sees. Kept in memory unless you ask to save it.',
+    args: z.object({
+      monitor: z.enum(['primary']).default('primary'),
+      maxWidth: z.number().int().min(640).max(3840).default(1920),
+      save: z.boolean().default(false),
+      name: z.string().trim().max(60).regex(/^[\w-]+$/, 'Use letters, numbers, dash, underscore only').optional(),
+    }),
+    preview: (a) => `Take a screenshot of your screen${a.save ? ' and save a copy in the agent folder' : ' (held in memory only — nothing is written to disk)'}, then describe the visible apps, elements and any errors.`,
+  },
+
+  /* ── DESKTOP CONTROL (mouse + keyboard) ─────────────────────────────────── */
+  {
+    id: 'desktop.move',
+    scope: 'desktop',
+    risk: 'medium',
+    alwaysConfirm: false,
+    description: 'Move the mouse pointer to a point on the screen.',
+    args: z.object({ x: coord, y: coord }),
+    preview: (a) => `Move the mouse pointer to (${a.x}, ${a.y}).`,
+  },
+  {
+    id: 'desktop.click',
+    scope: 'desktop',
+    risk: 'medium',
+    alwaysConfirm: false,
+    description: 'Click at a validated screen coordinate with an allowlisted mouse button.',
+    args: z.object({ x: coord, y: coord, button: z.enum(['left', 'right', 'middle']).default('left'), double: z.boolean().default(false) }),
+    preview: (a) => `${a.double ? 'Double-' : ''}${a.button}-click at (${a.x}, ${a.y}).`,
+  },
+  {
+    id: 'desktop.scroll',
+    scope: 'desktop',
+    risk: 'medium',
+    alwaysConfirm: false,
+    description: 'Scroll the pane under the pointer (optionally moving the mouse there first).',
+    args: z.object({ x: coord.optional(), y: coord.optional(), direction: z.enum(['up', 'down']).default('down'), amount: z.number().int().min(1).max(25).default(3) }),
+    preview: (a) => `Scroll ${a.direction} ${a.amount} notch(es)${a.x != null && a.y != null ? ` at (${a.x}, ${a.y})` : ''}.`,
+  },
+  {
+    id: 'desktop.type',
+    scope: 'desktop',
+    risk: 'high',
+    // Typed text lands wherever focus is and can post a message / fill a field →
+    // a fresh confirmation every time, and the content is never shown or logged.
+    alwaysConfirm: true,
+    description: 'Type text into the focused window.',
+    // eslint-disable-next-line no-control-regex
+    args: z.object({ text: z.string().min(1).max(2000).regex(/^[^\u0000-\u001F\u007F]*$/, 'Control characters are not allowed — use desktop.key for Enter/Tab.') }),
+    argsSecret: ['text'],
+    preview: (a) => `⚠ TYPE ${a.text.length} characters into the focused window. The text is kept private (hidden here and in the audit log) and could enter data into whatever is currently focused.`,
+  },
+  {
+    id: 'desktop.key',
+    scope: 'desktop',
+    risk: 'medium',
+    alwaysConfirm: true,
+    description: 'Press one allowlisted key combination (no Win / Ctrl+Alt+Del / UAC surface).',
+    args: z.object({ combo: z.enum(Object.keys(SAFE_KEYS)) }),
+    preview: (a) => `Press the “${a.combo}” key combination in the focused window.`,
   },
 ]
 

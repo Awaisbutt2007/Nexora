@@ -1,6 +1,5 @@
 import { Router } from 'express'
-import { config } from '../config.js'
-import { buildImageUrl, fetchGeneratedImage, isNsfwPrompt } from '../services/images.js'
+import { fetchGeneratedImage, isNsfwPrompt } from '../services/images.js'
 
 const router = Router()
 
@@ -16,10 +15,13 @@ const clampInt = (raw, fallback) => {
    the browser, and so a rate-limited generation returns an HONEST error instead
    of Pollinations' "at its limit" card being rendered as a fake success.
 
-   - No token (default): 302-redirect straight to Pollinations so the request
-     leaves from the USER's own IP — a residential line clears the anonymous
-     limit far more often than this server's datacenter IP does.
-   - Token configured: generate server-side (with retry) and stream the bytes. */
+   We ALWAYS generate server-side and stream the bytes back from this same origin.
+   The old tokenless path did a 302-redirect straight to Pollinations so the hit
+   came from the user's own IP — but the browser sends cross-site `Origin`/
+   `Referer`/`Sec-Fetch-*` headers that Pollinations (Cloudflare) rejects with a
+   403, while a plain server-side `fetch` from this same host returns 200 image/*.
+   Proxying keeps the <img> request same-origin (no referrer/CORS rejection),
+   keeps the token server-side, and lets our retry loop own the failure. */
 router.get('/generate', async (req, res, next) => {
   try {
     const prompt = String(req.query.prompt || '').trim().slice(0, 900)
@@ -31,10 +33,6 @@ router.get('/generate', async (req, res, next) => {
     }
     const width = clampInt(req.query.width, 768)
     const height = clampInt(req.query.height, 768)
-
-    if (!config.pollinationsToken) {
-      return res.redirect(302, buildImageUrl(prompt, { width, height }))
-    }
 
     const { buffer, contentType } = await fetchGeneratedImage(prompt, { width, height })
     res.setHeader('Content-Type', contentType)

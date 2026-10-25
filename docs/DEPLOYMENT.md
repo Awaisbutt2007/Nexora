@@ -34,7 +34,7 @@ Set in the host's secret manager (never in git):
 
 | Var | Requirement |
 |---|---|
-| `NODE_ENV` | `production` — enables the fail-fast guards + HSTS + error redaction |
+| `NODE_ENV` | `production` — enables the fail-fast guards + HSTS + error redaction. **It also force-disables the demo auth bypass (`AUTH_OPEN_MODE`) and gates self-service plan upgrades behind billing.** If you deploy WITHOUT setting it, the server runs in development mode: any email/password signs in, unlimited Pro credits can be minted for free, and the JWT/CORS boot guards never fire. Always set it. |
 | `JWT_SECRET` | **≥ 32 chars, random**. Generate: `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`. The app **refuses to boot** on a missing/default/short secret. |
 | `CORS_ORIGIN` | The real frontend origin(s), comma-separated. **Must not** be localhost (boot fails otherwise). |
 | `OPENAI_API_KEY` / `OPENAI_BASE_URL` / `OPENAI_MODEL` | Real provider for live answers; leave key empty → mock. |
@@ -95,3 +95,11 @@ npm run audit:all
   deployment (it puts the engine and voice model ids back into that public response).
 - No metrics/alerting; provider timeouts on AI calls are default (`NEXT_STEPS.md` P0-3).
 - Realtime voice / Google Sign-In / image gen are unverified without live keys.
+- **Speaker verification is NOT a gate on voice calls.** Calls authenticate with the
+  signed-in user's JWT only. `POST /api/voice/verify` is a standalone enroll/compare
+  feature; without a real `SPEECHBRAIN_URL` x-vector service it falls back to a local
+  DSP embedding that is demo-grade (it can report `matched:true` on non-speech audio),
+  so it must not be trusted as identity proof, and it is not wired into the call flow.
+- **Payments are not live.** `/api/user/upgrade` is refused (503) in production until a
+  real provider is configured; wiring Stripe (or similar) + a signature-verified webhook
+  is a manual step that needs credentials.

@@ -5,8 +5,10 @@ import cors from 'cors'
 import express from 'express'
 import { config } from './config.js'
 import { getDb } from './db/index.js'
+import { requireAuth } from './middleware/auth.js'
 import { errorHandler, notFound } from './middleware/error.js'
 import authRoutes from './routes/auth.js'
+import billingRoutes from './routes/billing.js'
 import chatRoutes from './routes/chat.js'
 import conversationRoutes from './routes/conversations.js'
 import desktopRoutes from './routes/desktop.js'
@@ -49,6 +51,30 @@ app.use(
   }),
 )
 app.use(express.json({ limit: '2mb' }))
+
+/* Voice prints are sensitive biometric-adjacent audio. Unlike a chat image — which a
+   plain <img> must be able to load with no Authorization header, so it stays on the
+   public static route below — nothing in the app ever reads a voice SAMPLE back from
+   the browser (the print list only shows metadata; the bytes are used server-side for
+   the embedding). So they must NOT sit on the unauthenticated static route where
+   anyone holding the (unguessable, but leakable via logs/referrer/history) filename
+   could pull them. This guard runs BEFORE the static handler and intercepts only
+   voice_* files: the caller must be authenticated AND own the print per the DB, so
+   one user can never fetch another's sample. Every other upload (img_*) falls through
+   to express.static untouched. */
+const VOICE_FILE = /^voice_[A-Za-z0-9_-]+\.[A-Za-z0-9]+$/
+app.get('/uploads/:name', (req, res, next) => {
+  if (!VOICE_FILE.test(req.params.name)) return next()
+  requireAuth(req, res, () => {
+    const owner = getDb()
+      .prepare('SELECT user_id FROM voice_prints WHERE sample_path = ?')
+      .get(`uploads/${req.params.name}`)
+    if (!owner || owner.user_id !== req.user.id) {
+      return res.status(404).json({ error: { message: 'Not found', type: 'not_found' } })
+    }
+    res.sendFile(path.join(config.uploadsDir, req.params.name))
+  })
+})
 
 /* User-attached reference images are saved under uploads/ with unguessable
    nanoid names and served straight from here — plain <img src> tags cannot
@@ -121,6 +147,7 @@ app.get('/', (_req, res) => {
       images: 'GET /api/images/generate?prompt=…  (streams a generated image, or redirects straight to the provider when no token is set)',
       desktop: 'GET /api/desktop/health | POST /api/desktop/intent | POST /api/desktop/plan | POST /api/desktop/execute | POST /api/desktop/stop',
       user: 'GET /api/user/profile  |  POST /api/user/upgrade',
+      billing: 'GET /api/billing/status | POST /api/billing/request  (manual Easypaisa/JazzCash) | GET /api/billing/requests | POST /api/billing/review  (admin)',
       voice: 'POST /api/voice/enroll  |  POST /api/voice/verify  |  GET|DELETE /api/voice/prints',
       realtime: 'POST /api/voice/realtime/token  |  POST /api/voice/realtime/turn',
     },
@@ -128,6 +155,7 @@ app.get('/', (_req, res) => {
 })
 
 app.use('/api/auth', authRoutes)
+app.use('/api/billing', billingRoutes)
 app.use('/api/chat', chatRoutes)
 app.use('/api/conversations', conversationRoutes)
 app.use('/api/memory', memoryRoutes)

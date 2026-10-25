@@ -46,3 +46,17 @@ coverage
 *.njsproj
 *.sln
 *.sw?
+
+# Browser-layout verification harness screenshots (local only — never commit).
+# These are per-run artefacts from the `browser-layout-verification` skill; they
+# can contain demo-workspace chat UI and are NOT project assets.
+verify-*.png
+verify-tmp-*.png
+_facetest*.png
+
+# Vercel CLI — project linkage lives here; deploy keys / team ids must stay out
+# of git even when the repo is public.
+.vercel
+.vercel/
+.env.local
+.env.*.local

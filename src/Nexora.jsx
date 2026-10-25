@@ -2,7 +2,6 @@ import { lazy, Suspense, useState, useEffect, useLayoutEffect, useMemo, useRef, 
 import { createPortal } from 'react-dom'
 import './Nexora.css'
 import './typography.css'
-import ChatPop from './ChatPop.jsx'
 import SignIn from './SignIn.jsx'
 import CursorTrail from './CursorTrail.jsx'
 import AnimeEffects from './AnimeEffects.jsx'
@@ -20,7 +19,6 @@ import {
   saveSession,
   streamChat,
   proactiveChat,
-  runTool,
   updateEmail,
   updatePassword,
   updateProfile,
@@ -28,6 +26,10 @@ import {
   attachMessageImages,
   resourceUrl,
   upgradePlan,
+  billingStatus,
+  billingRequest,
+  billingRequests,
+  billingReview,
   desktopAudit,
   desktopApps,
   desktopExecute,
@@ -37,6 +39,8 @@ import {
   desktopPermissions,
   desktopPlan,
   desktopRevoke,
+  desktopScreenCapture,
+  desktopScreenInspect,
   desktopStop,
   listSchedule,
   createScheduleTask,
@@ -44,9 +48,13 @@ import {
   deleteScheduleTask,
   fetchScheduleReminders,
   ackScheduleReminders,
+  createConversation,
+  synthesizeSpeech,
 } from './api/nexora.js'
 /* Her own eyes on the app: real screenshots of the live UI and of the particle face. */
 import { captureCurrentPage, captureNode, captureSelfFace } from './selfCapture.js'
+import { useWakeWord } from './useWakeWord.js'
+import { configureUtterForSpeech } from './voiceSelect.js'
 
 const ThreeHero = lazy(() => import('./ThreeHero.jsx'))
 const Onboarding = lazy(() => import('./Onboarding.jsx'))
@@ -72,6 +80,13 @@ const AI_PROFILE_KEY = 'nexora_ai_profile'
    survives reloads, and is only lifted when the user writes again. */
 const PROACTIVE_MUTE_KEY = 'nexora_proactive_muted'
 
+/* Demo accounts (the "Continue as Demo" sign-in) get a short free taste of chat.
+   Once they have sent DEMO_PROMPT_LIMIT prompts the composer stops and the pricing
+   modal opens. The counter lives per-browser and is cleared on every fresh demo
+   login (see SignIn.handleDemoAuth); upgrading to a paid plan clears the limit. */
+const DEMO_PROMPT_LIMIT = 3
+const DEMO_PROMPTS_KEY = 'nexora_demo_prompts'
+
 /* OpenAI Realtime built-in voices (docs-verified list) */
 const VOICE_OPTIONS = [
   ['marin', 'Marin', 'warm · natural female — recommended default'],
@@ -86,6 +101,110 @@ const VOICE_OPTIONS = [
   ['cedar', 'Cedar', 'firm · male-leaning'],
 ]
 const VOICE_LANGUAGES = [['auto', 'Auto — mix freely (English + Urdu + Roman Urdu)'], ['en', 'English first'], ['ur', 'Urdu first'], ['hinglish', 'Hinglish (Roman Hindi-Urdu)']]
+
+/* Wake-word spoken responses. Kept as short canned lines because the goal is a
+   sub-two-second earcon so it never collides with the actual streamed reply
+   that follows. Longer TTS on the real answer belongs to VoiceCall, not here. */
+const WAKE_ACK_LINES = {
+  en: { wake: "I'm listening.", command: 'Okay — working on it, check the chat.' },
+  ur: { wake: 'Main sun rahi hoon.', command: 'Bilkul, main chat mein ye kar rahi hoon — dekhiye.' },
+  hinglish: { wake: 'Ji, boliye.', command: 'Bilkul, main chat mein bana rahi hoon — dekhiye.' },
+  auto: { wake: 'Ji, boliye — main sun rahi hoon.', command: 'Bilkul, main chat mein kar rahi hoon — dekhiye.' },
+}
+
+/* Fire a short utterance on the browser's speech engine. The voice pick, the
+   per-language accent chain (so a Windows-only-English install speaking
+   Hinglish lands on en-IN, not en-GB), the rate slow-down for mixed-script
+   replies and the gender-pitch tweak all live in one shared helper
+   (`configureUtterForSpeech` in voiceSelect.js) so the wake ack, the streamed
+   chat reply and the VoiceCall fallback pipeline sound IDENTICAL. */
+function speakWakeLine(text, { language, gender } = {}) {
+  if (typeof window === 'undefined' || !window.speechSynthesis || !text) return
+  try {
+    /* Cancel any still-playing ack from a previous utterance — the user may
+       have said the wake word twice and the second ack must not queue. */
+    window.speechSynthesis.cancel()
+    const utter = new SpeechSynthesisUtterance(text)
+    configureUtterForSpeech(utter, window.speechSynthesis.getVoices(), { language, gender })
+    window.speechSynthesis.speak(utter)
+  } catch { /* browser blocked TTS or voices list unavailable — the visual caption still shows */ }
+}
+
+/* Auto-voice inside the workspace content: once the streamed reply lands, we
+   speak it. Server TTS (OpenAI's multilingual `gpt-4o-mini-tts` engine reached
+   via POST /api/voice/synth) is TRIED FIRST because it is the only path that
+   actually pronounces Roman-Hindi / Roman-Urdu naturally — the browser engine
+   on a Windows install is stuck with English-only voices and mangles Hinglish
+   no matter what accent chain we hand it. Any server failure (no key, Groq-
+   only, offline, credit shortfall) falls through to the browser path with
+   voiceSelect.js's accent chain + slow rate + emoji-strip, so the user always
+   hears the reply. Markdown is stripped because "asterisk bold asterisk" is
+   unreadable and code fences turn into long stretches of punctuation. EMOJIS
+   are stripped too: the engine would otherwise say "heavy black heart…
+   sparkles… smiling face with heart-eyes" out loud — which both reads the
+   emoji (nobody asked for that) and shreds the sentence so a Hinglish answer
+   becomes impossible to follow. Cap the length so a multi-paragraph essay
+   doesn't lock the mic for a minute. */
+let currentServerAudio = null
+function cancelServerAudio() {
+  if (currentServerAudio) {
+    try { currentServerAudio.pause() } catch { /* already stopped */ }
+    try { if (currentServerAudio.src && currentServerAudio.src.startsWith('blob:')) URL.revokeObjectURL(currentServerAudio.src) } catch { /* ignore */ }
+    currentServerAudio = null
+  }
+}
+async function speakAssistantReply(text, { language, gender, authToken } = {}) {
+  if (typeof window === 'undefined' || !text) return
+  const plain = String(text)
+    .replace(/```[\s\S]*?```/g, ' (code shown in chat) ')
+    .replace(/`([^`]+)`/g, '$1')
+    .replace(/\*\*([^*]+)\*\*/g, '$1')
+    .replace(/\*([^*]+)\*/g, '$1')
+    .replace(/#{1,6}\s+/g, '')
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+    /* Drop every pictograph/emoji, then the invisible glue that can strand a
+       modifier after its base was removed — skin tones, variation selectors, the
+       ZWJ joiner, combining keycaps and regional-indicator flag letters — all via
+       Unicode property escapes so no literal combining char sits in the class. */
+    .replace(/\p{Extended_Pictographic}/gu, '')
+    .replace(/[\p{Emoji_Modifier}\p{Variation_Selector}\p{Regional_Indicator}\p{Join_Control}\p{Me}]/gu, '')
+    .replace(/\n+/g, '. ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 900)
+  if (!plain) return
+  /* Cancel whatever browser-TTS is still playing so we don't overlap with the
+     server audio (and vice-versa — a fresh server call stops any prior server
+     clip via cancelServerAudio; both cancel paths run before every new speak). */
+  if (window.speechSynthesis) { try { window.speechSynthesis.cancel() } catch { /* ignore */ } }
+  cancelServerAudio()
+  /* Try server TTS when there is a session to authenticate it with. Anything
+     except a 503 (`tts_unavailable` — Groq key / mock mode / no key) means the
+     request WAS valid and we should trust the browser fallback silently: a
+     402 (out of credits) or 429 (rate limited) shouldn't be logged as if it
+     were a bug — the visual caption already shows the reply anyway. */
+  if (authToken) {
+    try {
+      const blob = await synthesizeSpeech(authToken, { text: plain, language, gender })
+      const url = URL.createObjectURL(blob)
+      const audio = new window.Audio(url)
+      audio.onended = () => { try { URL.revokeObjectURL(url) } catch { /* ignore */ }; if (currentServerAudio === audio) currentServerAudio = null }
+      audio.onerror = () => { try { URL.revokeObjectURL(url) } catch { /* ignore */ }; if (currentServerAudio === audio) currentServerAudio = null }
+      currentServerAudio = audio
+      await audio.play()
+      return
+    } catch (err) {
+      /* 503 = not configured — completely expected on a Groq-only install; fall
+         through silently. Any other code we still swallow here because the
+         user is hearing the reply via the browser path anyway, and a red
+         console line on every streamed reply would look like a broken app. */
+      if (err && err.status !== 503) console.warn('[tts] server synth failed, using browser voice:', err.message)
+    }
+  }
+  /* Browser TTS fallback — the same voice path wake acks use, so "her" stays
+     consistent across the app on any install that lacks a live speech key. */
+  speakWakeLine(plain, { language, gender })
+}
 
 /* The five choices the workspace remembers, in the shape the backend stores them. */
 const voicePrefsPayload = (p) => ({ voice: p.voice, language: p.language, assistantName: p.assistantName, persona: p.persona, gender: p.gender })
@@ -152,6 +271,15 @@ const navItems = [['Chat', '◌'], ['Schedule', '⏰'], ['Memory', '◈'], ['Too
 /* Schedule chips are a lookup, not a render-time clock read (oxlint purity):
    refreshTasks stamps each task with its phase while the data lands. */
 const SCHEDULE_CHIP = { due: ['Due now', 'chip-due'], soon: ['Reminds tomorrow', 'chip-soon'], planned: ['Planned', 'chip-planned'], done: ['Done ✓', 'chip-done'] }
+
+/* The three plans, shared by the landing pricing section and the in-app upgrade
+   modal so the price a visitor sees is the price a member is charged. `key` maps
+   to the backend enum ('free' | 'pro' | 'yearly_pro'). */
+const PLANS = [
+  { key: 'free', feat: false, label: 'MONTHLY BASIC', name: 'Starter', price: '₨6,000', sub: '/ month', desc: 'Har roz ke sawal aur chhote ideas ke liye.', items: ['Helpful AI conversations', 'Everyday creative tools', '5,000 credits per month', 'Your own idea library'], cta: 'Get Starter', tint: 'outline' },
+  { key: 'pro', feat: true, label: 'MOST LOVED · MONTHLY', name: 'Pro', price: '₨10,000', sub: '/ month', desc: 'Ambitious projects aur unlimited work ke liye.', items: ['Premium AI models', 'Faster image and file tools', 'No credit limit — unlimited', 'Bigger projects, longer memory'], cta: 'Get Pro', tint: 'primary' },
+  { key: 'yearly_pro', feat: false, label: 'YEARLY · BEST VALUE', name: 'Yearly Pro', price: '₨80,000', sub: '/ year', desc: 'Poore saal ka magic, saste mein.', items: ['Premium AI models', 'Faster image and file tools', 'No credit limit — unlimited', 'Bigger projects, longer memory', '12 months for the price of 8'], cta: 'Get Yearly Pro', tint: 'outline' },
+]
 const tools = [
   ['▧', 'Image Generator', 'Create striking images from a simple prompt.', 'violet', 'image_generator', 'Describe the image you want — scene, style, mood…'],
   ['⌘', 'Code Assistant', 'Write, debug, and explain code with context.', 'blue', 'code_assistant', 'Describe the code you need: language, inputs, expected behaviour…'],
@@ -160,6 +288,41 @@ const tools = [
   ['◉', 'Meeting Notes', 'Capture decisions and next steps automatically.', 'violet', 'meeting_notes', 'Paste your raw meeting notes or agenda…'],
   ['✦', 'Social Studio', 'Shape one idea into content for every channel.', 'green', 'social_studio', 'Describe the idea and the tone you want…'],
 ]
+
+/* Per-tool session kit used when a card in the Tools grid is clicked. The
+   `intro` line is what Aira says first inside the freshly-opened chat (it asks
+   for the exact reference inputs the tool needs), and `draft` is the scaffold
+   we pre-fill in the composer so the user only has to complete the blanks
+   instead of writing the request from scratch. Key is the tool title. The
+   `[<title> · session]` prefix inside `draft` is what the backend LLM reads
+   on the very first send so it knows which tool lane to answer in — the
+   conversation itself is created upfront with the tool name as its title. */
+const TOOL_STARTERS = {
+  'Image Generator': {
+    intro: `Image Generator is ready. Before I paint, share: 1) the subject or scene, 2) style (photorealistic, anime, oil, 3D render…), 3) mood or palette, 4) aspect ratio (1:1 / 16:9 / 9:16), and 5) optional — a reference image you want me to match. Fill the draft below and send it, and I'll begin.`,
+    draft: `[Image Generator · session] Please create an image with these inputs:\n• Subject / scene: \n• Style: \n• Mood & palette: \n• Aspect: 1:1\n• Reference (optional): \n`,
+  },
+  'Code Assistant': {
+    intro: `Code Assistant on. Tell me: 1) language / framework, 2) the goal in one plain sentence, 3) inputs and expected output, 4) constraints (perf, no deps, style, target runtime). Paste any existing snippet you want me to work with. Complete the draft below and I'll take it from there.`,
+    draft: `[Code Assistant · session] Help me with this code:\n• Language / stack: \n• Goal: \n• Inputs → Expected output: \n• Constraints: \n• Existing snippet (optional): \n`,
+  },
+  'PDF Reader': {
+    intro: `PDF Reader open. Nexora does not fetch files itself — paste the PDF's text (or the section you care about), then tell me the question, the summary style you want, or which fields to extract. Fill the draft and I'll answer from the text only.`,
+    draft: `[PDF Reader · session] Document text:\n\n\n• What I want from it (summary / Q&A / key quotes / outline): \n• Specific question (if any): \n`,
+  },
+  'YouTube Notes': {
+    intro: `YouTube Notes ready. Paste the transcript (or describe the video's topic and chapters) and tell me the angle you want — quick takeaways, timestamped summary, quotes, or action items. Complete the draft and I'll turn it into notes you can save.`,
+    draft: `[YouTube Notes · session] Video transcript or topic:\n\n\n• Focus (takeaways / timestamps / quotes / actions): \n• Desired output length: \n`,
+  },
+  'Meeting Notes': {
+    intro: `Meeting Notes on. Paste the raw notes, transcript or agenda and I'll extract decisions, action items, owners and follow-ups into a clean summary. Fill the draft so I know who was in the room and how tight you want the output.`,
+    draft: `[Meeting Notes · session] Raw notes / transcript / agenda:\n\n\n• Attendees (optional): \n• Output detail (short recap / full minutes / action table): \n`,
+  },
+  'Social Studio': {
+    intro: `Social Studio ready. Give me the one idea you want to spread and pick the channels — Twitter/X, LinkedIn, Instagram, TikTok, blog. Tell me the tone and any CTA. Complete the draft and I'll shape a version for each.`,
+    draft: `[Social Studio · session] Idea to spread: \n• Channels (Twitter/X, LinkedIn, Instagram, TikTok, blog): \n• Tone (bold / warm / witty / authoritative): \n• CTA (if any): \n`,
+  },
+}
 
 const featureList = [
   ['◌', 'Conversational AI', 'A chat that remembers context and truly gets you.'],
@@ -412,7 +575,7 @@ function Landing({ onLogin, onNavigate, isLoggedIn, userProfile, onUpgrade }) {
             <span className="card-kicker">{f.kicker}</span>
             <h3>{f.title}</h3>
             <p>{f.desc}</p>
-            {f.cta && <a href="#workspace" onClick={(e) => { e.preventDefault(); onNavigate('Chat', null, 'Conversational AI') }}>Start a conversation <span>↗</span></a>}
+            {f.cta && <a href="#features" onClick={(e) => { e.preventDefault(); onNavigate('Chat', null, 'Conversational AI') }}>Start a conversation <span>↗</span></a>}
             {f.k === 'chat' && <div className="mini-chat"><span className="mini-avatar">N</span><p>What are you thinking about today?<b>✦</b></p></div>}
             {f.orb && <div className="create-orb"><span>✦</span><i /><i /><i /></div>}
             {f.pills && <div className="tool-pills"><span>Chat</span><span>Write</span><span>Plan</span><span>+ more</span></div>}
@@ -492,18 +655,16 @@ function Landing({ onLogin, onNavigate, isLoggedIn, userProfile, onUpgrade }) {
           <p className="plans-note"><span>✦</span> Bring your own vibe, or unlock Nexora Pro for a lot more magic.</p>
         </div>
         <div className="plan-grid">
-          {[
-            { feat: false, label: 'MONTHLY BASIC', name: 'Starter', price: '₨6,000', sub: '/ month', desc: 'Har roz ke sawal aur chhote ideas ke liye.', items: ['Helpful AI conversations', 'Everyday creative tools', '5,000 credits per month', 'Your own idea library'], cta: 'Get Starter', tint: 'outline' },
-            { feat: true, label: 'MOST LOVED · MONTHLY', name: 'Pro', price: '₨10,000', sub: '/ month', desc: 'Ambitious projects aur unlimited work ke liye.', items: ['Premium AI models', 'Faster image and file tools', 'No credit limit — unlimited', 'Bigger projects, longer memory'], cta: 'Get Pro', tint: 'primary' },
-            { feat: false, label: 'YEARLY · BEST VALUE', name: 'Yearly Pro', price: '₨80,000', sub: '/ year', desc: 'Poore saal ka magic, saste mein.', items: ['Premium AI models', 'Faster image and file tools', 'No credit limit — unlimited', 'Bigger projects, longer memory', '12 months for the price of 8'], cta: 'Get Yearly Pro', tint: 'outline' },
-          ].map((p) => <article key={p.name} className={`plan-card ${p.feat ? 'plan-featured' : ''}`}>
+          {PLANS.map((p) => <article key={p.name} className={`plan-card ${p.feat ? 'plan-featured' : ''}`}>
             {p.feat && <span className="popular-label">MOST LOVED</span>}
             <span className="plan-label">{p.label}</span>
             <h3>{p.name}</h3>
             <p className="plan-price">{p.price} <small>{p.sub}</small></p>
             <p className="plan-description">{p.desc}</p>
             <ul>{p.items.map(it => <li key={it}><span>✦</span> {it}</li>)}</ul>
-            <button className={`button button-${p.tint} button-wide`} type="button" onClick={p.feat && onUpgrade ? onUpgrade : () => onNavigate('Home', null, `${p.name} Plan`)}>{p.cta} <span>→</span></button>
+            {/* Logged-in → shared pricing modal. Logged-out → sign-in wall carrying
+                THIS plan's own name, so "Get Pro" never inherits a previous CTA's label. */}
+            <button className={`button button-${p.tint} button-wide`} type="button" onClick={() => (isLoggedIn && onUpgrade ? onUpgrade() : onNavigate('Home', null, `${p.name} Plan`))}>{p.cta} <span>→</span></button>
           </article>)}
         </div>
       </div>
@@ -909,50 +1070,13 @@ function ChatImage({ src, alt = 'Generated image' }) {
   )
 }
 
-/* A real tool runner: takes the user's prompt, calls POST /api/tools/:id/run and
-   renders whatever comes back — an image (lightbox + download), a code/text
-   answer (same parser as chat, so fences get a copy button), or a clear error.
-   Self-contained state, keyed by tool title from the parent so switching tools
-   resets the panel. */
-function ToolRunner({ entry, token, aiName, persona, isLoggedIn, onLogin, onCredits }) {
-  const [, title, description, , toolId, placeholder] = entry
-  const [value, setValue] = useState('')
-  const [running, setRunning] = useState(false)
-  const [result, setResult] = useState(null)
-  const [error, setError] = useState('')
-
-  async function run() {
-    if (!isLoggedIn || !token) { onLogin(); return }
-    const clean = value.trim()
-    if (!clean || running) return
-    setRunning(true); setError(''); setResult(null)
-    try {
-      const res = await runTool(token, toolId, { prompt: clean, assistantName: aiName, persona: persona || undefined })
-      setResult(res.output)
-      if (res.user && onCredits) onCredits(res.user)
-    } catch (err) {
-      setError(err.message || 'The tool could not run right now.')
-    } finally {
-      setRunning(false)
-    }
-  }
-
-  return (
-    <div className="tool-runner">
-      <div className="tool-runner-head"><span className="showcase-icon">{entry[0]}</span><div><strong>{title}</strong><small>{description}</small></div></div>
-      <textarea className="tool-runner-input" rows={3} aria-label={`${title} prompt`} placeholder={placeholder} value={value} onChange={(event) => setValue(event.target.value)} disabled={running} />
-      <div className="tool-runner-foot"><button type="button" className="tool-runner-run" onClick={run} disabled={running || !value.trim()}>{running ? `${aiName} is working…` : `Run ${title}`}</button></div>
-      {error && <div className="tool-runner-error" role="alert">⚠️ {error}</div>}
-      {result && <div className="tool-runner-result" aria-live="polite">
-        {result.blocked
-          ? <span className="chat-img-blocked">🚫 {result.note}</span>
-          : result.type === 'image'
-            ? <><ChatImage src={resourceUrl(result.imageUrl)} /><p className="tool-runner-note">{result.note}</p></>
-            : <div className="chat-text">{renderChatContent(result.answer)}</div>}
-      </div>}
-    </div>
-  )
-}
+/* The direct-tool-runner used to live here. It is gone: the Tools grid now
+   sends the user into a Chat conversation titled after the tool via
+   `startToolSession`, where Aira opens with a professional prompt asking for
+   the exact references that tool needs. That keeps one mental model — every
+   "do something for me" action is a chat turn — and reuses the streaming,
+   image-rendering, reply-to and memory-injection plumbing of the main
+   composer instead of maintaining a parallel form. */
 
 /* The action catalog the Desktop view offers — mirrors desktop-agent/src/allowlist.js.
    It is a convenience, not a permission: the agent re-validates every request
@@ -975,8 +1099,14 @@ const desktopActions = [
   { id: 'system.info', scope: 'system', risk: 'low', example: {} },
   { id: 'system.restart', scope: 'system', risk: 'high', confirm: true, example: {} },
   { id: 'system.shutdown', scope: 'system', risk: 'high', confirm: true, example: {} },
+  { id: 'screen.capture', scope: 'screen', risk: 'low', example: { save: false } },
+  { id: 'desktop.move', scope: 'desktop', risk: 'medium', example: { x: 400, y: 300 } },
+  { id: 'desktop.click', scope: 'desktop', risk: 'medium', example: { x: 400, y: 300, button: 'left' } },
+  { id: 'desktop.scroll', scope: 'desktop', risk: 'medium', example: { direction: 'down', amount: 3 } },
+  { id: 'desktop.type', scope: 'desktop', risk: 'high', confirm: true, example: { text: 'hello from Aira' } },
+  { id: 'desktop.key', scope: 'desktop', risk: 'medium', confirm: true, example: { combo: 'ctrl+c' } },
 ]
-const desktopScopes = [['browser', '🌐', 'Drive the dedicated automation browser (not your personal profile)'], ['files', '🗂', 'Read / organize inside folders you approve'], ['apps', '🖥', 'Launch & close approved apps only'], ['system', '⚙', 'Read-only info; power needs per-action confirm, never from voice']]
+const desktopScopes = [['browser', '🌐', 'Drive the dedicated automation browser (not your personal profile)'], ['files', '🗂', 'Read / organize inside folders you approve'], ['apps', '🖥', 'Launch & close approved apps only'], ['system', '⚙', 'Read-only info; power needs per-action confirm, never from voice'], ['screen', '👁', 'Let Aira look at your screen to describe it (nothing is saved unless you ask)'], ['desktop', '🖱️', 'Move / click / scroll / type / key on your PC — every action needs your approval, typing needs a fresh confirm each time']]
 
 /* Aira acting on the local Windows PC through the hardened desktop agent.
    Real connection only: if the backend bridge is disabled or the agent isn't
@@ -1001,13 +1131,19 @@ function DesktopView({ token, aiName, isLoggedIn, onLogin }) {
   const [appDraft, setAppDraft] = useState('')
   const [hostDraft, setHostDraft] = useState('')
   const [audit, setAudit] = useState(null)
+  const [screen, setScreen] = useState(null)   // ephemeral preview: { dataUrl, width, height, saved }
+  const [report, setReport] = useState('')      // Aira's visual-inspection text
 
   const enabled = health?.enabled === true
+  const desktopArmed = Boolean(perms?.scopes?.desktop || perms?.scopes?.screen)
 
   useEffect(() => {
     if (!isLoggedIn || !token) return
     let alive = true
     desktopHealth(token).then((h) => { if (alive) setHealth(h) }).catch((err) => { if (alive) setHealth({ enabled: false, error: { message: err.message } }) })
+    // Load the permission posture up front too, so the "control armed" banner is
+    // accurate the moment the page opens, not only after visiting Permissions.
+    desktopPermissions(token).then((p) => { if (alive) setPerms(p) }).catch(() => {})
     return () => { alive = false }
   }, [isLoggedIn, token])
 
@@ -1066,12 +1202,12 @@ function DesktopView({ token, aiName, isLoggedIn, onLogin }) {
     } catch (err) { setError(err.message) } finally { setBusy('') }
   }
 
-  async function doStop() {
+  const doStop = useCallback(async () => {
     if (!isLoggedIn || !token) return
     setBusy('stopping'); setError('')
     try { const r = await desktopStop(token); setNotice(`🛑 Stop sent — ${r.cancelled ?? 0} running action(s) cancelled.`) }
     catch (err) { setError(err.message) } finally { setBusy('') }
-  }
+  }, [isLoggedIn, token])
 
   async function mutatePerms(fn, label, after) {
     if (!isLoggedIn || !token) { onLogin(); return }
@@ -1079,6 +1215,36 @@ function DesktopView({ token, aiName, isLoggedIn, onLogin }) {
     try { const r = await fn(); if (r.permissions) setPerms(r.permissions); setNotice(`${label} ✓`); if (after) after() }
     catch (err) { setError(err.message) } finally { setBusy('') }
   }
+
+  /* Screen observation. Both go through the agent's permission gate; a 403 (no
+     "screen" scope) or a 503 (bridge off) throws through parseJson with the real
+     reason, which lands in `error`. The capture itself is ephemeral — the data URL
+     is only ever shown to this user, and /inspect returns just the text report. */
+  async function doCapture() {
+    if (!isLoggedIn || !token) { onLogin(); return }
+    setBusy('screen'); setError(''); setNotice(''); setReport('')
+    try { const r = await desktopScreenCapture(token); setScreen({ dataUrl: r.dataUrl, width: r.width, height: r.height, saved: r.saved }); setNotice('👁 Screen captured — shown to you only, nothing written to disk.') }
+    catch (err) { setError(err.message) } finally { setBusy('') }
+  }
+
+  async function doInspect() {
+    if (!isLoggedIn || !token) { onLogin(); return }
+    setBusy('inspecting'); setError(''); setNotice(''); setReport('')
+    try { const r = await desktopScreenInspect(token, { assistantName: aiName }); setReport(r.report); setScreen((s) => s || { width: r.width, height: r.height }); setNotice(`✨ ${aiName} looked at your screen (${r.width}×${r.height}) — only the text report came back.`) }
+    catch (err) { setError(err.message) } finally { setBusy('') }
+  }
+
+  function clearScreen() { setScreen(null); setReport('') }
+
+  /* A keyboard e-stop that works wherever focus is while this page is open, so the
+     user can halt a running action without hunting for the button. doStop is a stable
+     useCallback, so the listener is re-attached only when the login/token changes. */
+  useEffect(() => {
+    if (!isLoggedIn || !token) return
+    const onKey = (event) => { if (event.ctrlKey && event.altKey && (event.key === 's' || event.key === 'S')) { event.preventDefault(); doStop() } }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [isLoggedIn, token, doStop])
 
   if (!isLoggedIn || !token) {
     return <section className="workspace-page-panel desktop-panel">
@@ -1101,12 +1267,26 @@ function DesktopView({ token, aiName, isLoggedIn, onLogin }) {
       {health && !enabled && <span>○ Desktop bridge is OFF — {health.error?.message ? health.error.message + '. ' : 'no DESKTOP_AGENT_SECRET is set, or the agent is not running. '}Set the secret in backend/.env and start it with <code>npm run dev:agent</code>, then reload.</span>}
     </div>
 
+    {desktopArmed && <div className="desktop-active" role="status"><span>🔵 Desktop control is ARMED — {aiName} can act on this PC, but only with your approval. Press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>S</kbd> or Stop to halt what is running.</span>{busy && <strong className="desktop-running">{busy === 'running' ? 'An action is running…' : 'Working…'}</strong>}</div>}
+
     <div className="desktop-tabs">{[['run', 'Run'], ['permissions', 'Permissions'], ['audit', 'Audit log']].map(([id, label]) => <button type="button" key={id} className={`desktop-tab${tab === id ? ' selected' : ''}`} onClick={() => goTab(id)}>{label}</button>)}</div>
 
     {error && <div className="tool-runner-error" role="alert">⚠️ {error}</div>}
     {notice && <div className="desktop-notice" role="status">{notice}</div>}
 
     {tab === 'run' && <div className="desktop-run">
+      <div className="desktop-card desktop-screen-card">
+        <div className="desktop-screen-actions">
+          <button type="button" className="tool-runner-run" onClick={doCapture} disabled={busy !== '' || !enabled}>👁 Observe Screen</button>
+          <button type="button" className="tool-runner-run" onClick={doInspect} disabled={busy !== '' || !enabled}>✨ Describe my screen</button>
+          <button type="button" className="desktop-link" onClick={() => { pickAction('browser.open'); setNotice('🌐 Inspect Website — set the URL, then Preview → Approve. Use browser.snapshot to read the page and browser.screenshot to capture it.') }}>🌐 Inspect Website</button>
+          {(screen || report) && <button type="button" className="desktop-link danger" onClick={clearScreen}>Clear</button>}
+        </div>
+        <p className="desktop-muted">Needs the “screen” permission (Permissions tab). The picture is shown to you and sent to {aiName} for this one look — never saved to disk unless you ask to.</p>
+        {screen?.dataUrl && <figure className="desktop-shot"><img src={screen.dataUrl} alt={`A screenshot of your screen, ${screen.width} by ${screen.height}`} /><figcaption>{screen.width}×{screen.height}{screen.saved ? ` · saved to ${screen.saved}` : ' · in memory only'}</figcaption></figure>}
+        {report && <div className="desktop-report" role="status"><strong>{aiName}’s visual inspection</strong><p>{report}</p></div>}
+      </div>
+
       <div className="desktop-card">
         <label className="desktop-label" htmlFor="desktop-cmd">Ask in plain words</label>
         <textarea id="desktop-cmd" className="tool-runner-input" rows={2} placeholder="e.g. open the automation browser and search for React docs" value={command} onChange={(event) => setCommand(event.target.value)} disabled={busy !== ''} />
@@ -1201,7 +1381,72 @@ const formatChatTime = (ts) => {
    Everything here is live: name/email/password hit the backend, the AI
    companion fields persist to voicePrefs (which drive the chat name, the
    particle face and the Talk voice), and Voice/Language reuse the same store. */
-function SettingsView({ isLoggedIn, userProfile, authToken, onProfileUpdate, onLogin, onUpgrade, voicePrefs, persistVoicePrefs }) {
+/* Store-owner view of the manual payment queue. Renders nothing until /status
+   says the signed-in account is an approver (ADMIN_USER_IDS), so ordinary users
+   never see it. Approving grants the plan to the REQUESTER server-side; rejecting
+   just marks the row. The owner checks their real Easypaisa/JazzCash app for the
+   money before approving — the app never sees the payment itself. */
+function AdminBillingPanel({ authToken }) {
+  const [status, setStatus] = useState(null)
+  const [requests, setRequests] = useState([])
+  const [filter, setFilter] = useState('pending')
+  const [nonce, setNonce] = useState(0)
+  const [busy, setBusy] = useState('')
+  const [err, setErr] = useState('')
+
+  useEffect(() => {
+    if (!authToken) return undefined
+    let cancelled = false
+    ;(async () => {
+      try {
+        const s = await billingStatus(authToken)
+        if (cancelled) return
+        setStatus(s)
+        if (s.isAdmin) { const list = await billingRequests(authToken, filter); if (!cancelled) setRequests(list.data || []) }
+      } catch (e) { if (!cancelled) setErr(e.message) }
+    })()
+    return () => { cancelled = true }
+  }, [authToken, filter, nonce])
+
+  async function review(id, decision) {
+    setBusy(`${id}:${decision}`); setErr('')
+    try { await billingReview(authToken, { id, decision }); setNonce((n) => n + 1) }
+    catch (e) { setErr(e.message) }
+    finally { setBusy('') }
+  }
+
+  if (!status || !status.isAdmin) return null
+  const planLabel = (p) => (p === 'yearly_pro' ? 'Yearly Pro' : 'Pro')
+  const methodLabel = (m) => (m === 'easypaisa' ? 'Easypaisa' : 'JazzCash')
+  return <div className="settings-group">
+    <h3><span aria-hidden="true">💵</span> Upgrade requests <small className="billing-admin-tag">admin</small></h3>
+    <p className="settings-hint">Har request tab banti hai jab user Easypaisa/JazzCash se paisa bhej kar Transaction ID darj karta hai. Pehle apne wallet app mein paisa confirm karein, phir Approve dabayein — Approve ke baad hi user ka plan badalta hai.</p>
+    {!status.manualEnabled && <p className="billing-warn">⚠ Aap ne abhi koi Easypaisa/JazzCash number set nahi kiya (backend/.env), is liye users payment nahi bhej pa rahe.</p>}
+    {err && <p className="billing-warn">⚠ {err}</p>}
+    <div className="billing-filters" role="tablist">
+      {['pending', 'approved', 'rejected', ''].map((f) => <button type="button" role="tab" aria-selected={filter === f} key={f || 'all'} className={`billing-filter${filter === f ? ' selected' : ''}`} onClick={() => setFilter(f)}>{f ? f[0].toUpperCase() + f.slice(1) : 'All'}</button>)}
+    </div>
+    {!requests.length ? <p className="settings-hint">{filter === 'pending' ? 'Koi pending request nahi.' : 'Yahan kuch nahi hai.'}</p> : <ul className="billing-list">
+      {requests.map((r) => <li key={r.id} className="billing-item">
+        <div className="billing-item-main">
+          <strong>{r.userName || r.userEmail || r.userId}</strong>
+          <span className="billing-plan">{planLabel(r.plan)} — {r.amount} PKR</span>
+          <span className="billing-method">{methodLabel(r.method)} · TID <code>{r.txnId}</code></span>
+          <span className="billing-time">{new Date(r.createdAt).toLocaleString()}</span>
+          {r.note && <span className="billing-note">Note: {r.note}</span>}
+        </div>
+        <div className="billing-actions">
+          {r.status === 'pending' ? <>
+            <button className="settings-save" type="button" onClick={() => review(r.id, 'approve')} disabled={busy}>{busy === `${r.id}:approve` ? 'Approving…' : 'Approve'}</button>
+            <button className="billing-reject" type="button" onClick={() => review(r.id, 'reject')} disabled={busy}>{busy === `${r.id}:reject` ? 'Rejecting…' : 'Reject'}</button>
+          </> : <span className={`billing-state is-${r.status}`}>{r.status}</span>}
+        </div>
+      </li>)}
+    </ul>}
+  </div>
+}
+
+function SettingsView({ isLoggedIn, userProfile, authToken, onProfileUpdate, onTokenChange, onLogin, onUpgrade, voicePrefs, persistVoicePrefs }) {
   const aiName = voicePrefs.assistantName || 'Nexora'
   /* Keep the copy honest: the companion's pronoun follows the chosen face. */
   const subj = voicePrefs.gender === 'male' ? 'he' : 'she'
@@ -1234,7 +1479,14 @@ function SettingsView({ isLoggedIn, userProfile, authToken, onProfileUpdate, onL
 
   async function savePassword() {
     setBusy('pw'); flash('pw', '', '')
-    try { await updatePassword(authToken, { currentPassword: curPw, newPassword: newPw }); setCurPw(''); setNewPw(''); flash('pw', 'ok', 'Password updated ✓') }
+    try {
+      const res = await updatePassword(authToken, { currentPassword: curPw, newPassword: newPw })
+      /* Changing the password revokes every older token server-side, INCLUDING the one
+         in this tab — so adopt the freshly-minted one the backend returns, or the very
+         next request would 401 and quietly boot the user out right after success. */
+      if (res?.token && onTokenChange) onTokenChange(res.token)
+      setCurPw(''); setNewPw(''); flash('pw', 'ok', 'Password updated ✓')
+    }
     catch (err) { flash('pw', 'err', err.message) }
     finally { setBusy('') }
   }
@@ -1327,6 +1579,8 @@ function SettingsView({ isLoggedIn, userProfile, authToken, onProfileUpdate, onL
           </div>
         </div>
 
+        {isLoggedIn && <AdminBillingPanel authToken={authToken} />}
+
         <div className="settings-group">
           <h3><span aria-hidden="true">🔐</span> Session</h3>
           <div className="settings-row">
@@ -1370,7 +1624,7 @@ function fileToScaledDataUrl(file, max = 1024) {
    needs Math.random or Date.now (react/purity). */
 let attachSeq = 0
 
-function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, isLoggedIn, userProfile, authToken, onLogin, onLogout, onUpgrade, onProfileUpdate }) {
+function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, isLoggedIn, userProfile, authToken, onLogin, onLogout, onUpgrade, onProfileUpdate, onTokenChange }) {
   const [prompt, setPrompt] = useState('')
   const [conversationId, setConversationId] = useState(null)
   const [messages, setMessages] = useState([])
@@ -1387,10 +1641,6 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
   }, [notice])
   const [mobileMoreOpen, setMobileMoreOpen] = useState(false)
   const [accountDrawerOpen, setAccountDrawerOpen] = useState(false)
-  /* The quick-actions panel opens by itself. Only the Memory vault may fold it
-     away — there it costs the brain its stage height — and the choice lives here
-     so it survives leaving the page and coming back. */
-  const [chatOpen, setChatOpen] = useState(true)
   const chatEndRef = useRef(null)
   /* Aira sometimes starts the conversation herself: if the user goes quiet mid-chat,
      ask the backend for one short check-in. The idle clock and a once-per-pause guard
@@ -1405,6 +1655,12 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
   /* Explicit-quiet flag: set when the user's own message asks her not to write.
      Synced from storage on mount so a reload can't re-arm the nudge they refused. */
   const proactiveMutedRef = useRef(false)
+  /* Demo prompt meter: how many turns this browser's demo account has already
+     spent. Synced from storage on mount so a reload can't hand out a fresh allowance. */
+  const demoPromptsRef = useRef(0)
+  useEffect(() => {
+    try { demoPromptsRef.current = Number(localStorage.getItem(DEMO_PROMPTS_KEY)) || 0 } catch { /* private mode */ }
+  }, [])
   /* The composer's private state, as far as the idle clock is concerned: was the
      user mid-message just now, and did they then TAKE BACK what they had typed?
      Refs (not state) because no keystroke should re-render the workspace twice. */
@@ -1465,8 +1721,6 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
      nav button is always the selected one. Sessions stored while the page was still
      called History land on the renamed Memory page. */
   const view = activeView === 'Home' ? 'Chat' : activeView === 'History' ? 'Memory' : activeView
-  /* Which tool card is open in the Tools view (matched by its display title). */
-  const selectedEntry = tools.find((t) => t[1] === selectedTool) || null
   /* History search: case-insensitive title filter over the already-loaded list. */
   const historyTerm = historyQuery.trim().toLowerCase()
   const visibleConversations = historyTerm
@@ -1569,26 +1823,45 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
     setNotice('New chat ready.')
   }
 
-  /* A starter from the quick-actions panel never fires at her on its own: a prompt
-     ending in a colon is half a thought ("Brainstorm ideas for:"), so it lands in
-     the composer with the caret at the end, ready to be finished. */
-  function fillComposer(text) {
+  /* Click a tool card → open a chat whose title is the tool's name, seed it
+     with Aira's own professional prompt asking for the reference inputs, and
+     drop a filled-in draft in the composer so the user only has to complete
+     the blanks. The draft carries a `[<tool> · session]` prefix — that is
+     what the backend LLM reads on the first send so it knows which lane to
+     answer in, without us needing a separate tool_hint field. The intro
+     bubble is local-only (not persisted): the first real user message becomes
+     the actual opener of the thread. If conversation creation fails we still
+     land on the chat with the draft — worst case the thread's title falls
+     back to the user's message instead of the tool name. */
+  async function startToolSession(toolTitle) {
+    if (!isLoggedIn || !authToken) { onLogin(); return }
+    const starter = TOOL_STARTERS[toolTitle]
+    setSelectedTool(toolTitle)
+    setReplyTarget(null)
+    setMessages(starter ? [{
+      id: `tool_intro_${Date.now()}`,
+      role: 'assistant',
+      content: starter.intro,
+      ts: Date.now(),
+      toolIntro: toolTitle,
+    }] : [])
+    setPrompt(starter?.draft || `I want to use ${toolTitle}. `
+    )
     setActiveView('Chat')
-    setPrompt(text)
-    requestAnimationFrame(() => {
-      const el = promptInputRef.current
-      if (!el) return
-      el.focus()
-      el.setSelectionRange(el.value.length, el.value.length)
-    })
-  }
-
-  /* "Talk call": the dial pad only lives over the chat screen, so from any other
-     view a call means a clean thread first — an old conversation is never dragged
-     into a new call. Already on the chat screen, the current thread is kept. */
-  function startTalkCall() {
-    if (view !== 'Chat') startNewChat()
-    setVoiceOpen(true)
+    focusComposerRef.current = true
+    lastActivityRef.current = Date.now()
+    setNotice(`✦ ${toolTitle} session opened — complete the draft and send it.`)
+    try {
+      const conv = await createConversation(authToken, toolTitle)
+      if (conv?.id) {
+        setConversationId(conv.id)
+        /* Fresh conversation exists on the server; refresh the sidebar list
+           so the row for the tool shows immediately, without waiting for the
+           user's first send. */
+        refreshConversations()
+      }
+    } catch { /* keep the composer draft; the next sendPrompt call will open
+                   its own conversation from the message text */ }
   }
 
   function persistVoicePrefs(next) {
@@ -1884,9 +2157,18 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
     if (!typingElsewhere) el.focus()
   }, [view, messages, streaming])
 
-  async function sendPrompt(event, overrideText) {
+  /* `extras.spokenAck` is only set when the prompt came from the wake-word
+     loop. The word the AI spoke back must appear WRITTEN in the chat too —
+     the user should be able to scroll history and see the same sentence they
+     just heard. It is stored as a prefix on the streaming assistant bubble so
+     the ack sits at the top of that reply, not as a separate message that
+     would need its own server-side row. */
+  async function sendPrompt(event, overrideText, extras = {}) {
     if (event) event.preventDefault()
     const cleanPrompt = (typeof overrideText === 'string' ? overrideText : prompt).trim()
+    const spokenAck = typeof extras.spokenAck === 'string' && extras.spokenAck.trim()
+      ? `${extras.spokenAck.trim()}\n\n`
+      : ''
     const imgUrls = pendingImgs.filter((p) => p.url).map((p) => p.url)
     if (streaming || pendingImgs.some((p) => p.uploading)) return
     if (!cleanPrompt && !imgUrls.length) return
@@ -1894,6 +2176,19 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
     if (!isLoggedIn || !authToken) {
       onLogin()
       return
+    }
+
+    /* Demo accounts get a taste, then the upsell: once the free allowance is spent
+       the composer stops sending and the pricing modal opens. A paid plan clears it. */
+    if (userProfile?.isDemo && !userProfile?.isPremium) {
+      if (demoPromptsRef.current >= DEMO_PROMPT_LIMIT) {
+        const reason = `Demo allowance khatam — aapke sirf ${DEMO_PROMPT_LIMIT} free prompts the. Jaari rakhne ke liye niche se ek plan choose karein.`
+        setNotice(`✦ ${reason}`)
+        onUpgrade?.(reason)
+        return
+      }
+      demoPromptsRef.current += 1
+      try { localStorage.setItem(DEMO_PROMPTS_KEY, String(demoPromptsRef.current)) } catch { /* private mode */ }
     }
 
     setActiveView('Chat')
@@ -1927,7 +2222,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
     setMessages((prev) => [
       ...prev,
       { id: tempUserId, role: 'user', content: cleanPrompt, images: imgUrls.length ? imgUrls : undefined, replyTo: reply?.id, ts: Date.now() },
-      { id: tempAsstId, role: 'assistant', content: '', streaming: true, ts: Date.now() },
+      { id: tempAsstId, role: 'assistant', content: spokenAck, streaming: true, ts: Date.now(), wakeAck: spokenAck || undefined },
     ])
     setStreaming(true)
 
@@ -1952,7 +2247,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
         signal: controller.signal,
         onDelta: (_chunk, fullText) => {
           setMessages((prev) =>
-            prev.map((m) => (m.id === tempAsstId ? { ...m, content: fullText } : m)),
+            prev.map((m) => (m.id === tempAsstId ? { ...m, content: spokenAck + fullText } : m)),
           )
         },
         onMeta: (meta) => {
@@ -1974,11 +2269,22 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
       setMessages((prev) =>
         prev.map((m) =>
           m.id === tempAsstId
-            ? { ...m, content: result.fullText, streaming: false, stopped: controller.signal.aborted }
+            ? { ...m, content: spokenAck + result.fullText, streaming: false, stopped: controller.signal.aborted }
             : m,
         ),
       )
       setNotice(controller.signal.aborted ? `${aiName} stopped.` : `${aiName} replied.`)
+      /* Auto-voice on the reply: only when the stream completed on its own
+         (never on an abort — the user pressed Stop), the toggle is on, and we
+         are not already inside a VoiceCall (that loop speaks through its own
+         pipeline and must not be double-voiced). */
+      if (speakReplies && !controller.signal.aborted && !voiceOpen) {
+        /* Fire-and-forget the async speak — it internally awaits the server
+           blob, then plays, and falls back to browser TTS on any error. The
+           awaited stream is already complete, so we don't want to hold up the
+           follow-up screenshot fulfilment behind a 1-3s audio round-trip. */
+        speakAssistantReply(result.fullText, { language: voicePrefs.language, gender: voicePrefs.gender, authToken })
+      }
       /* She asked to be seen — so actually be seen: photograph the live app and hang
          the real shots on this turn instead of leaving a marker on screen. */
       await fulfilSelfScreenshots({
@@ -1992,7 +2298,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
       setMessages((prev) =>
         prev.map((m) =>
           m.id === tempAsstId
-            ? { ...m, content: err.message || 'Something went wrong.', streaming: false, error: true }
+            ? { ...m, content: spokenAck + (err.message || 'Something went wrong.'), streaming: false, error: true }
             : m,
         ),
       )
@@ -2005,9 +2311,12 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
   }
 
   /* Stop Aira mid-generation: cancel the stream and keep what already rendered.
-     The backend aborts the provider call too, so no more credits are spent. */
+     The backend aborts the provider call too, so no more credits are spent.
+     Also kill any spoken reply — auto-voice is currently streaming her answer
+     through speechSynthesis and pressing Stop must silence it instantly. */
   function stopGeneration() {
     streamAbortRef.current?.abort()
+    if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel()
   }
 
   /* "Reply" on an AI bubble: pin that one turn as the target and hand focus to the
@@ -2088,6 +2397,61 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
     }
   }
 
+  /* Wake-word listener — say "Aira, <command>" from any section and the chat
+     takes over. Auto-armed the moment a signed-in session mounts the
+     workspace: no header button is required any more, so "Listen Aira"
+     actually lands the first time. The user can still pause it via the small
+     Stop-mic pill inside the chat composer, and it always pauses while the
+     VoiceCall overlay is up (one mic, one engine, no double transcripts).
+     `sendPrompt` is a plain function declaration, so its closure is fine
+     here (the hook holds it in a ref and refreshes each render). */
+  const [wakeEnabled, setWakeEnabled] = useState(true)
+  /* Auto-voice on replies: when the stream lands, we speak the answer out
+     loud. Users who prefer silence can toggle this from the composer. */
+  const [speakReplies, setSpeakReplies] = useState(() => {
+    try { return localStorage.getItem('nexora_speak_replies') !== '0' } catch { return true }
+  })
+  /* The in-progress interim transcript — Chrome refines it every ~200 ms while
+     the user is still speaking, so their words appear on screen before the
+     recogniser commits. Cleared on every final / restart / unmount by the hook. */
+  const [wakeLive, setWakeLive] = useState('')
+  const wakeStatus = useWakeWord({
+    enabled: wakeEnabled && !voiceOpen && isLoggedIn && Boolean(authToken),
+    wakeWord: aiName,
+    /* Hear commands in the same language the Talk call uses. Without this the
+       always-on mic stays on en-US and a task spoken in Urdu/Roman Urdu arrives
+       mangled (e.g. just "hi"), so the instruction never reaches the model. */
+    language: voicePrefs.language,
+    onInterim: (text) => setWakeLive(text),
+    onWake: (raw) => {
+      const heard = (raw || aiName).trim()
+      const ack = WAKE_ACK_LINES[voicePrefs.language]?.wake || WAKE_ACK_LINES.auto.wake
+      setNotice(`🎙 Heard: "${heard}" — ${aiName}: "${ack}"`)
+      speakWakeLine(ack, { language: voicePrefs.language, gender: voicePrefs.gender })
+    },
+    onCommand: (cmd) => {
+      /* `sendPrompt` early-returns while a stream is running or an attachment
+         is uploading; a silent drop reads to the user as "the mic never
+         caught it", so we surface the real reason here instead of the
+         generic Heard notice. */
+      if (streaming) {
+        setNotice(`⏳ ${aiName} abhi reply kar rahi hai — "${cmd}" baad me dobara bolo`)
+        return
+      }
+      const ack = WAKE_ACK_LINES[voicePrefs.language]?.command || WAKE_ACK_LINES.auto.command
+      setNotice(`🎙 You: "${cmd}" — ${aiName}: "${ack}"`)
+      /* Order matters: speak first so the earcon is immediate, then hand to
+         sendPrompt with the same text as `spokenAck` so the bubble in the
+         chat starts with the sentence the user just heard — what the AI
+         SAID and what the AI WROTE stay identical, which is the whole point
+         of the wake flow. */
+      speakWakeLine(ack, { language: voicePrefs.language, gender: voicePrefs.gender })
+      /* Same path a typed Enter uses, so image intent, tools, credits, memory
+         and language guards all apply identically. */
+      sendPrompt(null, cmd, { spokenAck: ack })
+    },
+  })
+
   return <main className="workspace-shell" id="workspace">
     {/* The floating account dock is gone — the account drawer now drops down from
         the topbar profile button, so the workspace owns the full viewport. */}
@@ -2099,27 +2463,16 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
            Chat/Schedule/Memory/Tools are otherwise unreachable — expose them here. */}
         <nav className="workspace-nav" aria-label="Workspace navigation">{['Chat', 'Schedule', 'Memory', 'Tools', 'Desktop'].map((label) => <button type="button" key={label} className={`workspace-nav-btn${view === label ? ' selected' : ''}`} aria-current={view === label ? 'page' : undefined} onClick={() => setActiveView(label)}>{label}</button>)}</nav>
         <div className="workspace-actions">
-          <button
-            className="header-voice-btn"
-            type="button"
-            title={`Talk to ${aiName} out loud`}
-            onClick={() => {
-              if (!isLoggedIn || !authToken) {
-                onLogin()
-                return
-              }
-              setVoiceOpen(true)
-            }}
-          >
-            <span aria-hidden="true">◉</span> Talk
-          </button>
+          {/* The Wake and Talk buttons are gone from the topbar: the wake-word
+              auto-arms on login (see `wakeEnabled` above) and the voice surface
+              lives inside the chat composer as a small inline pill. This keeps
+              the header clean and stops the mic from feeling like an opt-in. */}
           {!isPremium && (
             <button
               className="header-upgrade-btn"
               type="button"
               onClick={() => {
                 if (onUpgrade) onUpgrade()
-                setNotice('✦ Demo: Pro plan unlocked locally. No payment provider is connected — nothing was actually charged.')
               }}
             >
               <span>✦</span> Upgrade
@@ -2303,17 +2656,64 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
                   user to click back into the composer before typing the next prompt. The
                   send button and sendPrompt's own guard block a second turn instead. */}
               <input id="chat-prompt" ref={promptInputRef} type="text" value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape' && replyTarget) setReplyTarget(null) }} placeholder={replyTarget ? `Replying to ${aiName}…` : streaming ? `${aiName} is typing…` : pendingImgs.length ? 'Ask about the image…' : 'Type your message...'} autoComplete="off" />
+              {/* Auto-voice cluster: always-listening mic pill + Talk (opens the
+                  VoiceCall overlay) + Speak-replies toggle. Lives here instead
+                  of the header so the whole voice surface is inside the chat
+                  content, exactly where a conversation happens. */}
+              <div className="prompt-voice-cluster" role="group" aria-label="Voice controls">
+                <button
+                  type="button"
+                  className={`prompt-mic-btn${wakeEnabled ? ' on' : ''} status-${wakeStatus}`}
+                  aria-pressed={wakeEnabled}
+                  aria-label={wakeEnabled ? `${aiName} is listening for "${aiName}". Click to pause.` : `Resume listening for "${aiName}"`}
+                  title={wakeEnabled ? `Click to pause the ${aiName} mic` : `Click to let ${aiName} hear you again`}
+                  onClick={() => setWakeEnabled((v) => !v)}
+                >
+                  <span className="prompt-mic-dot" aria-hidden="true" />
+                  <span aria-hidden="true">🎙</span>
+                  <em className="prompt-mic-chip">{wakeEnabled ? (wakeStatus === 'listening' ? 'listening' : wakeStatus === 'denied' ? 'blocked' : wakeStatus === 'no-mic' ? 'no mic' : wakeStatus === 'unsupported' ? 'no STT' : 'starting') : 'paused'}</em>
+                </button>
+                <button
+                  type="button"
+                  className="prompt-talk-btn"
+                  aria-label={`Talk to ${aiName} out loud`}
+                  title={`Open the ${aiName} voice call`}
+                  onClick={() => {
+                    if (!isLoggedIn || !authToken) { onLogin(); return }
+                    setVoiceOpen(true)
+                  }}
+                ><span aria-hidden="true">◉</span> Talk</button>
+                <button
+                  type="button"
+                  className={`prompt-speak-btn${speakReplies ? ' on' : ''}`}
+                  aria-pressed={speakReplies}
+                  aria-label={speakReplies ? 'Mute spoken replies' : 'Let replies be spoken aloud'}
+                  title={speakReplies ? 'AI replies are spoken aloud — click to mute' : 'AI replies are silent — click to unmute'}
+                  onClick={() => {
+                    const next = !speakReplies
+                    setSpeakReplies(next)
+                    try { localStorage.setItem('nexora_speak_replies', next ? '1' : '0') } catch { /* private mode */ }
+                    if (!next && typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel()
+                    /* Mute also stops any server-synth MP3 that's currently playing,
+                       not just browser TTS — the user hit 🔇 meaning "go silent". */
+                    if (!next) cancelServerAudio()
+                  }}
+                ><span aria-hidden="true">{speakReplies ? '🔊' : '🔇'}</span></button>
+              </div>
               <button type="submit" aria-label="Send message" disabled={streaming || pendingImgs.some((p) => p.uploading) || (!prompt.trim() && !pendingImgs.length)}>➤</button>
               {streaming && <button type="button" className="chat-stop-btn" aria-label="Stop generating" onClick={stopGeneration}>■ Stop</button>}
             </div>
           </form>
-          {/* Quick actions / Continue chat. Always open here: nothing on this screen
-              loses space to a docked panel, so it is given no fold handle at all. */}
-          <ChatPop collapsible={false} open={chatOpen} setOpen={setChatOpen} conversations={conversations} onNewChat={startNewChat} onOpenChat={openConversation} onPrompt={fillComposer} onTalk={startTalkCall} />
         </section>}
         {view === 'Tools' && <div className="workspace-page-panel">
-          <div className="workspace-tool-grid">{tools.map(([icon, title, description, tint]) => <button className={`workspace-tool tint-${tint} ${selectedTool === title ? 'tool-highlighted' : ''}`} type="button" key={title} onClick={() => { setSelectedTool(title); setNotice(`${title} ready — describe what you need below.`) }}><span className="showcase-icon">{icon}</span><strong>{title}</strong><small>{description}</small><b>{selectedTool === title ? 'Selected ✓' : 'Open tool →'}</b></button>)}</div>
-          {selectedEntry && <ToolRunner key={selectedEntry[1]} entry={selectedEntry} token={authToken} aiName={aiName} persona={voicePrefs.persona} isLoggedIn={isLoggedIn} onLogin={onLogin} onCredits={onProfileUpdate} />}
+          {/* Clicking a card no longer opens an inline form — it starts a fresh
+             Chat conversation titled after the tool, seeds it with Aira's own
+             professional intro asking for the exact references that tool needs,
+             and drops a filled-in draft into the composer. The backend LLM
+             reads the `[<tool> · session]` prefix in that draft on the first
+             send and answers in the right lane. See `startToolSession` and
+             `TOOL_STARTERS` for the per-tool copy. */}
+          <div className="workspace-tool-grid">{tools.map(([icon, title, description, tint]) => <button className={`workspace-tool tint-${tint}${selectedTool === title ? ' tool-highlighted' : ''}`} type="button" key={title} onClick={() => startToolSession(title)}><span className="showcase-icon">{icon}</span><strong>{title}</strong><small>{description}</small><b>{selectedTool === title ? 'Opened ✓' : 'Open tool →'}</b></button>)}</div>
         </div>}
         {view === 'Desktop' && <DesktopView token={authToken} aiName={aiName} isLoggedIn={isLoggedIn} onLogin={onLogin} />}
         {view === 'Schedule' && <section className="workspace-page-panel history-panel">
@@ -2342,9 +2742,13 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
           authToken={authToken}
           facts={{ items: memories, loading: memLoading, busy: memBusy, draft: memDraft, setDraft: setMemDraft, submit: submitMemory, remove: removeMemoryEntry }}
           chats={{ items: conversations, visible: visibleConversations, loading: convLoading, query: historyQuery, setQuery: setHistoryQuery, confirming: confirmDeleteAll, setConfirming: setConfirmDeleteAll, removeAll: removeAllConversations, open: openConversation, remove: removeConversation }}
-          quick={{ open: chatOpen, setOpen: setChatOpen, newChat: startNewChat, prompt: fillComposer, talk: startTalkCall }}
         /></Suspense>}
-        {view === 'Settings' && <SettingsView isLoggedIn={isLoggedIn} userProfile={userProfile} authToken={authToken} onProfileUpdate={onProfileUpdate} onLogin={onLogin} onUpgrade={onUpgrade} voicePrefs={voicePrefs} persistVoicePrefs={persistVoicePrefs} />}
+        {view === 'Settings' && <SettingsView isLoggedIn={isLoggedIn} userProfile={userProfile} authToken={authToken} onProfileUpdate={onProfileUpdate} onTokenChange={onTokenChange} onLogin={onLogin} onUpgrade={onUpgrade} voicePrefs={voicePrefs} persistVoicePrefs={persistVoicePrefs} />}
+        {/* Live transcript: shows the interim STT text so the user can watch
+            their own voice being traced before they finish the sentence.
+            aria-live="polite" but not "assertive" — Chrome refines the text
+            every ~200 ms and screen readers would otherwise stutter. */}
+        {wakeLive && <div className="wake-live-caption" aria-live="polite"><span className="wake-live-dot" aria-hidden="true" /><em>You, saying:</em> {wakeLive}</div>}
         {notice && <div className="toast-message" role="status"><span>✦</span>{notice}<button type="button" aria-label="Dismiss notification" onClick={() => setNotice('')}>×</button></div>}
       </div>
     </section>
@@ -2364,6 +2768,76 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
   </main>
 }
 
+/* The in-app pricing modal, now with the manual Easypaisa / JazzCash flow. Real
+   checkout needs a merchant account the owner doesn't have yet, so instead of
+   flipping the plan the modal shows the owner's wallet number + the plan price,
+   lets the user pay in their own banking app and submit the transaction id, and
+   waits for the owner to approve. Picking a paid plan hands control to the parent
+   (onChoose → loads billing, opens the pay stage); 'free' still changes directly. */
+function PricingModal({ open, currentPlan, busy, error, notice, onClose, onChoose, billing, payPlan, onBack, payMethod, setPayMethod, payTxn, setPayTxn, onSubmit }) {
+  useEffect(() => {
+    if (!open) return undefined
+    const onKey = (event) => { if (event.key === 'Escape') onClose() }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onClose])
+  if (!open) return null
+
+  const chosen = payPlan ? PLANS.find((p) => p.key === payPlan) : null
+  const methods = billing?.methods || []
+  const activeMethod = methods.find((m) => m.id === payMethod) || methods[0] || null
+  const pending = billing?.myRequests?.find((r) => r.plan === payPlan && r.status === 'pending')
+
+  return createPortal(<div className="modal-backdrop pricing-backdrop" role="dialog" aria-modal="true" aria-label="Choose a plan" onClick={onClose}>
+    <div className="pricing-modal" onClick={(event) => event.stopPropagation()}>
+      <button type="button" className="pricing-close" aria-label="Close plans" onClick={onClose}>×</button>
+      {notice && <p className="pricing-notice" role="status"><span>✦</span> {notice}</p>}
+      {error && <p className="pricing-error" role="alert"><span>⚠</span> {error}</p>}
+
+      {chosen ? <div className="pricing-pay">
+        <button type="button" className="pricing-back" onClick={onBack}>← Back to plans</button>
+        <h2>Activate <span>{chosen.name}</span></h2>
+        <p className="pricing-sub">Payment {chosen.price} — {chosen.sub}. Apne Easypaisa ya JazzCash app se neeche diye number par bhejein, phir Transaction ID darj karein. Owner verify karke plan chalu kar dega.</p>
+        {!billing && <p className="pricing-muted">Loading payment options…</p>}
+        {billing && !billing.manualEnabled && <p className="pricing-error" role="alert"><span>⚠</span> Online payment is not enabled yet — the site owner hasn't added an Easypaisa/JazzCash account. Your current plan keeps working; please check back later.</p>}
+        {billing && billing.manualEnabled && !methods.length && <p className="pricing-error" role="alert"><span>⚠</span> No payment account is configured on this server yet.</p>}
+        {billing && billing.manualEnabled && pending ? <div className="pricing-pending" role="status">
+          <strong>⏳ Payment submitted — awaiting approval</strong>
+          <p>Aap ne {pending.amount} PKR ({pending.method === 'easypaisa' ? 'Easypaisa' : 'JazzCash'}) bheja, Transaction ID <code>{pending.txnId}</code>. Owner approve karte hi {chosen.name} chalu ho jayega — thora intezar karein.</p>
+          <p className="pricing-muted">Naya payment bhejne ke liye neeche wapas jaayein.</p>
+        </div> : billing && billing.manualEnabled && activeMethod ? <form className="pricing-pay-form" onSubmit={(event) => { event.preventDefault(); onSubmit() }}>
+          <div className="pricing-methods" role="radiogroup" aria-label="Payment method">
+            {methods.map((m) => <button type="button" key={m.id} role="radio" aria-checked={activeMethod.id === m.id} className={`pricing-method${activeMethod.id === m.id ? ' selected' : ''}`} onClick={() => setPayMethod(m.id)}>{m.label}</button>)}
+          </div>
+          <div className="pricing-sendto">
+            <span className="pricing-sendto-label">Send {chosen.price} to {activeMethod.label}{activeMethod.accountName ? ` (${activeMethod.accountName})` : ''}</span>
+            <div className="pricing-number"><code>{activeMethod.number}</code><button type="button" className="pricing-copy" onClick={() => navigator.clipboard?.writeText(activeMethod.number)} aria-label={`Copy ${activeMethod.label} number`}>Copy</button></div>
+          </div>
+          <label className="pricing-txn-label" htmlFor="pricing-txn">Transaction ID (TID) jo app ne diya</label>
+          <input id="pricing-txn" className="settings-input" type="text" inputMode="numeric" autoComplete="off" maxLength={40} value={payTxn} onChange={(event) => setPayTxn(event.target.value)} placeholder="e.g. 0123456789" />
+          <p className="pricing-muted">Sirf letters, numbers ya dashes. Ghalat TID se approval nahi hoga.</p>
+          <button className="button button-primary button-wide" type="submit" disabled={busy || payTxn.trim().length < 4}>{busy ? 'Submitting…' : 'I have paid — submit for approval'} <span>→</span></button>
+        </form> : null}
+      </div> : <>
+        <p className="eyebrow">CHOOSE YOUR PLAN</p>
+        <h2>Unlock more <span>Nexora</span></h2>
+        <p className="pricing-sub">Yeh wahi pricing hai jo aapke dashboard me hai — jo plan behtar lage, choose kar lein.</p>
+        <div className="plan-grid pricing-grid">
+          {PLANS.map((p) => <article key={p.key} className={`plan-card ${p.feat ? 'plan-featured' : ''}`}>
+            {p.feat && <span className="popular-label">MOST LOVED</span>}
+            <span className="plan-label">{p.label}</span>
+            <h3>{p.name}</h3>
+            <p className="plan-price">{p.price} <small>{p.sub}</small></p>
+            <p className="plan-description">{p.desc}</p>
+            <ul>{p.items.map((it) => <li key={it}><span>✦</span> {it}</li>)}</ul>
+            <button className={`button button-${p.tint} button-wide`} type="button" disabled={busy || currentPlan === p.key} onClick={() => onChoose(p.key)}>{currentPlan === p.key ? 'Current plan' : (busy ? 'Working…' : p.cta)} <span>→</span></button>
+          </article>)}
+        </div>
+      </>}
+    </div>
+  </div>, document.body)
+}
+
 export default function Nexora() {
   const initialSession = loadSession()
   const [showWorkspace, setShowWorkspace] = useState(() =>
@@ -2376,6 +2850,20 @@ export default function Nexora() {
   const [activeView, setActiveView] = useState(() => initialSession?.activeView || 'Home')
   const [selectedTool, setSelectedTool] = useState(null)
   const [pendingNavigation, setPendingNavigation] = useState(null)
+  /* The in-app pricing modal (opened by any Upgrade button) and its transient
+     state: a backend error message and the in-flight flag that disables the plan
+     buttons while a change is being attempted. */
+  const [showPricing, setShowPricing] = useState(false)
+  const [pricingError, setPricingError] = useState(null)
+  const [pricingNotice, setPricingNotice] = useState(null)
+  const [pricingBusy, setPricingBusy] = useState(false)
+  /* Manual payment state: the /api/billing/status payload, which paid plan is being
+     paid for (drives the modal's second stage), the chosen wallet + typed transaction
+     id. Reset whenever the modal closes so a reopened modal starts clean. */
+  const [billing, setBilling] = useState(null)
+  const [payPlan, setPayPlan] = useState(null)
+  const [payMethod, setPayMethod] = useState('')
+  const [payTxn, setPayTxn] = useState('')
   // 'google' | 'signup' | null — while set, the onboarding page stays in front of the workspace
   const [onboardingSource, setOnboardingSource] = useState(() => {
     try {
@@ -2509,20 +2997,70 @@ export default function Nexora() {
     setPendingNavigation(null)
   }
 
-  async function handleUpgrade() {
+  /* Any Upgrade button opens the pricing modal rather than silently flipping the
+     plan. Signed-out visitors are sent to sign in first (the plan change needs an
+     account), which is also what the landing "Get Pro" card does. */
+  function handleUpgrade(message) {
     if (!authToken) {
       setShowLogin(true)
       return
     }
-    /* Real checkout is not wired yet — this only flips the plan flag locally.
-       If the backend rejects it, surface the error rather than lying to the
-       session cache about being Pro. */
+    setPricingError(null)
+    setPayPlan(null)
+    /* An optional reason string (e.g. the demo cap) is shown INSIDE the modal, since
+       the low-z-index toast would otherwise render behind the modal backdrop. */
+    setPricingNotice(typeof message === 'string' ? message : null)
+    setShowPricing(true)
+  }
+
+  /* Load the payment options once and keep them for the session of the modal. */
+  async function ensureBilling() {
+    if (billing) return billing
+    try { const s = await billingStatus(authToken); setBilling(s); return s }
+    catch (err) { setPricingError(err?.message); return null }
+  }
+
+  /* Picking a plan. 'free' (a downgrade) changes directly — it is always allowed.
+     A paid plan never flips the badge itself; it opens the manual-payment stage so
+     the user can send the money and submit the transaction id for approval. */
+  async function handleChoose(plan) {
+    if (!authToken) { setShowPricing(false); setShowLogin(true); return }
+    setPricingError(null)
+    setPricingNotice(null)
+    if (plan === 'free') {
+      setPricingBusy(true)
+      try { const res = await upgradePlan(authToken, 'free'); const session = saveSession({ token: authToken, user: res.user }); setUserProfile(session.userProfile); setShowPricing(false) }
+      catch (err) { setPricingError(err?.message || 'Could not change your plan.') }
+      finally { setPricingBusy(false) }
+      return
+    }
+    setPayPlan(plan)
+    setPayTxn('')
+    const s = await ensureBilling()
+    if (s?.methods?.length) setPayMethod(s.methods[0].id)
+  }
+
+  function backToPlans() { setPayPlan(null); setPayTxn(''); setPricingError(null); setPricingNotice(null) }
+
+  /* Submit the paid plan + transaction id for the owner to approve. Does not change
+     the plan; refreshes billing so the modal flips to the "awaiting approval" box. */
+  async function submitPayment() {
+    if (!authToken || !payPlan) return
+    const method = payMethod || billing?.methods?.[0]?.id
+    const txnId = payTxn.trim()
+    if (!method || txnId.length < 4) return
+    setPricingBusy(true)
+    setPricingError(null)
     try {
-      const res = await upgradePlan(authToken, 'pro')
-      const session = saveSession({ token: authToken, user: res.user })
-      setUserProfile(session.userProfile)
+      const res = await billingRequest(authToken, { plan: payPlan, method, txnId })
+      setBilling(await billingStatus(authToken))
+      setPayTxn('')
+      setPricingNotice(res?.message || 'Payment submitted — the owner will approve it shortly.')
     } catch (err) {
-      console.error('[nexora] upgrade failed', err)
+      console.error('[nexora] payment request failed', err)
+      setPricingError(err?.message || 'Could not submit your payment.')
+    } finally {
+      setPricingBusy(false)
     }
   }
 
@@ -2530,6 +3068,15 @@ export default function Nexora() {
     if (!authToken || !user) return
     const session = saveSession({ token: authToken, user })
     setUserProfile(session.userProfile)
+  }
+
+  /* Swap in a freshly-rotated auth token (password change revokes the old one on the
+     server) — update in-memory state AND the persisted session so this tab keeps its
+     own access without forcing a re-login. */
+  function handleTokenChange(token) {
+    if (!token) return
+    setAuthToken(token)
+    saveSession({ token })
   }
 
   return (
@@ -2562,6 +3109,7 @@ export default function Nexora() {
           onLogout={handleLogout}
           onUpgrade={handleUpgrade}
           onProfileUpdate={handleProfileUpdate}
+          onTokenChange={handleTokenChange}
         />
       ) : (
         <Landing
@@ -2575,6 +3123,23 @@ export default function Nexora() {
           onUpgrade={handleUpgrade}
         />
       )}
+      <PricingModal
+        open={showPricing}
+        currentPlan={userProfile?.plan}
+        busy={pricingBusy}
+        error={pricingError}
+        notice={pricingNotice}
+        billing={billing}
+        payPlan={payPlan}
+        payMethod={payMethod}
+        setPayMethod={setPayMethod}
+        payTxn={payTxn}
+        setPayTxn={setPayTxn}
+        onChoose={handleChoose}
+        onBack={backToPlans}
+        onSubmit={submitPayment}
+        onClose={() => { setShowPricing(false); setPricingError(null); setPricingNotice(null); setPayPlan(null); setPayTxn(''); setPayMethod(''); setBilling(null) }}
+      />
     </>
   )
 }

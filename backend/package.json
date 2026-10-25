@@ -8,6 +8,7 @@
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
     "test": "node --test",
+    "eval:intelligence": "node scripts/eval-intelligence.mjs",
     "db:reset": "node src/db/reset.js"
   },
   "engines": {

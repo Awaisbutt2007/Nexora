@@ -2,6 +2,18 @@ import jwt from 'jsonwebtoken'
 import { config } from '../config.js'
 import { getDb } from '../db/index.js'
 
+/* True when a token predates the account's session floor (set on password change).
+   `iat` is seconds; the floor is an ISO string. A token minted in the SAME second as
+   the rotation is kept (>= floor), so the freshly-issued session survives while every
+   earlier one — including a stolen 7-day token — is rejected. Fail-open on a missing
+   floor or malformed date so an upgrade never locks anyone out. */
+function isTokenRevoked(user, payload) {
+  if (!user.tokens_valid_after || typeof payload.iat !== 'number') return false
+  const floor = Math.floor(new Date(user.tokens_valid_after).getTime() / 1000)
+  if (!Number.isFinite(floor)) return false
+  return payload.iat < floor
+}
+
 export function signToken(user) {
   return jwt.sign(
     { sub: user.id, email: user.email, plan: user.plan },
@@ -24,6 +36,9 @@ export function requireAuth(req, res, next) {
     if (!user) {
       return res.status(401).json({ error: { message: 'User not found', type: 'auth_error' } })
     }
+    if (isTokenRevoked(user, payload)) {
+      return res.status(401).json({ error: { message: 'Session expired — please sign in again.', type: 'auth_error' } })
+    }
     req.user = sanitizeUser(user)
     next()
   } catch {
@@ -39,7 +54,7 @@ export function optionalAuth(req, _res, next) {
   try {
     const payload = jwt.verify(token, config.jwtSecret)
     const user = getDb().prepare('SELECT * FROM users WHERE id = ?').get(payload.sub)
-    if (user) req.user = sanitizeUser(user)
+    if (user && !isTokenRevoked(user, payload)) req.user = sanitizeUser(user)
   } catch {
     // ignore invalid optional token
   }
