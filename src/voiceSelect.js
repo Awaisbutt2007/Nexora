@@ -45,6 +45,55 @@ const MALE_HINTS = [
 const lower = (s) => String(s || '').toLowerCase()
 const matches = (voice, hints) => hints.some((h) => lower(voice.name).includes(h))
 
+/* Voice-list warm cache. Chrome and Edge return an empty array from
+ * `speechSynthesis.getVoices()` on the very first call and populate it
+ * asynchronously, firing `voiceschanged` after roughly 500 ms to 2 s. That
+ * means the FIRST utterance of the session either reads no voices (so we
+ * fall through to `voices[0]` and lose the gender/accent chain entirely)
+ * or the caller has to `await` inside a click handler and the user hears a
+ * silent gap before "Ji haan, boliye". We start the poll the moment the
+ * module loads (which is on React mount, before the user signs in), keep
+ * the resolved list, and every caller reads the cache synchronously. */
+let _voicesCache = []
+let _voicesWarm = false
+function _readVoices() {
+  try {
+    if (typeof window === 'undefined' || !window.speechSynthesis) return []
+    return window.speechSynthesis.getVoices() || []
+  } catch { return [] }
+}
+export function warmVoiceList() {
+  if (_voicesWarm) return _voicesCache
+  const initial = _readVoices()
+  if (initial.length) { _voicesCache = initial; _voicesWarm = true; return initial }
+  /* Empty on first read: subscribe once, keep the resolution when it fires. */
+  try {
+    window.speechSynthesis.addEventListener?.('voiceschanged', () => {
+      const list = _readVoices()
+      if (list.length) { _voicesCache = list; _voicesWarm = true }
+    }, { once: true })
+  } catch { /* older engines expose only `onvoiceschanged` */
+    try {
+      window.speechSynthesis.onvoiceschanged = () => {
+        const list = _readVoices()
+        if (list.length) { _voicesCache = list; _voicesWarm = true }
+      }
+    } catch { /* nothing more we can do; the fallback in configureUtter handles it */ }
+  }
+  return initial
+}
+/* Called from anywhere that has a `speechSynthesis` reference (Nexora.jsx on
+ * mount, VoiceCall.jsx before the first speak). Returns the current best list;
+ * if the browser has not finished enumerating yet it hands back whatever we
+ * have (an empty array) and the caller falls through to the default engine
+ * voice just for the first utterance, and every subsequent call is fast. */
+export function getCachedVoices() {
+  if (_voicesWarm && _voicesCache.length) return _voicesCache
+  const live = _readVoices()
+  if (live.length) { _voicesCache = live; _voicesWarm = true }
+  return _voicesCache
+}
+
 /* Accent-preference chain per reply language. Shared by every TTS surface
  * (wake ack + auto-spoken reply in Nexora.jsx, and the VoiceCall fallback
  * pipeline) so "her" sounds the same in every place AND all three paths
@@ -81,11 +130,14 @@ export const TTS_NATURAL_LOCALE = { en: 'en-US', ur: 'ur-PK', hinglish: 'hi-IN',
 /* Kept in lock-step with INDIC_REWRITES in backend/src/services/tts.js — the
  * backend does the same pass before hitting `gpt-4o-mini-tts`, so a user
  * who has an OpenAI key and one who doesn't hear the SAME corrected vowels.
- * Just three high-frequency mispronunciations; the shorter the list, the
- * lower the risk of degrading a real reply. */
+ * A wider list on the browser path is MORE important than on the server
+ * path, because en-IN / en-GB Windows voices have zero Indic training data
+ * and mangle almost every Latin-script word without the phoneme nudges. */
 const INDIC_REWRITES = [
   [/\bkyun(ke|ki)?\b/gi, (_m, tail = '') => `kayun${tail}`],
   [/\bkyon(ke|ki)?\b/gi, (_m, tail = '') => `kayon${tail}`],
+  [/\bkyunki\b/gi, 'kayun-kee'],
+  [/\bkyonki\b/gi, 'kayon-kee'],
   [/\bbilkul\b/gi, 'bil-kul'],
   [/\bshayad\b/gi, 'shaa-yad'],
   [/\bshayed\b/gi, 'shaa-yad'],
@@ -96,13 +148,66 @@ const INDIC_REWRITES = [
   [/\bkaisay\b/gi, 'kai-say'],
   [/\bsamajh\b/gi, 'sa-maj'],
   [/\bsamjha\b/gi, 'sam-jhaa'],
+  [/\bsamjhi\b/gi, 'sam-jhee'],
   [/\bzaroor\b/gi, 'za-roor'],
   [/\bzarurat\b/gi, 'za-ra-rat'],
   [/\bqismat\b/gi, 'kis-mat'],
   [/\bmuqabla\b/gi, 'mu-qa-bla'],
   [/\braasta\b/gi, 'raa-sta'],
   [/\bwaqt\b/gi, 'vakht'],
+  [/\btha\b/gi, 'thaa'],
+  [/\bthi\b/gi, 'thee'],
+  [/\bthoda\b/gi, 'tho-daa'],
+  [/\bthodi\b/gi, 'tho-dee'],
+  [/\bthora\b/gi, 'tho-raa'],
+  [/\bhoon\b/gi, 'houn'],
+  [/\bhuwa\b/gi, 'hoo-aa'],
+  [/\bhuwi\b/gi, 'hoo-ee'],
+  [/\bkarta\b/gi, 'kar-taa'],
+  [/\bkarti\b/gi, 'kar-thee'],
+  [/\bkarte\b/gi, 'kar-tay'],
+  [/\bleta\b/gi, 'lay-taa'],
+  [/\bleti\b/gi, 'lay-thee'],
+  [/\blete\b/gi, 'lay-tay'],
+  [/\bliya\b/gi, 'lee-yaa'],
+  [/\bliye\b/gi, 'lee-yay'],
+  [/\bdiya\b/gi, 'dee-yaa'],
+  [/\bgaya\b/gi, 'gaa-yaa'],
+  [/\bgayi\b/gi, 'gaa-yee'],
+  [/\bpyar\b/gi, 'pyaar'],
+  [/\bkhana\b/gi, 'khaa-na'],
+  [/\bkhaana\b/gi, 'khaa-na'],
+  [/\bpani\b/gi, 'paa-nee'],
+  [/\bpaani\b/gi, 'paa-nee'],
+  [/\bsardi\b/gi, 'sar-dee'],
+  [/\bgarmi\b/gi, 'gar-mee'],
+  [/\bnazdeek\b/gi, 'naz-deek'],
+  [/\bdosti\b/gi, 'dos-tee'],
+  [/\bzindagi\b/gi, 'zin-daa-gi'],
+  [/\bwaqai\b/gi, 'vaa-qa-ee'],
+  [/\bhaqeeqat\b/gi, 'ha-qee-qat'],
+  [/\bsocha\b/gi, 'so-chaa'],
+  [/\bsochi\b/gi, 'so-chee'],
+  [/\bdikha\b/gi, 'dee-khaa'],
+  [/\bdikhi\b/gi, 'dee-khee'],
+  [/\bmujhe\b/gi, 'muj-heh'],
+  [/\btujhe\b/gi, 'tuj-heh'],
+  [/\bhoga\b/gi, 'ho-gaa'],
+  [/\bhogi\b/gi, 'ho-ghee'],
+  [/\bchahiye\b/gi, 'chaa-hee-yay'],
+  [/\bchahye\b/gi, 'chaa-hee-yay'],
+  [/\bkarlo\b/gi, 'kar-lo'],
+  [/\bkarle\b/gi, 'kar-lay'],
+  [/\bkarde\b/gi, 'kar-day'],
+  [/\bkardega\b/gi, 'kar-day-gaa'],
+  [/\bkardegi\b/gi, 'kar-day-ghee'],
+  [/\bbatao\b/gi, 'ba-taa-o'],
+  [/\bbataye\b/gi, 'ba-taa-yay'],
+  [/\bbatana\b/gi, 'ba-taa-na'],
 ]
+/* Sentence-auxiliary words the browser engine rushes at rate ≥0.9. When we
+ * detect an Indic reply we ALSO shave 6 percent off rate so the extra
+ * syllable breaks have time to land. */
 /* Keep the sentence-initial capital across the swap — "Bilkul" must become
  * "Bil-kul" not "bil-kul", otherwise the reply looks odd in the visual
  * transcript log and the engine's prosody loses its sentence-start marker. */
@@ -149,7 +254,14 @@ export function configureUtterForSpeech(utter, voices, { language, gender } = {}
   try { utter.text = normalizeForSpeech(utter.text, language) } catch { /* engine refused reassignment — the raw text still speaks */ }
   utter.lang = TTS_NATURAL_LOCALE[language] || 'en-US'
   const chain = TTS_LOCALE_CHAIN[language] || [utter.lang]
-  const chosen = pickGenderedVoice(voices, { gender, prefers: chain })
+  /* Prefer the module-level warm cache over whatever the caller passed in —
+     a caller that reads `getVoices()` inside a click handler is guaranteed
+     to see the empty list on the very first utterance of the session, which
+     drops us to `voices[0]` and breaks the chain. Only fall back to the
+     caller's list if the cache is still cold AND the caller has one. */
+  const cached = getCachedVoices()
+  const pool = (cached && cached.length) ? cached : (Array.isArray(voices) ? voices : [])
+  const chosen = pickGenderedVoice(pool, { gender, prefers: chain })
   if (chosen) {
     utter.voice = chosen
     /* Match `utter.lang` to the voice's own engine — a mismatched tag makes

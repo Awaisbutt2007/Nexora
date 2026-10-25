@@ -57,6 +57,29 @@ const FEMALE_VOICES_INDIC = ['nova', 'shimmer', 'alloy']
 const MALE_VOICES_INDIC = ['echo', 'onyx', 'fable']
 const ALL_VOICES = new Set([...FEMALE_VOICES_EN, ...MALE_VOICES_EN])
 
+/* The Realtime (VoiceCall) surface exposes a DIFFERENT voice catalogue to the
+ * client — the gpt-realtime built-ins (marin/coral/ballad/sage/verse/cedar/ash)
+ * which have no server-TTS equivalent. The user picks from one list in Settings
+ * but that same preference must decide the timbre on BOTH surfaces or the
+ * companion sounds like two different people between Talk mode and chat replies.
+ * Map each Realtime name to its closest TTS counterpart. `voice` values that
+ * already name a TTS voice (`nova`…`fable`) are passed through untouched. */
+const REALTIME_TO_TTS = {
+  marin: 'nova',      // warm natural female
+  coral: 'shimmer',   // breathy friendly female
+  ballad: 'shimmer',  // light melodic female
+  sage: 'alloy',      // grounded steady neutral
+  verse: 'alloy',     // crisp composed neutral
+  cedar: 'echo',      // firm male-leaning
+  ash: 'fable',       // friendly even male
+  echo: 'echo',
+  alloy: 'alloy',
+  nova: 'nova',
+  shimmer: 'shimmer',
+  onyx: 'onyx',
+  fable: 'fable',
+}
+
 /* Model override via env so we can flip to `tts-1` (cheaper, faster) or the
  * newer `gpt-4o-mini-tts` (best prosody) without a code change. Default is the
  * mini-tts lane because the user's whole complaint is intelligibility, not
@@ -69,21 +92,29 @@ const MODEL_SUPPORTS_INSTRUCTIONS = TTS_MODEL.startsWith('gpt-4o-mini-tts')
 
 /**
  * Voice catalogue check — the client's `voice` field is optional and only
- * honoured if it names one of OpenAI's shipped TTS voices. Anything else falls
- * through to the gender pick.
+ * honoured if it names one of OpenAI's shipped TTS voices OR a Realtime
+ * built-in we can map onto one (marin → nova etc.).
  */
 export function isTtsVoiceAllowed(name) {
-  return typeof name === 'string' && ALL_VOICES.has(name.toLowerCase())
+  if (typeof name !== 'string') return false
+  const key = name.toLowerCase()
+  return ALL_VOICES.has(key) || Boolean(REALTIME_TO_TTS[key])
 }
 
 /**
  * Choose an OpenAI TTS voice for the caller's preference. Priority: an explicit
- * allow-listed voice → gender's first pick (from the language-matched list) →
- * female default. Never returns an unlisted name (the provider would 400).
+ * allow-listed voice (or a Realtime name mapped through `REALTIME_TO_TTS`) →
+ * gender's first pick (from the language-matched list) → female default.
+ * Never returns an unlisted name (the provider would 400).
  */
 export function pickTtsVoice({ voice, gender, language } = {}) {
   const wanted = typeof voice === 'string' ? voice.toLowerCase() : ''
+  /* TTS native name wins. */
   if (ALL_VOICES.has(wanted)) return wanted
+  /* Realtime name translated to its closest TTS counterpart so a user who
+     picked "Marin" in Settings hears the SAME warm female timbre in chat
+     replies, not just in VoiceCall. */
+  if (REALTIME_TO_TTS[wanted]) return REALTIME_TO_TTS[wanted]
   const indic = language === 'hinglish' || language === 'ur' || language === 'auto'
   const female = indic ? FEMALE_VOICES_INDIC : FEMALE_VOICES_EN
   const male = indic ? MALE_VOICES_INDIC : MALE_VOICES_EN
@@ -121,7 +152,9 @@ const INDIC_CORE = [
   'English words inside the sentence keep an Indian-English accent — ho-TEL,',
   'a-DULT, WEEK-end — never General American. Mid-line prosody is friendly,',
   'slightly melodic and never news-reader formal. Do NOT spell out letters',
-  'or read punctuation aloud.',
+  'or read punctuation aloud. Contractions and hyphenated syllables are',
+  'intentional breath markers — keep each hyphenated segment tight and let',
+  'the vowel before the hyphen ring slightly longer than the one after.',
 ].join(' ')
 const TTS_INSTRUCTIONS = {
   hinglish: INDIC_CORE,
@@ -130,55 +163,186 @@ const TTS_INSTRUCTIONS = {
   en: 'Speak in clear, warm Indian-English — natural, unhurried, no hard American r-coloring. Never read punctuation aloud.',
 }
 
+/* Emotion detection. Free-tier TTS models read every sentence in the same
+ * flat register unless the `instructions` field says otherwise, which makes
+ * a "Hahaha, maza aa gaya!" land like a weather report. We scan the reply
+ * for markers (emoji, punctuation, exclamation words) and append a matching
+ * prosody sentence to the style spec + nudge `speed`. Recognised states:
+ *   happy    → lighter, quicker, pitch up
+ *   laugh    → very light, playful chuckle energy
+ *   sorry    → soft, slower, gentle falling intonation
+ *   question → rising terminal pitch, brief pause before the mark
+ *   excited  → quicker, brighter, small pause before the punchword
+ *   calm     → the default (no extra line emitted)
+ * Keep this list small and unambiguous — the wrong emotion on a serious line
+ * is worse than a flat read. Every marker is a strict literal or emoji, so
+ * false positives on plain conversation are rare. */
+const EMOTION_MARKERS = [
+  { key: 'laugh', re: /\b(?:haha+|hehe+|hihi+|lmao|lol|😂|🤣)/i,
+    spec: 'The user has just said something funny. Sound like a real person laughing WITH them — a light natural chuckle, brief and warm, NOT a canned giggle.' },
+  { key: 'happy', re: /\b(?:yay|yess+|awesome|great|badhiya|shabaash|waah|🎉|✨|😊|🥳)/i,
+    spec: 'Sound genuinely happy and a little brighter than neutral — pitch up by a hair, quicken slightly, and let your smile show through the voice.' },
+  { key: 'sorry', re: /\b(?:sorry|maaf|apology|I feel bad| Dukhi|ghamgeen|😔|💧)/i,
+    spec: 'Sound soft and sincere — slower pace, gentle falling intonation at every comma, no upward lilt, no brightness.' },
+  { key: 'excited', re: /\b(?:omg|woah|whoa|wow|yaa|really\?|sach mein|🤩|⚡)/i,
+    spec: 'Sound thrilled and a little breathless — quicken slightly, punch the emphasised word, keep a very short pause before it lands.' },
+]
+/* Question markers on their own (a sentence ending with ?) fire a softer
+ * rising-intonation prompt so the model doesn't fall flat on the ask. */
+const QUESTION_RE = /\?\s*(?:[^\w\s]\s*)*$/
+
+/**
+ * Combine the base per-language spec with any detected emotional colouring.
+ * Returns { spec, speedDelta } where speedDelta is added to the language
+ * profile (negative = slower, positive = faster) and clamped later.
+ */
+export function buildTtsInstructions({ language, gender, emotionHint } = {}) {
+  const env = String(process.env.VOICE_SYNTH_INSTRUCTIONS || '').trim()
+  const base = env || TTS_INSTRUCTIONS[language] || TTS_INSTRUCTIONS.auto
+  const genderLine = gender === 'male'
+    ? 'Voice: natural adult male, chest register, medium warmth.'
+    : 'Voice: natural adult female, medium-low pitch, warm and grounded (NOT cartoon-cutesy).'
+  /* Emotion detection looks at `emotionHint` — callers pass the raw reply
+     text so we can inspect it here without duplicating the regex list at
+     every call site. */
+  const text = String(emotionHint || '')
+  let emotionSpec = ''
+  let speedDelta = 0
+  for (const m of EMOTION_MARKERS) {
+    if (m.re.test(text)) {
+      emotionSpec = m.spec
+      /* Laugh and excited nudge faster; sorry nudge slower. */
+      speedDelta = m.key === 'sorry' ? -0.06 : (m.key === 'laugh' || m.key === 'excited' || m.key === 'happy' ? 0.05 : 0)
+      break
+    }
+  }
+  if (!emotionSpec && QUESTION_RE.test(text)) {
+    emotionSpec = 'This reply is a question — hold the very last syllable for a beat and let the pitch rise naturally at the question mark, the way a real friend does when they wait for an answer.'
+  }
+  return { text: [base, genderLine, emotionSpec].filter(Boolean).join(' '), speedDelta }
+}
+
 /* Per-language pacing. The engine rushes consonant clusters on Indic speech at
  * 1.0; dropping a hair under natural makes retroflex stops land without
  * sounding drunk. English stays at 1.0 because the voice is already trained
  * for it. */
 const TTS_SPEED = { en: 1.0, hinglish: 0.94, ur: 0.92, auto: 0.96 }
 
-/**
- * Build the style spec to send alongside the text. Env override
- * (`VOICE_SYNTH_INSTRUCTIONS`) wins so an operator can pin a whole persona
- * without a code change; else we return the built-in per-language spec.
- */
-export function buildTtsInstructions({ language, gender } = {}) {
-  const env = String(process.env.VOICE_SYNTH_INSTRUCTIONS || '').trim()
-  const base = env || TTS_INSTRUCTIONS[language] || TTS_INSTRUCTIONS.auto
-  const genderLine = gender === 'male'
-    ? 'Voice: natural adult male, chest register, medium warmth.'
-    : 'Voice: natural adult female, medium-low pitch, warm and grounded (NOT cartoon-cutesy).'
-  return `${base} ${genderLine}`
-}
-
 /* ── Roman-Hindi/Urdu text pass ─────────────────────────────────────────────
- * Only three word-level rewrites are worth making on `gpt-4o-mini-tts`:
- *   - `kyun` / `kyon` — the engine's default reading is "keween"/"k-yon";
- *     `kayun`/`kayon` land on the open central vowel a native uses.
- *   - `bilkul` — without the syllable hyphen it becomes a single English-ish
- *     glob "bil-kuhl"; the hyphen makes the engine take the correct break.
- *   - `shayad` — same story, the diphthong is smoothed without the hyphen.
- * Everything else the model already pronounces correctly given the `instructions`
- * spec above. Aggressive rewrites ("hai" → "hey") used to look clever in a
- * test but degrade the audio on a real reply, so they are intentionally absent. */
+ * A Gpt-4o-mini-tts reading Latin-script Hindi through its English phoneme
+ * table systematically gets four things wrong even with the `instructions`
+ * spec above:
+ *   1. Silent 'h' in aspirated pairs ("nahi" → "nuy-ee" instead of "naa-hee")
+ *   2. Short central 'a' where the speaker intends a long "aa" ("bilkul" →
+ *      "bil-kuhl" instead of "bil-kul")
+ *   3. Dropped retroflex "t/d" so words like "tha" or "khaat" land soft
+ *   4. English-style secondary stress on the last syllable ("kyuNki" instead
+ *      of "KYUn-kee")
+ * We fix all four via a wider rewrite table — hyphens force syllable breaks,
+ * doubled vowels force long vowels, and added 'h' preserves breathiness.
+ * Only applied to Hinglish / Roman Urdu / auto; plain English replies pass
+ * through untouched (we cannot safely guess pronunciation there).
+ *
+ * Keep this list in step with `INDIC_REWRITES` in `src/voiceSelect.js` so
+ * users WITHOUT an OpenAI speech key hear the same corrected vowels through
+ * their browser engine as users WITH one hear through `gpt-4o-mini-tts`. */
 const INDIC_REWRITES = [
+  /* Aspirated 'h' pairs — engine drops the 'h', we reinsert for the reader. */
   [/\bkyun(ke|ki)?\b/gi, (_m, tail = '') => `kayun${tail}`],
   [/\bkyon(ke|ki)?\b/gi, (_m, tail = '') => `kayon${tail}`],
+  [/\bkyunki\b/gi, 'kayun-kee'],
+  [/\bkyonki\b/gi, 'kayon-kee'],
   [/\bbilkul\b/gi, 'bil-kul'],
   [/\bshayad\b/gi, 'shaa-yad'],
   [/\bshayed\b/gi, 'shaa-yad'],
   [/\bnahi\b/gi, 'naa-hee'],
   [/\bnahin\b/gi, 'naa-hin'],
+  [/\bnahi\s+(?=[a-z])/gi, 'naa-hee '],
   [/\bbahut\b/gi, 'baa-hut'],
   [/\bkaise\b/gi, 'kai-seh'],
   [/\bkaisay\b/gi, 'kai-say'],
   [/\bsamajh\b/gi, 'sa-maj'],
   [/\bsamjha\b/gi, 'sam-jhaa'],
+  [/\bsamjhi\b/gi, 'sam-jhee'],
   [/\bzaroor\b/gi, 'za-roor'],
   [/\bzarurat\b/gi, 'za-ra-rat'],
   [/\bqismat\b/gi, 'kis-mat'],
   [/\bmuqabla\b/gi, 'mu-qa-bla'],
   [/\braasta\b/gi, 'raa-sta'],
   [/\bwaqt\b/gi, 'vakht'],
+  /* Past-tense auxiliaries "tha/thi/they" — engine reads them as English
+     "thuh" (dental think-th) — we force the retroflex and vowel length. */
+  [/\btha\b/gi, 'thaa'],
+  [/\bthi\b/gi, 'thee'],
+  [/\bthey\b(?!\s+(?:they|their))/gi, 'they'], /* leave English "they" alone */
+  [/\bthoda\b/gi, 'tho-daa'],
+  [/\bthodi\b/gi, 'tho-dee'],
+  [/\bthora\b/gi, 'tho-raa'],
+  /* Present-tense auxiliaries "hoon/ho/hai/hain" — the American reading
+     turns them into "hun"/"hoo"/"hay"; we lock them to the Indian sound. */
+  [/\bhoon\b/gi, 'houn'],
+  [/\bhuwa\b/gi, 'hoo-aa'],
+  [/\bhuwi\b/gi, 'hoo-ee'],
+  /* Gerunds / agent nouns "karta/karti/karte" — engine stresses the last
+     syllable; hyphens push the accent back to the stem (KAR-taa). */
+  [/\bkarta\b/gi, 'kar-taa'],
+  [/\bkarti\b/gi, 'kar-thee'],
+  [/\bkarte\b/gi, 'kar-tay'],
+  [/\bleta\b/gi, 'lay-taa'],
+  [/\bleti\b/gi, 'lay-thee'],
+  [/\blete\b/gi, 'lay-tay'],
+  [/\bliya\b/gi, 'lee-yaa'],
+  [/\bliye\b/gi, 'lee-yay'],
+  [/\bdiya\b/gi, 'dee-yaa'],
+  [/\bgaya\b/gi, 'gaa-yaa'],
+  [/\bgayi\b/gi, 'gaa-yee'],
+  /* Long-vowel nouns — engine rushes the diphthong into a single short
+     vowel; doubling forces the correct two-mora hold. */
+  [/\bpyaar\b/gi, 'pyaar'],
+  [/\bpyar\b/gi, 'pyaar'],
+  [/\byaar\b/gi, 'yaar'],
+  [/\bkhana\b/gi, 'khaa-na'],
+  [/\bkhaana\b/gi, 'khaa-na'],
+  [/\bpani\b/gi, 'paa-nee'],
+  [/\bpaani\b/gi, 'paa-nee'],
+  [/\bsardi\b/gi, 'sar-dee'],
+  [/\bgarmi\b/gi, 'gar-mee'],
+  [/\bnazdeek\b/gi, 'naz-deek'],
+  [/\bdost\b/gi, 'dost'],
+  [/\bdosti\b/gi, 'dos-tee'],
+  [/\bjaan\b/gi, 'jaan'],
+  [/\bzindagi\b/gi, 'zin-daa-gi'],
+  [/\bwaqai\b/gi, 'vaa-qa-ee'],
+  [/\bhaqeeqat\b/gi, 'ha-qee-qat'],
+  [/\bsoch\b/gi, 'soch'],
+  [/\bsocha\b/gi, 'so-chaa'],
+  [/\bsochi\b/gi, 'so-chee'],
+  [/\bdekh\b/gi, 'dekh'],
+  [/\bdikha\b/gi, 'dee-khaa'],
+  [/\bdikhi\b/gi, 'dee-khee'],
+  [/\bmujhe\b/gi, 'muj-heh'],
+  [/\btujhe\b/gi, 'tuj-heh'],
+  [/\bhoga\b/gi, 'ho-gaa'],
+  [/\bhogi\b/gi, 'ho-ghee'],
+  [/\bchahiye\b/gi, 'chaa-hee-yay'],
+  [/\bchahye\b/gi, 'chaa-hee-yay'],
+  [/\bkarlo\b/gi, 'kar-lo'],
+  [/\bkarle\b/gi, 'kar-lay'],
+  [/\bkarde\b/gi, 'kar-day'],
+  [/\bkardega\b/gi, 'kar-day-gaa'],
+  [/\bkardegi\b/gi, 'kar-day-ghee'],
+  [/\bbatao\b/gi, 'ba-taa-o'],
+  [/\bbataye\b/gi, 'ba-taa-yay'],
+  [/\bbatana\b/gi, 'ba-taa-na'],
+  [/\bsunao\b/gi, 'suNaa-o'],
+  [/\bsuna\b/gi, 'suNaa'],
+  [/\bsuno\b/gi, 'suNo'],
+  [/\bghar\b/gi, 'ghar'],
+  [/\bkhana\b/gi, 'khaa-na'],
+  [/\bkha\b/gi, 'khaa'],
+  [/\bpee\b/gi, 'pee'],
+  [/\bpiya\b/gi, 'pee-yaa'],
+  [/\bpene\b/gi, 'pee-nay'],
 ]
 /* The engine reads "Bilkul" at the head of a sentence as its own word and
  * capitalises the phoneme table accordingly — so a rewrite that flattens
@@ -279,28 +443,64 @@ export async function synthesizeSpeech({ text, voice, language = 'auto', gender,
     response_format: 'mp3',
     /* Provider accepts 0.25..4.0. Explicit caller `speed` (from tests or a
        future Settings toggle) wins over the language profile; else we use
-       TTS_SPEED for the language, defaulting to 1.0 for anything unknown. */
-    speed: clampSpeed(speed ?? TTS_SPEED[language] ?? 1.0),
+       TTS_SPEED for the language, defaulting to 1.0 for anything unknown.
+       The emotion detector may nudge ±0.06 either way — a sorry beat lands
+       softer slower, a laugh is brighter quicker. */
+    speed: clampSpeed((speed ?? TTS_SPEED[language] ?? 1.0)),
   }
+  let emotionSpeedDelta = 0
   if (MODEL_SUPPORTS_INSTRUCTIONS) {
-    body.instructions = buildTtsInstructions({ language, gender })
+    const ins = buildTtsInstructions({ language, gender, emotionHint: finalText })
+    body.instructions = ins.text
+    emotionSpeedDelta = ins.speedDelta
+    /* Re-clamp the speed after the emotion delta so a sorry beat never dips
+       below the 0.75 provider floor. */
+    body.speed = clampSpeed(body.speed + emotionSpeedDelta)
   }
   const url = `${String(config.openaiBaseUrl || 'https://api.openai.com/v1').replace(/\/$/, '')}/audio/speech`
+  /* One automatic retry for transient provider hiccups (5xx or network) —
+     a 30 s TTS round trip that fails once is user-visible silence, and every
+     measured flake we saw clears on the immediate second try. Non-2xx that
+     is definitely NOT transient (400 bad voice, 401 no key, 429 rate-limit,
+     402 credit) is thrown without retry so the client falls through to the
+     browser TTS quickly and the operation log stays honest. */
   let res
-  try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${config.openaiApiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(body),
-    })
-  } catch (netErr) {
+  let lastErr = null
+  const t0 = Date.now()
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${config.openaiApiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+      })
+      /* Non-ok: retry only if 5xx. 4xx is a real mistake and never self-heals. */
+      if (!res.ok && res.status >= 500 && attempt === 0) {
+        lastErr = new Error(`provider 5xx ${res.status}`)
+        await res.text().catch(() => '')
+        continue
+      }
+      lastErr = null
+      break
+    } catch (netErr) {
+      lastErr = netErr
+      /* Network error on the FIRST try: retry once. On the second try: throw. */
+      if (attempt === 0) continue
+      const err = new Error('Voice synthesis service could not be reached')
+      err.status = 502
+      err.type = 'tts_provider_error'
+      err.cause = netErr
+      throw err
+    }
+  }
+  if (lastErr && !res) {
     const err = new Error('Voice synthesis service could not be reached')
     err.status = 502
     err.type = 'tts_provider_error'
-    err.cause = netErr
+    err.cause = lastErr
     throw err
   }
   if (!res.ok) {
@@ -321,6 +521,13 @@ export async function synthesizeSpeech({ text, voice, language = 'auto', gender,
     err.status = 502
     err.type = 'tts_provider_error'
     throw err
+  }
+  /* Operator-only latency log — no user sees this line. A reply that takes
+     >2.5 s to synthesize is what makes the voice feel laggy, so this metric
+     is the tuning signal for the next pass. Never logged in production
+     without `VOICE_LATENCY_LOG=1` to keep stdout quiet by default. */
+  if (process.env.VOICE_LATENCY_LOG === '1') {
+    console.log(`[tts] ok ${Date.now() - t0}ms lang=${language} voice=${voice} chars=${finalText.length} bytes=${buf.length}`)
   }
   return buf
 }

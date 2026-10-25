@@ -759,12 +759,12 @@ test('tts: prepareTextForSpeech expands symbols and demotes punctuation', () => 
 })
 
 test('tts: buildTtsInstructions carries the phoneme rules for Hinglish', () => {
-  const spec = tts.buildTtsInstructions({ language: 'hinglish', gender: 'female' })
+  const { text: spec } = tts.buildTtsInstructions({ language: 'hinglish', gender: 'female' })
   assert.match(spec, /retroflex/i, 'engine told which t/d/n to use')
   assert.match(spec, /penult/, 'stress rule stated')
   assert.match(spec, /Indian-English/, 'accent baseline set')
   assert.match(spec, /NOT cartoon-cutesy/, 'female voice is grounded, not cutesy')
-  const male = tts.buildTtsInstructions({ language: 'hinglish', gender: 'male' })
+  const { text: male } = tts.buildTtsInstructions({ language: 'hinglish', gender: 'male' })
   assert.match(male, /adult male/i)
 })
 
@@ -775,6 +775,57 @@ test('tts: pickTtsVoice honours gender and language hint', () => {
   assert.equal(tts.pickTtsVoice({ voice: 'shimmer', gender: 'male' }), 'shimmer')
   /* Unknown voice falls through to the gender pick, never returns garbage. */
   assert.equal(tts.pickTtsVoice({ voice: 'bogus', gender: 'female' }), 'nova')
+})
+
+test('tts: Hinglish phonetic rewrites cover the high-mispronunciation vocabulary', () => {
+  /* A wider rewrite list on gpt-4o-mini-tts is what turns "kyun tha karti
+     hoon" (mangled into a British reading) into something a Hindi/Urdu
+     native can parse without effort. Every one of these words has been
+     reported by users as "AI ko samajh nahi aata" — if a rewrite drops,
+     the Hinglish voice quality drops with it. */
+  const out = tts.prepareTextForSpeech('bilkul kyun tha karta hoon, shayad waqt nahi hai', { language: 'hinglish' })
+  assert.match(out, /bil-kul/, 'bilkul keeps its syllable break')
+  assert.match(out, /kayun/, 'kyun → kayun')
+  assert.match(out, /thaa/, 'tha → thaa (retroflex held)')
+  assert.match(out, /kar-taa/, 'karta → kar-taa (stem stress)')
+  assert.match(out, /houn/, 'hoon → houn (not English "moon")')
+  assert.match(out, /shaa-yad/, 'shayad → shaa-yad')
+  assert.match(out, /vakht/, 'waqt → vakht')
+  assert.match(out, /naa-hee/, 'nahi → naa-hee')
+})
+
+test('tts: pickTtsVoice maps Realtime names onto their closest TTS counterpart', () => {
+  /* The user's Settings voice list offers marin/coral/sage/cedar/ash etc.
+     (gpt-realtime built-ins) which have NO server-TTS equivalent by name.
+     A user who picks "Marin" must hear the same warm female timbre in chat
+     replies as they do in VoiceCall — otherwise the companion sounds like
+     two different people across surfaces. If this test breaks, the whole
+     voice-preference consistency contract is broken. */
+  assert.equal(tts.pickTtsVoice({ voice: 'marin', gender: 'female' }), 'nova')
+  assert.equal(tts.pickTtsVoice({ voice: 'coral', gender: 'female' }), 'shimmer')
+  assert.equal(tts.pickTtsVoice({ voice: 'sage' }), 'alloy')
+  assert.equal(tts.pickTtsVoice({ voice: 'cedar', gender: 'male' }), 'echo')
+  assert.equal(tts.pickTtsVoice({ voice: 'ash', gender: 'male' }), 'fable')
+})
+
+test('tts: emotion detection enriches the style spec and nudges speed', () => {
+  /* A laugh marker pulls a specific "laughing WITH them" line and a small
+     positive speed delta so the reply doesn't sound like a weather report. */
+  const laugh = tts.buildTtsInstructions({ language: 'hinglish', gender: 'female', emotionHint: 'Hahaha, ye toh mazedaar tha!' })
+  assert.match(laugh.text, /laughing WITH them/i, 'laugh marker fires the playful prosody line')
+  assert.ok(laugh.speedDelta > 0, 'laugh nudges pace slightly faster')
+  /* Sorry markers slow her down instead. */
+  const sorry = tts.buildTtsInstructions({ language: 'hinglish', gender: 'female', emotionHint: 'Sorry yaar, mujhe samajh nahi aaya' })
+  assert.match(sorry.text, /soft and sincere/i, 'sorry marker fires the gentle prosody line')
+  assert.ok(sorry.speedDelta < 0, 'sorry nudges pace slower')
+  /* A question mark at the end pulls the rising-intonation prompt so she
+     doesn't fall flat on the ask. */
+  const ask = tts.buildTtsInstructions({ language: 'hinglish', gender: 'female', emotionHint: 'Aap kaise hain?' })
+  assert.match(ask.text, /rise naturally at the question mark/i, 'trailing question marks get a rising pitch instruction')
+  /* Plain statement: no emotion line appended, speed unchanged. */
+  const plain = tts.buildTtsInstructions({ language: 'hinglish', gender: 'female', emotionHint: 'Main theek hoon.' })
+  assert.equal(plain.speedDelta, 0)
+  assert.doesNotMatch(plain.text, /laughing|soft and sincere|rise naturally/, 'calm replies keep the neutral spec')
 })
 
 test('tts: synth accepts a language and still 503s on mock key (no leak)', async () => {

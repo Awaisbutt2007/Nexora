@@ -54,7 +54,8 @@ import {
 /* Her own eyes on the app: real screenshots of the live UI and of the particle face. */
 import { captureCurrentPage, captureNode, captureSelfFace } from './selfCapture.js'
 import { useWakeWord } from './useWakeWord.js'
-import { configureUtterForSpeech } from './voiceSelect.js'
+import { configureUtterForSpeech, warmVoiceList } from './voiceSelect.js'
+import { streamFeed, streamFinal, cancelSpeakQueue, setSpeakMarkers } from './sentenceSpeak.js'
 
 const ThreeHero = lazy(() => import('./ThreeHero.jsx'))
 const Onboarding = lazy(() => import('./Onboarding.jsx'))
@@ -174,6 +175,14 @@ function isAiSpeakingLongEnough() {
 function markAiSpeakingStart() { aiSpeakingSinceMs = Date.now() }
 function markAiSpeakingEnd() { aiSpeakingSinceMs = 0 }
 function cancelServerAudio() {
+  /* Sentence streaming owns its own queue + audio, so route a cancel there
+     FIRST — that clears `pending`, bumps the generation token so any fetch
+     in flight resolves but is discarded, and stops the current <audio>. Then
+     we also fall through to the legacy `currentServerAudio` cleanup path so
+     the pre-streaming code (which still uses `speakAssistantReply` for
+     one-shot replies like proactive check-ins and wake acks) is cancelled
+     too. Both are safe to call unconditionally. */
+  cancelSpeakQueue()
   if (currentServerAudio) {
     try { currentServerAudio.pause() } catch { /* already stopped */ }
     try { if (currentServerAudio.src && currentServerAudio.src.startsWith('blob:')) URL.revokeObjectURL(currentServerAudio.src) } catch { /* ignore */ }
@@ -183,7 +192,13 @@ function cancelServerAudio() {
      user — either way, the AI is no longer speaking, so reset the tracker. */
   markAiSpeakingEnd()
 }
-async function speakAssistantReply(text, { language, gender, authToken, onEnd } = {}) {
+/* Wire the streaming queue to the same barge-in tracker so `isAiSpeakingLongEnough`
+ * sees activity from BOTH the one-shot legacy speak AND the new sentence queue.
+ * Without this the streaming path would start playing audio without stamping
+ * `aiSpeakingSinceMs`, and Chrome's AEC-lock-in grace window would let the AI's
+ * own first echo trigger a self-cancel. */
+setSpeakMarkers(markAiSpeakingStart, markAiSpeakingEnd)
+async function speakAssistantReply(text, { language, gender, authToken, voice, onEnd } = {}) {
   if (typeof window === 'undefined' || !text) { onEnd?.(); return }
   const plain = String(text)
     .replace(/```[\s\S]*?```/g, ' (code shown in chat) ')
@@ -215,7 +230,7 @@ async function speakAssistantReply(text, { language, gender, authToken, onEnd } 
      were a bug — the visual caption already shows the reply anyway. */
   if (authToken) {
     try {
-      const blob = await synthesizeSpeech(authToken, { text: plain, language, gender })
+      const blob = await synthesizeSpeech(authToken, { text: plain, language, gender, voice })
       const url = URL.createObjectURL(blob)
       const audio = new window.Audio(url)
       audio.onended = () => { try { URL.revokeObjectURL(url) } catch { /* ignore */ }; if (currentServerAudio === audio) currentServerAudio = null; markAiSpeakingEnd(); onEnd?.() }
@@ -1805,6 +1820,17 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
     try { if (localStorage.getItem(PROACTIVE_MUTE_KEY) === '1') proactiveMutedRef.current = true } catch { /* private mode */ }
   }, [])
 
+  /* Kill the first-utterance latency. Chrome and Edge return an empty
+     SpeechSynthesisVoice[] on the very first `getVoices()` call and only
+     populate the list asynchronously — the `voiceschanged` event lands
+     roughly 500 ms to 2 s after the page is interactive. Without this
+     warm-up the wake-word ack on a fresh install would either speak with
+     the engine default (losing gender and accent entirely) or wait through
+     the enumeration before firing, and the user hears a laggy "Ji haan".
+     Firing at mount means the list is hot before the user even opens the
+     mic, so the very first utterance goes out on the correct voice. */
+  useEffect(() => { warmVoiceList() }, [])
+
   /* Typing holds her back: every keystroke pushes the idle clock forward, so a
      check-in can never land in the middle of a message being written — the 30s
      restarts from the LAST keystroke instead of from the previous turn. And if the
@@ -1868,6 +1894,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
                 speakAssistantReply(content, {
                   language: voicePrefsRef.current.language,
                   gender: voicePrefsRef.current.gender,
+                  voice: voicePrefsRef.current.voice,
                   authToken,
                   onEnd: () => { armNowRef.current?.(15000); setVoiceTurn(true) }
                 })
@@ -2388,6 +2415,16 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
     /* Kept out of state so the screenshot step below already has the stored id of the
        turn it is about to attach pictures to. */
     let assistantServerId = null
+    /* Sentence-streaming TTS bookkeeping. We split the arriving text at
+     * sentence boundaries inside `onDelta` and fire a synth request for
+     * each complete sentence the moment it lands, so the user starts
+     * hearing the first line while the model is still typing the second.
+     * `spokeIdx` tracks how much of the raw stream we have already handed
+     * to the speak queue. The final `streamFinal` flush mops up any
+     * trailing partial sentence the model ended without punctuation. */
+    let spokeIdx = 0
+    const speakOpts = { language: voicePrefs.language, gender: voicePrefs.gender, voice: voicePrefs.voice, authToken }
+    const shouldStreamSpeak = Boolean(speakReplies && !voiceOpen)
 
     try {
       const result = await streamChat({
@@ -2406,6 +2443,12 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
           setMessages((prev) =>
             prev.map((m) => (m.id === tempAsstId ? { ...m, content: spokenAck + fullText } : m)),
           )
+          /* Sentence-boundary TTS feed — skip if the user turned off auto-
+             speak or is inside a VoiceCall (which has its own pipeline). We
+             also never stream a cancelled turn. */
+          if (shouldStreamSpeak && !controller.signal.aborted) {
+            spokeIdx = streamFeed(fullText, spokeIdx, speakOpts)
+          }
         },
         onMeta: (meta) => {
           if (meta.conversationId) setConversationId(meta.conversationId)
@@ -2436,14 +2479,20 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
          are not already inside a VoiceCall (that loop speaks through its own
          pipeline and must not be double-voiced). */
       if (speakReplies && !controller.signal.aborted && !voiceOpen) {
-        /* Fire-and-forget the async speak — it internally awaits the server
-           blob, then plays, and falls back to browser TTS on any error. The
-           awaited stream is already complete, so we don't want to hold up the
-           follow-up screenshot fulfilment behind a 1-3s audio round-trip. */
-        /* Conversation loop: when the spoken reply finishes, arm the mic for
-           15 s so the user can just talk — no "Aira", no click. This is what
-           makes the flow feel like two humans in a real conversation. */
-        speakAssistantReply(result.fullText, { language: voicePrefs.language, gender: voicePrefs.gender, authToken, onEnd: () => { armNow(15000); setVoiceTurn(true) } })
+        /* Sentence streaming has already fired TTS requests for every
+           complete sentence that landed during `onDelta`. Here we mop up
+           any trailing partial sentence (e.g. a Hinglish reply that ends
+           "sab theek" without a full stop) and schedule the mic re-arm to
+           run exactly once when the whole queue drains. If NOTHING was
+           streamed yet — the model returned a single short line with no
+           terminal punctuation — `streamFinal` becomes the sole speak call
+           and behaves like the legacy one-shot path. */
+        const tailLen = (result.fullText || '').length - spokeIdx
+        if (spokeIdx > 0 || tailLen > 0) {
+          streamFinal(result.fullText, spokeIdx, { ...speakOpts, onEnd: () => { armNow(15000); setVoiceTurn(true) } })
+        } else {
+          armNow(15000); setVoiceTurn(true)
+        }
       }
       /* She asked to be seen — so actually be seen: photograph the live app and hang
          the real shots on this turn instead of leaving a marker on screen. */
@@ -2481,7 +2530,13 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
      through speechSynthesis and pressing Stop must silence it instantly. */
   function stopGeneration() {
     streamAbortRef.current?.abort()
+    /* Cancel both the legacy one-shot speak pipeline AND any sentence
+       streaming queue still waiting to play, so pressing Stop is a hard
+       silence even when the model has already finished typing and we are
+       mid-way through a 3-sentence reply. */
+    cancelSpeakQueue()
     if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel()
+    cancelServerAudio()
   }
 
   /* "Reply" on an AI bubble: pin that one turn as the target and hand focus to the
