@@ -2415,7 +2415,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
      the user is still speaking, so their words appear on screen before the
      recogniser commits. Cleared on every final / restart / unmount by the hook. */
   const [wakeLive, setWakeLive] = useState('')
-  const wakeStatus = useWakeWord({
+  const { status: wakeStatus, armNow } = useWakeWord({
     enabled: wakeEnabled && !voiceOpen && isLoggedIn && Boolean(authToken),
     wakeWord: aiName,
     /* Hear commands in the same language the Talk call uses. Without this the
@@ -2665,9 +2665,9 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
                   type="button"
                   className={`prompt-mic-btn${wakeEnabled ? ' on' : ''} status-${wakeStatus}`}
                   aria-pressed={wakeEnabled}
-                  aria-label={wakeEnabled ? `${aiName} is listening for "${aiName}". Click to pause.` : `Resume listening for "${aiName}"`}
-                  title={wakeEnabled ? `Click to pause the ${aiName} mic` : `Click to let ${aiName} hear you again`}
-                  onClick={() => setWakeEnabled((v) => !v)}
+                  aria-label={wakeEnabled ? `${aiName} is listening — click to speak now without saying the name` : `Resume listening for "${aiName}"`}
+                  title={wakeEnabled ? `Click to speak now (one-shot, no wake word needed)` : `Click to let ${aiName} hear you again`}
+                  onClick={() => { if (wakeEnabled) { armNow(); setNotice(`🎙 ${aiName} sun rahi hai — boliye`) } else { setWakeEnabled(true) } }}
                 >
                   <span className="prompt-mic-dot" aria-hidden="true" />
                   <span aria-hidden="true">🎙</span>

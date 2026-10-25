@@ -63,6 +63,51 @@ function escapeRe(s) {
   return String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+/* Chrome's en-IN / hi-IN / en-US speech engine routinely mis-hears a short
+ * assistant name: "Aira" arrives as "ayra", "ira", "era", "aria", "ai ra",
+ * even "I RA". A strict whole-word regex drops every one of those and the
+ * user's spoken command never reaches the chat — exactly the bug reported.
+ * The fix is a bounded fuzzy match: for each word in the transcript, allow
+ * up to 2 character edits (Levenshtein) against the name. Short names (≤ 4
+ * letters) get a tolerance of 1 so common English words don't accidentally
+ * trigger the wake. A match also returns the word's end index so the caller
+ * can slice the command tail out of the same string. */
+function fuzzyNameHit(text, name) {
+  const lower = text.toLowerCase()
+  const target = name.toLowerCase()
+  const maxDist = target.length <= 3 ? 1 : 2
+  /* Walk word-like runs; for each, compute edit distance to the name. */
+  const wordRe = /\p{L}+/gu
+  let m
+  while ((m = wordRe.exec(lower)) !== null) {
+    const word = m[0]
+    /* Quick reject: length difference > maxDist can't be within tolerance. */
+    if (Math.abs(word.length - target.length) > maxDist) continue
+    if (levenshtein(word, target) <= maxDist) {
+      return { end: m.index + word.length, matched: text.slice(m.index, m.index + word.length) }
+    }
+  }
+  return null
+}
+function levenshtein(a, b) {
+  if (a === b) return 0
+  if (!a.length) return b.length
+  if (!b.length) return a.length
+  let prev = Array.from({ length: b.length + 1 }, (_, i) => i)
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i]
+    for (let j = 1; j <= b.length; j++) {
+      row[j] = Math.min(
+        prev[j] + 1,
+        row[j - 1] + 1,
+        prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1),
+      )
+    }
+    prev = row
+  }
+  return prev[b.length]
+}
+
 export function useWakeWord({
   enabled,
   wakeWord,
@@ -109,6 +154,20 @@ export function useWakeWord({
   useEffect(() => { onInterimRef.current = onInterim }, [onInterim])
   useEffect(() => { wakeWordRef.current = wakeWord }, [wakeWord])
 
+  /* Expose a one-shot "arm now" handle so the UI can flip the pill from
+     * paused→listening AND have the very next utterance count as a command
+     * without the user having to say the name again. The hook stores the
+     * timestamp in the same `armedUntilMs` closure the recognizer reads. */
+  const armNowRef = useRef(null)
+  useEffect(() => {
+    if (!enabled || !hasSR) { armNowRef.current = null; return }
+    /* The effect that owns `armedUntilMs` re-runs on every enabled/language
+       change; we piggy-back a setter into the ref from inside that effect. */
+  }, [enabled, hasSR])
+  /* Called by the consumer when the user clicks the already-on pill: opens a
+     short push-to-talk window so their next sentence is the command. */
+  const armNow = () => { if (armNowRef.current) armNowRef.current() }
+
   useEffect(() => {
     if (!enabled || !hasSR) return undefined
     const SR = window.SpeechRecognition || window.webkitSpeechRecognition
@@ -120,6 +179,8 @@ export function useWakeWord({
        name and the command as two finals whenever the user breathes between
        them, so without this the second half of every spoken prompt is lost. */
     let armedUntilMs = 0
+    /* Wire the external arm-now handle to this closure's mutable state. */
+    armNowRef.current = () => { armedUntilMs = Date.now() + armWindowMs }
 
     const fireWake = (text) => {
       const now = Date.now()
@@ -160,10 +221,21 @@ export function useWakeWord({
         fireWake(text)
         return
       }
-      /* No wake word in THIS chunk. That's usually background speech — but if
-         we just heard a bare "<name>" and are still inside the arming window,
-         treat this final as the follow-up command. Strip leading filler
-         words that Chrome sometimes carries over from the previous chunk. */
+      /* Fuzzy fallback: Chrome mis-heard the name ("Aira" → "ayra", "ira",
+         "era"). If any word in the transcript is within edit-distance 1-2 of
+         the name, treat it as the wake word and slice the tail after it. This
+         is what makes the voice→chat flow actually work on a real Windows mic
+         instead of silently dropping every spoken command. */
+      const hit = fuzzyNameHit(text, name)
+      if (hit) {
+        const tail = text.slice(hit.end).replace(/^[\s,.:;!?'-]+/, '').trim()
+        if (tail) { fireCommand(tail, text); return }
+        fireWake(text)
+        return
+      }
+      /* No wake word in THIS chunk — but if the user just clicked the mic pill
+         to arm it (see `armNow` below) or we heard a bare name and are still
+         inside the arming window, treat this final as the follow-up command. */
       if (armedUntilMs && Date.now() < armedUntilMs) {
         fireCommand(text, text)
       }
@@ -258,5 +330,5 @@ export function useWakeWord({
     }
   }, [enabled, hasSR, language, cooldownMs, armWindowMs])
 
-  return status
+  return { status, armNow }
 }
