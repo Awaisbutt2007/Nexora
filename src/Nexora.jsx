@@ -1833,6 +1833,18 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
     const streamAbortRef = useRef(null)
   const messagesRef = useRef(messages)
   const streamingRef = useRef(streaming)
+  /* Synchronous send-lock. `streaming` is React STATE and stays false for the whole
+     tick a send is set up, so a fast double-fire (Enter + the send button, or the
+     wake-word handing the same utterance twice) slips past the `if (streaming)`
+     guard and appends TWO assistant bubbles for ONE user turn. This ref flips to
+     true the instant we commit to a turn and back in the `finally`, so a second
+     call in the same tick is rejected — one message must finish before the next
+     starts. */
+  const sendLockRef = useRef(false)
+  /* Monotonic id sequence so a temp bubble id can never collide with another
+     (Date.now() repeats inside the same millisecond, and a shared key makes the
+     stream-fill update the wrong bubble and leaves an empty "thinking" orphan). */
+  const msgSeqRef = useRef(0)
 
   /* Reference images pasted (Ctrl+V) or picked (📎) before sending:
      { id, dataUrl (preview), url (once uploaded), uploading } — max 4 per turn. */
@@ -1920,6 +1932,26 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
      without re-subscribing on every render. */
   useEffect(() => { messagesRef.current = messages }, [messages])
   useEffect(() => { streamingRef.current = streaming }, [streaming])
+  /* Self-heal an orphaned "thinking" bubble. If a turn ever ended without its
+     assistant bubble being resolved (a rare race / a stream that died between
+     the header and the first token), the bubble would sit on "Aira is
+     thinking…" forever while a newer reply appears below it. Whenever nothing
+     is actually streaming, drop the stale flag — and remove the bubble outright
+     if it never received any content. */
+  useEffect(() => {
+    if (streaming) return
+    setMessages((prev) => {
+      if (!prev.some((m) => m.role === 'assistant' && m.streaming)) return prev
+      const next = []
+      for (const m of prev) {
+        if (m.role === 'assistant' && m.streaming) {
+          if (!String(m.content || '').trim()) continue
+          next.push({ ...m, streaming: false })
+        } else next.push(m)
+      }
+      return next.length === prev.length ? prev.map((m) => (m.role === 'assistant' && m.streaming ? { ...m, streaming: false } : m)) : next
+    })
+  }, [streaming])
   useEffect(() => {
     try { if (localStorage.getItem(PROACTIVE_MUTE_KEY) === '1') proactiveMutedRef.current = true } catch { /* private mode */ }
   }, [])
@@ -1974,6 +2006,9 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
       if (proactiveNudgesRef.current >= MAX_PROACTIVE_NUDGES) return
       const last = messagesRef.current[messagesRef.current.length - 1]
       if (!last || last.role !== 'assistant' || last.streaming) return
+      /* Never interleave a check-in into a turn that is still producing output —
+         bail if ANY bubble is mid-stream, not just the last one. */
+      if (messagesRef.current.some((m) => m.streaming)) return
       proactiveBusyRef.current = true
       /* She only asks about the abandoned draft once — whatever the answer, the
          question has been asked. */
@@ -2458,7 +2493,9 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
       promptForModel = `${cleanPrompt}\n[SYSTEM: The app has ALREADY executed your ${action}. Just say a brief friendly acknowledgement — do NOT say you cannot control yourself or that you only exist in text. The action is done.]`
     }
     const imgUrls = pendingImgs.filter((p) => p.url).map((p) => p.url)
-    if (streaming || pendingImgs.some((p) => p.uploading)) return
+    /* Hard serialization: bail if a turn is already committing/streaming. The ref
+       catches the same-tick double-fire the `streaming` state can't see yet. */
+    if (sendLockRef.current || streaming || pendingImgs.some((p) => p.uploading)) return
     if (!cleanPrompt && !imgUrls.length) return
 
     if (!isLoggedIn || !authToken) {
@@ -2505,8 +2542,12 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
        new user message so the quote renders inside its bubble. */
     const reply = replyTarget
     setReplyTarget(null)
-    const tempUserId = `local_user_${Date.now()}`
-    const tempAsstId = `local_asst_${Date.now()}`
+    /* Take the lock BEFORE any await so a second sendPrompt in this same tick is
+       rejected, and use the monotonic counter for ids so they can never collide. */
+    sendLockRef.current = true
+    const seq = (msgSeqRef.current += 1)
+    const tempUserId = `local_user_${seq}`
+    const tempAsstId = `local_asst_${seq}`
     setMessages((prev) => [
       ...prev,
       { id: tempUserId, role: 'user', content: cleanPrompt, images: imgUrls.length ? imgUrls : undefined, replyTo: reply?.id, ts: Date.now() },
@@ -2662,6 +2703,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
       setNotice(err.message || 'Chat failed — is the backend running on :8787?')
     } finally {
       setStreaming(false)
+      sendLockRef.current = false
       streamAbortRef.current = null
       lastActivityRef.current = Date.now()
     }
