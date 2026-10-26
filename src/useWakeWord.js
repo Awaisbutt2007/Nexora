@@ -63,6 +63,68 @@ function escapeRe(s) {
   return String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+/* Devanagari → Roman (Hinglish) transliteration for the always-on mic.
+ * WHY: for a user pinned to 'hinglish' we run the recogniser on hi-IN (the only
+ * locale that hears Hindi words accurately), but hi-IN hands BACK Devanagari —
+ * "चुप कर जाओ" — while that same user TYPES and wants to READ Roman letters.
+ * Normalising the transcript here (before any matching) means the Latin
+ * wake-word name still lines up ("ऐरा" → "aira"), the command regexes see the
+ * Roman forms they already cover, and the user's own message shows the way
+ * they'd write it. It ONLY touches the Devanagari block, so Urdu (ur-PK) and
+ * Latin pass through untouched, and it's a cheap no-op when no Hindi is present.
+ * Long vowels collapse to their short Roman equivalent and the inherent schwa is
+ * dropped on word-final consonants, so "बोल" reads "bol", not "bola". */
+const DEV_VOWELS = { '\u0905': 'a', '\u0906': 'a', '\u0907': 'i', '\u0908': 'i', '\u0909': 'u', '\u090A': 'u', '\u090B': 'ri', '\u090C': 'ri', '\u090D': 'e', '\u090E': 'o', '\u090F': 'e', '\u0910': 'ai', '\u0911': 'e', '\u0912': 'o', '\u0913': 'o', '\u0914': 'au' }
+const DEV_MATRAS = { '\u093E': 'a', '\u093F': 'i', '\u0940': 'i', '\u0941': 'u', '\u0942': 'u', '\u0943': 'ri', '\u0944': 'ri', '\u0945': 'e', '\u0946': 'e', '\u0947': 'e', '\u0948': 'ai', '\u0949': 'e', '\u094A': 'o', '\u094B': 'o', '\u094C': 'au' }
+const DEV_CONS = { '\u0915': 'k', '\u0916': 'kh', '\u0917': 'g', '\u0918': 'gh', '\u0919': 'n', '\u091A': 'ch', '\u091B': 'chh', '\u091C': 'j', '\u091D': 'jh', '\u091E': 'n', '\u091F': 't', '\u0920': 'th', '\u0921': 'd', '\u0922': 'dh', '\u0923': 'n', '\u0924': 't', '\u0925': 'th', '\u0926': 'd', '\u0927': 'dh', '\u0928': 'n', '\u0929': 'ny', '\u092A': 'p', '\u092B': 'ph', '\u092C': 'b', '\u092D': 'bh', '\u092E': 'm', '\u092F': 'y', '\u0930': 'r', '\u0931': 'r', '\u0932': 'l', '\u0933': 'l', '\u0934': 'l', '\u0935': 'v', '\u0936': 'sh', '\u0937': 'sh', '\u0938': 's', '\u0939': 'h' }
+const DEV_NUKTA = { '\u0915': 'k', '\u0916': 'kh', '\u0917': 'g', '\u091C': 'z', '\u0921': 'r', '\u0922': 'rh', '\u092F': 'y', '\u0935': 'v', '\u0936': 'sh' }
+const DEV_HALANT = '\u094D'
+const DEV_NUKTA_MARK = '\u093C'
+const DEV_ANUSVARA = '\u0902'
+const DEV_CHANDRABINDU = '\u0901'
+const DEV_VISARGA = '\u0903'
+const DEV_AVAGRAHA = '\u093D'
+const DEV_OM = '\u0950'
+function devToRoman(input) {
+  const s = String(input || '')
+  if (!/[\u0900-\u097F]/.test(s)) return s
+  const chars = Array.from(s)
+  const isLetter = (c) => c != null && /[\p{L}\p{M}]/u.test(c)
+  let out = ''
+  let i = 0
+  while (i < chars.length) {
+    const ch = chars[i]
+    if (DEV_CONS[ch] != null) {
+      let base = DEV_CONS[ch]
+      i += 1
+      if (chars[i] === DEV_NUKTA_MARK) { base = DEV_NUKTA[ch] ?? base; i += 1 }
+      let vowel = 'a'; let matra = false; let killed = false; let tail = ''
+      while (i < chars.length) {
+        const nx = chars[i]
+        if (nx === DEV_HALANT) { killed = true; i += 1; break }
+        if (DEV_MATRAS[nx] != null) { vowel = DEV_MATRAS[nx]; matra = true; i += 1; continue }
+        if (nx === DEV_ANUSVARA || nx === DEV_CHANDRABINDU) { tail += 'n'; i += 1; continue }
+        if (nx === DEV_VISARGA) { tail += 'h'; i += 1; continue }
+        break
+      }
+      out += base
+      if (killed) { /* conjunct: the next consonant carries the vowel */ }
+      else if (matra) out += vowel
+      else if (i < chars.length && isLetter(chars[i])) out += 'a'
+      out += tail
+      continue
+    }
+    if (DEV_VOWELS[ch] != null) { out += DEV_VOWELS[ch]; i += 1; continue }
+    if (DEV_MATRAS[ch] != null) { out += DEV_MATRAS[ch]; i += 1; continue }
+    if (ch === DEV_ANUSVARA || ch === DEV_CHANDRABINDU) { out += 'n'; i += 1; continue }
+    if (ch === DEV_VISARGA) { out += 'h'; i += 1; continue }
+    if (ch === DEV_OM) { out += 'om'; i += 1; continue }
+    if (ch === DEV_AVAGRAHA || ch === DEV_NUKTA_MARK || ch === DEV_HALANT) { i += 1; continue }
+    out += ch; i += 1
+  }
+  return out
+}
+
 /* Chrome's en-IN / hi-IN / en-US speech engine routinely mis-hears a short
  * assistant name: "Aira" arrives as "ayra", "ira", "era", "aria", "ai ra",
  * even "I RA". A strict whole-word regex drops every one of those and the
@@ -115,6 +177,13 @@ export function useWakeWord({
   onCommand,
   onWake,
   onInterim,
+  /* Extra words that behave exactly like the assistant name for the WAKE test —
+     used to let a sleeping assistant be revived by a plain "listen" / "suno"
+     without saying the name. Read through a ref (see below) so toggling the
+     list does NOT restart the recogniser, and pass an EMPTY array when the
+     assistant is awake so ordinary speech containing "listen" never fires a
+     false wake. */
+  wakeAliases,
   /* Fires whenever STT picks up meaningful user speech (interim OR final).
      The consumer uses this to implement BARGE-IN: if the AI is currently
      speaking, cancel its TTS immediately so the user is never talked over.
@@ -155,6 +224,7 @@ export function useWakeWord({
   const onInterimRef = useRef(onInterim)
   const onUserSpeakingRef = useRef(onUserSpeaking)
   const wakeWordRef = useRef(wakeWord)
+  const wakeAliasesRef = useRef(wakeAliases)
   const lastSigRef = useRef({ text: '', ts: 0 })
   const lastWakeTsRef = useRef(0)
   /* Debounce: only fire onUserSpeaking once every 400 ms so rapid interim
@@ -165,6 +235,7 @@ export function useWakeWord({
   useEffect(() => { onInterimRef.current = onInterim }, [onInterim])
   useEffect(() => { onUserSpeakingRef.current = onUserSpeaking }, [onUserSpeaking])
   useEffect(() => { wakeWordRef.current = wakeWord }, [wakeWord])
+  useEffect(() => { wakeAliasesRef.current = wakeAliases }, [wakeAliases])
 
   /* Expose a one-shot "arm now" handle so the UI can flip the pill from
      * paused→listening AND have the very next utterance count as a command
@@ -222,8 +293,12 @@ export function useWakeWord({
       onCommandRef.current?.(trimmed, text)
     }
 
-    const handleFinal = (text) => {
+    const handleFinal = (rawText) => {
       const name = (wakeWordRef.current || '').trim()
+      /* Normalise Hindi script to Roman before ANY matching, so a hi-IN
+         transcript ("चुप कर जाओ") reads the way a Hinglish user types it and the
+         Latin wake-word name still lines up. No-op for Latin/Urdu input. */
+      const text = devToRoman(rawText)
       if (!name || !text) return
       /* Whole-word, case-insensitive. The regex also catches the name glued to
          a leading punctuation mark ("Hey, Aira: make ...") because we look for
@@ -250,7 +325,25 @@ export function useWakeWord({
         fireWake(text)
         return
       }
-      /* No wake word in THIS chunk — but if the user just clicked the mic pill
+      /* No wake word in THIS chunk. Two fall-through paths remain. First: the
+         assistant may be ASLEEP (the consumer's "chup ho jao" mode) and has
+         passed extra wake words like "listen" / "suno" that behave just like
+         the name. Aliases are EMPTY whenever she is awake, so a normal sentence
+         that merely contains "listen" is never intercepted here. */
+      const aliases = wakeAliasesRef.current
+      if (Array.isArray(aliases)) {
+        for (const alias of aliases) {
+          const are = new RegExp(`(^|[^\\p{L}])${escapeRe(alias)}([^\\p{L}]|$)`, 'iu')
+          const am = are.exec(text)
+          if (am) {
+            const aTail = text.slice(am.index + am[1].length + alias.length).replace(/^[\s,.:;!?'-]+/, '').trim()
+            if (aTail) { fireCommand(aTail, text); return }
+            fireWake(text)
+            return
+          }
+        }
+      }
+      /* Second: if the user just clicked the mic pill
          to arm it (see `armNow` below) or we heard a bare name and are still
          inside the arming window, treat this final as the follow-up command. */
       if (armedUntilMs && Date.now() < armedUntilMs) {
@@ -288,7 +381,7 @@ export function useWakeWord({
           if (r.isFinal) finalText = finalText ? `${finalText} ${t}` : t
           else interimText = interimText ? `${interimText} ${t}` : t
         }
-        if (interimText) onInterimRef.current?.(interimText)
+        if (interimText) onInterimRef.current?.(devToRoman(interimText))
         /* Barge-in trigger: as soon as STT hears anything the user is saying
            (real speech, not the AI's own voice — Chrome's AEC handles that),
            notify the consumer so it can cancel TTS mid-sentence. Requires at

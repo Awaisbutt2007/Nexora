@@ -11,6 +11,7 @@ import {
   deleteAllConversations,
   deleteMemory,
   getConversation,
+  getQuota,
   listConversations,
   listMemories,
   loadSession,
@@ -161,38 +162,6 @@ const WAKE_ACK_LINES = {
     ],
   },
 }
-/* Rotation memory so two consecutive voice commands never hear the same ack.
- * The last-spoken index per language is kept in module scope (not React state)
- * because the pick happens inside the wake-word handler and we don't want a
- * re-render just because she said "Ok" instead of "Theek hai". */
-const _lastAckIndex = { en: -1, ur: -1, hinglish: -1, auto: -1 }
-function pickRotatingAck(language) {
-  const slot = WAKE_ACK_LINES[language] || WAKE_ACK_LINES.auto
-  const list = slot.command
-  if (!Array.isArray(list) || list.length === 0) return String(list || '')
-  const key = WAKE_ACK_LINES[language] ? language : 'auto'
-  let idx = Math.floor(Math.random() * list.length)
-  /* Redraw while we accidentally land on the same one we spoke last turn —
-     a hard stop after 5 attempts keeps a two-item list honest (it can't be
-     more than 1 different from last time anyway). */
-  let attempts = 0
-  while (idx === _lastAckIndex[key] && attempts < 5) {
-    idx = Math.floor(Math.random() * list.length)
-    attempts += 1
-  }
-  _lastAckIndex[key] = idx
-  return list[idx]
-}
-/* Skip the audio ack entirely for greetings and tiny prompts. "Hi" / "hello"
- * / "kaise ho" already get an <1s streamed reply from the model; speaking
- * "Theek hai, kar rahi hoon" first and then "Hi! Kaise ho aap?" back-to-back
- * feels duplicated. The chat bubble shows the real reply only, so we let the
- * stream itself be the response. Threshold = under 12 characters. */
-function shouldSkipWakeAck(cmd) {
-  const t = String(cmd || '').trim().toLowerCase()
-  return t.length < 12
-}
-
 /* Fire a short utterance on the browser's speech engine. The voice pick, the
    per-language accent chain (so a Windows-only-English install speaking
    Hinglish lands on en-IN, not en-GB), the rate slow-down for mixed-script
@@ -1750,6 +1719,35 @@ const SELF_UNMUTE_RE = /\b(?:voice\s*(?:on|chaloo|chalu)\s*(?:karo|kr|kar)?|un-?
 const SELF_MICOFF_RE = /\b(?:mic\s*(?:off|band)\s*(?:karo|kr|kar)?|sunna\s*band\s*(?:karo|kr)?|stop\s*listening|mat\s*suno)\b/i
 const SELF_MICON_RE = /\b(?:mic\s*(?:on|chaloo|chalu)\s*(?:karo|kr|kar)?|sunna\s*(?:shuru|chaloo|on)|start\s*listening|resume\s*listening)\b/i
 
+/* "Chup ho jao" as a SUSTAINED silence, not a one-shot barge-in: she says a
+   brief "okay", then STAYS quiet (no replies, no proactive check-ins, no
+   auto-listen loop) until the user calls her again by NAME or says "listen".
+   Distinct from STOP_SPEECH_RE ("chup kro" = stop THAT sentence now): here the
+   user is putting her to sleep.
+   TWO tiers, because the always-on STT returns the command in WHATEVER script
+   the mic locale produced (hi-IN often gives Devanagari "चुप कर जाओ", ur-PK
+   gives "چپ ہو جاؤ", en-IN gives Roman) and frequently bolts junk onto the end
+   of a short phrase. STRONG = an unambiguous "become silent / go to sleep"
+   imperative in ANY of the three scripts, matched anywhere in the string with
+   NO length cap (so "bolun? chup kar jao aur tumne kuch bhi nahi" still sleeps
+   her). SOFT = the vaguer "talk later / when I call" phrasings that could
+   appear inside a real question, so those stay capped at 40 chars. */
+const VOICE_SLEEP_STRONG_RE = /(?:\b(?:chup|choop|khamosh)\b[^.!?]{0,14}?\b(?:jao|jaye|jaao|gi|gaya|do)\b|\b(?:so|dormant)\b[^.!?]{0,10}?\b(?:jao|jaye|gya|gi)\b|\bgo\s+to\s+sleep\b|\bsleep\s+now\b|\bbe\s+quiet\s+now\b|चुप[^।.!?]{0,10}?जा|चूप[^।.!?]{0,10}?जा|खामोश[^।.!?]{0,10}?हो|सो[^।.!?]{0,8}?जा|خاموش[^۔!?؟]{0,10}?جا|چپ[^۔!?؟]{0,10}?جا|سو[^۔!?؟]{0,8}?جا)/i
+const VOICE_SLEEP_SOFT_RE = /\b(?:baad\s*me\s*(?:baat|talk)|jab\s*(?:main|mai)?\s*(?:bulao|bulaun)\s*(?:tab)?|when\s*I\s*(?:call|say)\s*(?:your|it)?|go\s*silent|dormant\s*ho\s*jao)\b/i
+/* Spoken words that revive a sleeping assistant WITHOUT her name — matched by
+   useWakeWord only while she is asleep. Includes the Devanagari the hi-IN
+   recogniser returns for "listen/suno" so a Hindi-script wake works too. */
+const SLEEP_RESUME_ALIASES = ['listen', 'suno', 'jaago', 'wake up', 'wake', 'सुनो', 'जागो']
+/* The one line she says before falling silent — a real acknowledgement, then
+   quiet — localised to the reply language. Mentions the name so the user knows
+   how to bring her back. */
+function sleepAckLine(language, name) {
+  const l = String(language || 'auto').toLowerCase()
+  if (l === 'ur') return `theek hai, main chup hoon. Jab baat karni ho to "${name}" ya "listen" keh kar bula lena.`
+  if (l === 'en') return `Okay, I'll stay quiet. Just say "${name}" or "listen" when you need me.`
+  return `Theek hai, main chup hoon. Jab bulao — bas "${name}" ya "listen" bol dena.`
+}
+
 /* Clipboard/picked File → downscaled JPEG data URL: keeps uploads inside the
    API's 2 MB JSON budget, shrinks what the vision model eats, and strips EXIF. */
 function fileToScaledDataUrl(file, max = 1024) {
@@ -1911,6 +1909,34 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
      (login, upgrade, /me refresh) so the freshly-loaded server number wins
      over a stale local copy. */
   useEffect(() => { setStreamedCredits(null) }, [userProfile?.creditsRemaining, isPremium])
+  /* Live countdown for the PRIMARY model's daily token budget — the wall that
+     produced "The AI is at its limit". For premium accounts (whose own credit
+     count is meaningless) the top-bar pill shows this remaining-token number
+     instead of "Unlimited", ticking down after every reply and warning at 0.
+     null = not loaded yet, so the pill falls back to the old ∞ label. */
+  const [providerQuota, setProviderQuota] = useState(null)
+  const quotaExhaustedRef = useRef(false)
+  useEffect(() => {
+    if (!isLoggedIn || !authToken) return undefined
+    let cancelled = false
+    getQuota(authToken)
+      .then((q) => { if (!cancelled && q && typeof q.remaining === 'number') setProviderQuota(q) })
+      .catch(() => { /* best-effort: keep the ∞ label if the quota can't load */ })
+    return () => { cancelled = true }
+  }, [isLoggedIn, authToken])
+  /* The single honest moment to speak up: when the budget flips to exhausted, a
+     one-time notice tells the user the primary model is spent and failover has
+     taken over — resetting the flag when it recovers (new day) so it can warn
+     again tomorrow. */
+  useEffect(() => {
+    if (!providerQuota) return
+    if (providerQuota.exhausted && !quotaExhaustedRef.current) {
+      quotaExhaustedRef.current = true
+      setNotice('🪫 Aaj ka primary model quota khatam — ab backup model se jawab aa rahe hain')
+    } else if (!providerQuota.exhausted) {
+      quotaExhaustedRef.current = false
+    }
+  }, [providerQuota])
   /* The name the user chose at onboarding (voice already uses it); chat must match. */
   const aiName = voicePrefs.assistantName || 'Nexora'
   /* Landing CTAs and saved sessions enter the workspace with activeView='Home', but
@@ -2000,6 +2026,11 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
     const tick = setInterval(() => {
       if (document.hidden || streamingRef.current || proactiveBusyRef.current) return
       if (proactiveMutedRef.current) return
+      /* Quiet means quiet: "chup ho jao" (voiceAsleep) OR a paused mic
+         (wakeEnabled off — the pill reads "paused") must BOTH stop her from
+         reaching out. The old build only muted the mic and kept nudging, which
+         is exactly the "paused but still texting" bug reported. */
+      if (voiceAsleepRef.current || !wakeEnabledRef.current) return
       if (Date.now() - lastActivityRef.current < IDLE_PROACTIVE_MS) return
       /* Stop reaching out into a void: after a couple of unanswered check-ins, fall
          silent until the user writes again (their send resets the counter). */
@@ -2018,6 +2049,13 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
       proactiveChat({ token: authToken, conversationId, assistantName: aiName, persona: voicePrefsRef.current.persona, gender: voicePrefsRef.current.gender, language: voicePrefsRef.current.language, composing, withdrewDraft })
         .then((r) => {
           const content = (r?.content || '').trim()
+          /* Re-check quiet AFTER the round-trip: the user may have paused her
+             while this request was in flight, and a late nudge would look like
+             the pause did nothing. */
+          if (voiceAsleepRef.current || !wakeEnabledRef.current) {
+            proactiveBusyRef.current = false
+            return
+          }
           if (content) {
             proactiveNudgesRef.current += 1
             /* A warm line loses all warmth when repeated verbatim, so never render a
@@ -2406,12 +2444,57 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
      just heard. It is stored as a prefix on the streaming assistant bubble so
      the ack sits at the top of that reply, not as a separate message that
      would need its own server-side row. */
+  /* Shared "go quiet but stay wake-able by voice" routine — used by the typed/
+     spoken sleep command, the self-control pause AND the model's [APP:pause]
+     marker so every path behaves IDENTICALLY: the mic stays ON (wakeEnabled is
+     NOT touched — that was the old bug where pausing killed the wake word),
+     voiceAsleep gates replies + proactive, and a name / "listen" revives her.
+     `speak:false` is for the [APP:pause] path where the model already said its
+     own goodbye in the reply, so we don't talk over it. */
+  function goToSleep({ speak = true } = {}) {
+    streamAbortRef.current?.abort()
+    cancelSpeakQueue()
+    cancelServerAudio()
+    if (window.speechSynthesis) { try { window.speechSynthesis.cancel() } catch { /* ignore */ } }
+    /* armNow with a negative ms pushes the command window into the past — a
+       real disarm, since armNow(0) would read `0 || default` and RE-arm. */
+    armNow(-1000)
+    setVoiceTurn(false)
+    voiceAsleepRef.current = true
+    setVoiceAsleep(true)
+    const line = sleepAckLine(voicePrefs.language, aiName)
+    setNotice(`🤫 ${line}`)
+    if (speak && speakRepliesRef.current && !voiceOpenRef.current) {
+      speakWakeLine(line, { language: voicePrefs.language, gender: voicePrefs.gender })
+    }
+    return line
+  }
+
   async function sendPrompt(event, overrideText, extras = {}) {
     if (event) event.preventDefault()
     const cleanPrompt = (typeof overrideText === 'string' ? overrideText : prompt).trim()
     const spokenAck = typeof extras.spokenAck === 'string' && extras.spokenAck.trim()
       ? `${extras.spokenAck.trim()}\n\n`
       : ''
+    /* ---- Voice sleep / wake: "chup ho jao" ↔ name / "listen" ---- */
+    /* STRONG phrases match anywhere (STT bolts junk onto a short command); SOFT
+       ones stay terse so a genuine question isn't mistaken for "go quiet". */
+    if (VOICE_SLEEP_STRONG_RE.test(cleanPrompt)
+      || (cleanPrompt.length <= 40 && VOICE_SLEEP_SOFT_RE.test(cleanPrompt))) {
+      /* Sleep via the shared routine, then clear the composer (a mode switch adds
+         no chat bubble, so the normal path that empties the box is skipped). */
+      goToSleep()
+      setPrompt('')
+      typedDraftRef.current = false
+      return
+    }
+    /* Any deliberate input while asleep wakes her — a typed message, or a spoken
+       command that reached here through a name/"listen" wake. Clear the flag and
+       fall through so THIS message gets its real reply. */
+    if (voiceAsleepRef.current) {
+      voiceAsleepRef.current = false
+      setVoiceAsleep(false)
+    }
     /* "Chup kro" / "stop talking" / "meri baat suno": kill the current TTS
        IMMEDIATELY before any other logic runs — even before the streaming
        guard, because a previous reply may still be playing its audio while
@@ -2433,16 +2516,18 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
        trigger self-control — longer sentences like "tell me about text only
        mode" or "I want to resume my studies" are NOT commands. */
     const isShortCommand = cleanPrompt.length <= 35
-    let handledSelfControl = false
+    /* "pause karo" / "go silent" now share the SAME voice-wake sleep as "chup
+       ho jao" — the mic stays ON so a name revives her. (The old code called
+       setWakeEnabled(false), which killed the wake word and forced the user to
+       TYPE to resume — exactly what they objected to.) */
     if (isShortCommand && SELF_CONTROL_RE.test(cleanPrompt)) {
-      setWakeEnabled(false); setSpeakReplies(false)
-      try { localStorage.setItem('nexora_speak_replies', '0') } catch { /* ignore */ }
-      cancelServerAudio()
-      if (window.speechSynthesis) { try { window.speechSynthesis.cancel() } catch { /* ignore */ } }
-      setVoiceTurn(false)
-      setNotice(`${aiName} so gayi — next message pe jaag jayegi.`)
-      handledSelfControl = true
-    } else if (SELF_RESUME_RE.test(cleanPrompt)) {
+      goToSleep()
+      setPrompt('')
+      typedDraftRef.current = false
+      return
+    }
+    let handledSelfControl = false
+    if (SELF_RESUME_RE.test(cleanPrompt)) {
       setWakeEnabled(true); setSpeakReplies(true)
       try { localStorage.setItem('nexora_speak_replies', '1') } catch { /* ignore */ }
       setNotice(`${aiName} jaag gayi!`)
@@ -2616,6 +2701,11 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
             if (userProfile && typeof onProfileUpdate === 'function') {
               onProfileUpdate({ ...userProfile, creditsRemaining: meta.creditsRemaining })
             }
+          }
+          /* Live provider-quota tick — rides on the same final chunk, so the
+             top-bar countdown moves the moment the answer lands. */
+          if (meta.providerQuota && typeof meta.providerQuota.remaining === 'number') {
+            setProviderQuota(meta.providerQuota)
           }
         },
       })
@@ -2794,17 +2884,19 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
       try { args = JSON.parse(m[2]) } catch { /* empty object is fine for most commands */ }
       switch (cmd) {
         case 'pause':
-          setWakeEnabled(false)
-          setSpeakReplies(false)
-          try { localStorage.setItem('nexora_speak_replies', '0') } catch { /* ignore */ }
-          if (window.speechSynthesis) { try { window.speechSynthesis.cancel() } catch { /* ignore */ } }
-          cancelServerAudio()
-          updatedText = updatedText.replace(full, '✅ Paused — main chup hoon. Typing karke jagao.')
+          /* Same voice-wake sleep as the typed/spoken command: mic stays ON so
+             "Aira"/"listen" revives her — NOT the old setWakeEnabled(false) that
+             forced typing. speak:false because the model already said its own
+             goodbye in this very reply. */
+          goToSleep({ speak: false })
+          updatedText = updatedText.replace(full, `✅ Chup — jab bulao bas "${aiName}" ya "listen" bol dena.`)
           break
         case 'resume':
           setWakeEnabled(true)
           setSpeakReplies(true)
           try { localStorage.setItem('nexora_speak_replies', '1') } catch { /* ignore */ }
+          voiceAsleepRef.current = false
+          setVoiceAsleep(false)
           updatedText = updatedText.replace(full, '✅ Resumed — bol sakti hoon!')
           break
         case 'mute':
@@ -2940,11 +3032,24 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
      `sendPrompt` is a plain function declaration, so its closure is fine
      here (the hook holds it in a ref and refreshes each render). */
   const [wakeEnabled, setWakeEnabled] = useState(true)
+  /* Ref mirror so the proactive idle interval (defined earlier in the body, but
+     its callback runs after render) can read the LIVE mic state and stay quiet
+     whenever the user paused her — a paused assistant must not send messages. */
+  const wakeEnabledRef = useRef(wakeEnabled)
+  wakeEnabledRef.current = wakeEnabled
   /* "Your turn" indicator: true between the AI finishing a spoken reply and
      the user starting their next utterance (or the 15 s window expiring). The
      mic pill reads it to show "your turn" instead of "listening" so the user
      knows they can just talk — no name, no click. */
   const [voiceTurn, setVoiceTurn] = useState(false)
+  /* "Chup ho jao" sleep mode. When true the assistant stays silent: no replies
+     are streamed, no proactive check-ins fire, and the auto-listen conversation
+     loop does not re-arm. The wake-word mic keeps running (wakeEnabled stays on)
+     so saying her NAME or "listen" wakes her. A ref mirrors it because the wake
+     callbacks and the idle interval read it from async closures. */
+  const [voiceAsleep, setVoiceAsleep] = useState(false)
+  const voiceAsleepRef = useRef(voiceAsleep)
+  voiceAsleepRef.current = voiceAsleep
   /* Auto-voice on replies: when the stream lands, we speak the answer out
      loud. Users who prefer silence can toggle this from the composer. */
   const [speakReplies, setSpeakReplies] = useState(() => {
@@ -2963,6 +3068,9 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
   const { status: wakeStatus, armNow } = useWakeWord({
     enabled: wakeEnabled && !voiceOpen && isLoggedIn && Boolean(authToken),
     wakeWord: aiName,
+    /* Only when asleep does "listen" / "suno" act as a wake word. Awake, this is
+       empty so those ordinary words never hijack a sentence. */
+    wakeAliases: voiceAsleep ? SLEEP_RESUME_ALIASES : [],
     /* Hear commands in the same language the Talk call uses. Without this the
        always-on mic stays on en-US and a task spoken in Urdu/Roman Urdu arrives
        mangled (e.g. just "hi"), so the instruction never reaches the model. */
@@ -2982,12 +3090,20 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
       setVoiceTurn(false)
     },
     onWake: (raw) => {
+      /* A bare name (or "listen") heard while asleep IS the wake signal: clear
+         the flag. `fireWake` already opened the command window, so the very next
+         utterance is picked up as a command — the "Ji, boliye" ack below doubles
+         as the "I'm awake again" confirmation. */
+      if (voiceAsleepRef.current) { voiceAsleepRef.current = false; setVoiceAsleep(false) }
       const heard = (raw || aiName).trim()
       const ack = WAKE_ACK_LINES[voicePrefs.language]?.wake || WAKE_ACK_LINES.auto.wake
       setNotice(`🎙 Heard: "${heard}" — ${aiName}: "${ack}"`)
       speakWakeLine(ack, { language: voicePrefs.language, gender: voicePrefs.gender })
     },
     onCommand: (cmd) => {
+      /* Name + command while asleep: wake silently (no extra ack — the real
+         reply that follows is confirmation enough) and run the command. */
+      if (voiceAsleepRef.current) { voiceAsleepRef.current = false; setVoiceAsleep(false) }
       /* `sendPrompt` early-returns while a stream is running or an attachment
          is uploading; a silent drop reads to the user as "the mic never
          caught it", so we surface the real reason here instead of the
@@ -2996,22 +3112,15 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
         setNotice(`⏳ ${aiName} abhi reply kar rahi hai — "${cmd}" baad me dobara bolo`)
         return
       }
-      /* Rotation makes every chat sound different, so she stops reading like
-         a canned line. Short greetings skip the audio ack entirely (the AI's
-         streamed reply will land within the second). */
-      const skipAck = shouldSkipWakeAck(cmd)
-      const ack = skipAck ? '' : pickRotatingAck(voicePrefs.language)
-      if (ack) {
-        setNotice(`🎙 You: "${cmd}" — ${aiName}: "${ack}"`)
-        /* Speak the audio ack — but DON'T hand it to sendPrompt as
-           `spokenAck`. The visible chat bubble should start with the AI's
-           real reply, not the pre-ack. Prefixing the canned sentence into
-           the bubble is exactly why the user perceived "har chat ka start
-           same line se hota hai". */
-        speakWakeLine(ack, { language: voicePrefs.language, gender: voicePrefs.gender })
-      } else {
-        setNotice(`🎙 You: "${cmd}"`)
-      }
+      /* The ack is a NOTIFICATION, not a line of dialogue. A previous build
+         SPOKE the rotating placeholder ("Bilkul, abhi karti hoon.") before the
+         real reply, which read to the user as (a) the AI reading the toast aloud
+         and (b) a false promise — she claims the task is done/under way before
+         the model has answered at all. So the command ack is now VISUAL ONLY
+         (a silent "I heard you" toast) and the AI's real streamed reply is the
+         only thing spoken. The wake ack ("Ji, boliye") still speaks because it
+         is an honest "I'm listening" signal, not a fake task confirmation. */
+      setNotice(`🎙 You: "${cmd}"`)
       sendPrompt(null, cmd, {})
     },
   })
@@ -3057,23 +3166,52 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
               auto-arms on login (see `wakeEnabled` above) and the voice surface
               lives inside the chat composer as a small inline pill. This keeps
               the header clean and stops the mic from feeling like an opt-in. */}
-          {/* Live wallet pill — the number goes amber under 20 and red-throb at
-              0 so the user always sees the drain BEFORE a request is refused.
-              Premium accounts keep the slot but show "Unlimited" because a raw
-              count is meaningless there. Clicking opens the same upgrade panel
-              as the ✦ Upgrade button. */}
-          {isLoggedIn && (
-            <button
-              className={`header-credits-pill${isPremium ? ' credits-unlimited' : creditsRemaining === 0 ? ' credits-empty' : creditsRemaining <= 20 ? ' credits-warning' : ''}`}
-              type="button"
-              onClick={() => { if (!isPremium && onUpgrade) onUpgrade() }}
-              title={isPremium ? 'Premium — unlimited credits' : `Aap ke paas ${creditsRemaining} credits bache hain${creditsRemaining === 0 ? ' — recharge karne ke liye click karein' : ''}`}
-            >
-              <span className="credits-icon" aria-hidden="true">{isPremium ? '∞' : creditsRemaining === 0 ? '⚠️' : '✦'}</span>
-              <span className="credits-value">{isPremium ? 'Unlimited' : creditsRemaining}</span>
-              <span className="credits-label">{isPremium ? 'Plan' : 'credits'}</span>
-            </button>
-          )}
+          {/* Live wallet pill. Free accounts see their own credit count (amber
+              under 20, red-throb at 0). Premium accounts have no meaningful credit
+              number, so instead of a static "Unlimited" the pill now shows the
+              PRIMARY model's remaining daily token budget — a live countdown that
+              ticks after every reply, goes amber near the wall and throb-red at 0
+              (when failover takes over). Clicking a free pill opens the upgrade panel. */}
+          {isLoggedIn && (() => {
+            const fmtTokens = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${n}`)
+            if (isPremium) {
+              if (!providerQuota) {
+                return (
+                  <button className="header-credits-pill credits-unlimited" type="button" title="Premium — unlimited credits">
+                    <span className="credits-icon" aria-hidden="true">∞</span>
+                    <span className="credits-value">Unlimited</span>
+                    <span className="credits-label">Plan</span>
+                  </button>
+                )
+              }
+              const { remaining, limit } = providerQuota
+              const low = limit > 0 && remaining / limit <= 0.15
+              const state = remaining <= 0 ? ' credits-empty' : low ? ' credits-warning' : ''
+              return (
+                <button
+                  className={`header-credits-pill${state}`}
+                  type="button"
+                  title={remaining <= 0 ? 'Aaj ka primary model quota khatam — backup model chal raha hai' : `Aaj ${fmtTokens(remaining)} tokens bache hain (limit ${fmtTokens(limit)}) — ${new Date(providerQuota.resetsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} ko reset`}
+                >
+                  <span className="credits-icon" aria-hidden="true">{remaining <= 0 ? '⚠️' : '✦'}</span>
+                  <span className="credits-value">{fmtTokens(remaining)}</span>
+                  <span className="credits-label">tokens left</span>
+                </button>
+              )
+            }
+            return (
+              <button
+                className={`header-credits-pill${creditsRemaining === 0 ? ' credits-empty' : creditsRemaining <= 20 ? ' credits-warning' : ''}`}
+                type="button"
+                onClick={() => { if (onUpgrade) onUpgrade() }}
+                title={`Aap ke paas ${creditsRemaining} credits bache hain${creditsRemaining === 0 ? ' — recharge karne ke liye click karein' : ''}`}
+              >
+                <span className="credits-icon" aria-hidden="true">{creditsRemaining === 0 ? '⚠️' : '✦'}</span>
+                <span className="credits-value">{creditsRemaining}</span>
+                <span className="credits-label">credits</span>
+              </button>
+            )
+          })()}
           {!isPremium && (
             <button
               className="header-upgrade-btn"
@@ -3265,33 +3403,32 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
                   user to click back into the composer before typing the next prompt. The
                   send button and sendPrompt's own guard block a second turn instead. */}
               <input id="chat-prompt" ref={promptInputRef} type="text" value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape' && replyTarget) setReplyTarget(null) }} placeholder={replyTarget ? `Replying to ${aiName}…` : streaming ? `${aiName} is typing…` : pendingImgs.length ? 'Ask about the image…' : 'Type your message...'} autoComplete="off" />
-              {/* Auto-voice cluster: always-listening mic pill + Talk (opens the
-                  VoiceCall overlay) + Speak-replies toggle. Lives here instead
-                  of the header so the whole voice surface is inside the chat
-                  content, exactly where a conversation happens. */}
+              {/* Auto-voice cluster: the always-listening mic pill (a single click
+                  pauses the mic, another resumes it) + Speak-replies toggle. Lives
+                  inside the chat composer so the whole voice surface sits exactly
+                  where a conversation happens. The old "Talk" button was removed —
+                  the pill now owns the voice-input on/off toggle. */}
               <div className="prompt-voice-cluster" role="group" aria-label="Voice controls">
                 <button
                   type="button"
-                  className={`prompt-mic-btn${wakeEnabled ? ' on' : ''}${voiceTurn ? ' turn' : ''} status-${wakeStatus}`}
+                  className={`prompt-mic-btn${wakeEnabled ? ' on' : ''}${voiceTurn ? ' turn' : ''}${voiceAsleep ? ' sleeping' : ''} status-${wakeStatus}`}
                   aria-pressed={wakeEnabled}
-                  aria-label={voiceTurn ? `${aiName} finished speaking — your turn, just talk` : wakeEnabled ? `${aiName} is listening — click to speak now without saying the name` : `Resume listening for "${aiName}"`}
-                  title={voiceTurn ? `Your turn — just start talking` : wakeEnabled ? `Click to speak now (one-shot, no wake word needed)` : `Click to let ${aiName} hear you again`}
-                  onClick={() => { if (wakeEnabled) { armNow(); setNotice(`🎙 ${aiName} sun rahi hai — boliye`) } else { setWakeEnabled(true) } }}
+                  aria-label={voiceAsleep ? `${aiName} is sleeping — click to wake her` : wakeEnabled ? `${aiName} is listening — click to stop listening` : `Listening is off — click to let ${aiName} hear you again`}
+                  title={voiceAsleep ? `Click to wake ${aiName}` : wakeEnabled ? `Click to pause the mic — she'll stop picking up your voice` : `Click to resume — she'll start picking up your voice again`}
+                  onClick={() => {
+                    /* Sleeping ("chup ho jao"): a click revives her just like the
+                       name would — clear the flag and open the command window. */
+                    if (voiceAsleep) { voiceAsleepRef.current = false; setVoiceAsleep(false); armNow(); setNotice(`🎙 ${aiName} jaag gayi — boliye`); return }
+                    /* Click-to-toggle the always-on mic: listening → paused (stop
+                       picking up the voice), paused → listening (start again). */
+                    if (wakeEnabled) { setWakeEnabled(false); setNotice(`⏸️ ${aiName} ab sun nahi rahi — dobara sunne ke liye click karo`) }
+                    else { setWakeEnabled(true); setNotice(`🎙 ${aiName} sun rahi hai — boliye`) }
+                  }}
                 >
                   <span className="prompt-mic-dot" aria-hidden="true" />
-                  <span aria-hidden="true">🎙</span>
-                  <em className="prompt-mic-chip">{!wakeEnabled ? 'paused' : voiceTurn ? 'your turn' : wakeStatus === 'listening' ? 'listening' : wakeStatus === 'denied' ? 'blocked' : wakeStatus === 'no-mic' ? 'no mic' : wakeStatus === 'unsupported' ? 'no STT' : 'starting'}</em>
+                  <span aria-hidden="true">{voiceAsleep ? '🤫' : '🎙'}</span>
+                  <em className="prompt-mic-chip">{!wakeEnabled ? 'paused' : voiceAsleep ? 'sleeping' : voiceTurn ? 'your turn' : wakeStatus === 'listening' ? 'listening' : wakeStatus === 'denied' ? 'blocked' : wakeStatus === 'no-mic' ? 'no mic' : wakeStatus === 'unsupported' ? 'no STT' : 'starting'}</em>
                 </button>
-                <button
-                  type="button"
-                  className="prompt-talk-btn"
-                  aria-label={`Talk to ${aiName} out loud`}
-                  title={`Open the ${aiName} voice call`}
-                  onClick={() => {
-                    if (!isLoggedIn || !authToken) { onLogin(); return }
-                    setVoiceOpen(true)
-                  }}
-                ><span aria-hidden="true">◉</span> Talk</button>
                 <button
                   type="button"
                   className={`prompt-speak-btn${speakReplies ? ' on' : ''}`}

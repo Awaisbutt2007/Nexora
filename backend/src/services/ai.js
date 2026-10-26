@@ -1,5 +1,6 @@
 import OpenAI from 'openai'
 import { config, systemPromptFor, REPLY_LANGUAGE_SCRIPTS } from '../config.js'
+import { addTokensUsed } from './quota.js'
 
 function createClient() {
   if (!config.openaiApiKey) return null
@@ -7,6 +8,28 @@ function createClient() {
     apiKey: config.openaiApiKey,
     baseURL: config.openaiBaseUrl,
   })
+}
+
+/* Groq's free tier gives every model its OWN daily token budget, so one exhausted
+   model must not black out the whole chat. When the primary call fails for a
+   CAPACITY reason (429 / tokens-per-day / overload) we roll through
+   config.fallbackModels; a genuine 4xx (bad request, bad key) is NOT retried on
+   another model because it would fail there too — we surface it instead. */
+const CAPACITY_RE = /(rate.?limit|too many requests|tokens per (day|hour|min|minute)|insufficient_quota|quota|overload|capacity|try again in|\b429\b|\b503\b)/i
+function isCapacityError(err) {
+  if (!err) return false
+  if (err.status === 429 || err.status === 503) return true
+  return CAPACITY_RE.test(String(err?.message || err))
+}
+/* Primary first, then the fallback chain, de-duplicated and empties dropped. */
+function modelChain(primary) {
+  const seen = new Set()
+  const out = []
+  for (const m of [primary, ...(config.fallbackModels || [])]) {
+    const id = String(m || '').trim()
+    if (id && !seen.has(id)) { seen.add(id); out.push(id) }
+  }
+  return out
 }
 
 function buildMessages(history, userMemories = [], ctx = {}, extraDirective = null) {
@@ -149,7 +172,7 @@ export async function* guardedStream(params, open = providerStream) {
 async function* providerStream({ history, memories, model, assistantName, userName, persona, language, gender, signal, extraDirective }) {
   const messages = buildMessages(history, memories, { assistantName, userName, persona, language, gender }, extraDirective)
   const client = createClient()
-  const usedModel = model || config.openaiModel
+  let usedModel = model || config.openaiModel
 
   if (!client) {
     for await (const chunk of mockStream(messages)) {
@@ -159,8 +182,7 @@ async function* providerStream({ history, memories, model, assistantName, userNa
     return
   }
 
-  const stream = await client.chat.completions.create({
-    model: usedModel,
+  const streamReq = {
     messages,
     max_tokens: 900,
     /* When the user pinned a specific language, cool the sampling down so the
@@ -169,7 +191,27 @@ async function* providerStream({ history, memories, model, assistantName, userNa
     ...(language && language !== 'auto' ? { temperature: 0.35 } : {}),
     stream: true,
     stream_options: { include_usage: true },
-  }, { signal })
+  }
+  /* Cross-model failover: an exhausted primary rolls onto the next model. maxRetries:0
+     makes a rate-limited model fail FAST so the crossover is immediate instead of the
+     SDK re-hammering the same spent model. If every model is busy we rethrow the
+     ORIGINAL capacity error so the client still sees the honest "at its limit" line. */
+  const chain = modelChain(usedModel)
+  let stream = null
+  let capacityErr = null
+  for (let idx = 0; idx < chain.length; idx += 1) {
+    try {
+      stream = await client.chat.completions.create({ model: chain[idx], ...streamReq }, { signal, maxRetries: 0 })
+      usedModel = chain[idx]
+      break
+    } catch (err) {
+      if (signal?.aborted) throw err
+      if (idx === 0 && !isCapacityError(err)) throw err /* a real 4xx won't be fixed by another model */
+      if (idx === 0) capacityErr = err
+      console.warn(`[nexora] model ${chain[idx]} unavailable — trying fallback: ${String(err?.message || err).slice(0, 120)}`)
+    }
+  }
+  if (!stream) throw capacityErr
 
   for await (const part of stream) {
     if (signal?.aborted) break
@@ -178,6 +220,9 @@ async function* providerStream({ history, memories, model, assistantName, userNa
       yield { content: delta, model: usedModel, usage: null }
     }
     if (part.usage) {
+      /* Tally only the primary model's spend — a failover call runs on a sibling
+         with its own daily budget, so it must not drain this countdown. */
+      if (usedModel === config.openaiModel) addTokensUsed(part.usage.total_tokens)
       yield { content: '', model: usedModel, usage: part.usage, finish: true }
     }
   }
@@ -193,7 +238,7 @@ export function streamChatCompletion(params) {
 async function providerComplete({ history, memories, model, assistantName, userName, persona, language, gender, extraDirective }) {
   const messages = buildMessages(history, memories, { assistantName, userName, persona, language, gender }, extraDirective)
   const client = createClient()
-  const usedModel = model || config.openaiModel
+  let usedModel = model || config.openaiModel
 
   if (!client) {
     let text = ''
@@ -205,12 +250,28 @@ async function providerComplete({ history, memories, model, assistantName, userN
     }
   }
 
-  const completion = await client.chat.completions.create({
-    model: usedModel,
+  const completeReq = {
     messages,
     max_tokens: 900,
     ...(language && language !== 'auto' ? { temperature: 0.35 } : {}),
-  })
+  }
+  const chain = modelChain(usedModel)
+  let completion = null
+  let capacityErr = null
+  for (let idx = 0; idx < chain.length; idx += 1) {
+    try {
+      completion = await client.chat.completions.create({ model: chain[idx], ...completeReq }, { maxRetries: 0 })
+      usedModel = chain[idx]
+      break
+    } catch (err) {
+      if (idx === 0 && !isCapacityError(err)) throw err
+      if (idx === 0) capacityErr = err
+      console.warn(`[nexora] model ${chain[idx]} unavailable — trying fallback: ${String(err?.message || err).slice(0, 120)}`)
+    }
+  }
+  if (!completion) throw capacityErr
+
+  if (usedModel === config.openaiModel) addTokensUsed(completion.usage?.total_tokens)
 
   return {
     content: completion.choices[0]?.message?.content || '',

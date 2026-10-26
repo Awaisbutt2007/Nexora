@@ -194,6 +194,14 @@ export async function me(token) {
   return parseJson(res)
 }
 
+/* The primary model's remaining daily token budget, for the live top-bar
+   countdown. Best-effort: the caller falls back to "Unlimited" when this fails
+   (mock mode, offline) so the pill is never left showing a broken number. */
+export async function getQuota(token) {
+  const res = await fetch(`${API_BASE}/api/chat/quota`, { headers: authHeaders(token) })
+  return parseJson(res)
+}
+
 export async function listConversations(token) {
   const res = await fetch(`${API_BASE}/api/conversations`, { headers: authHeaders(token) })
   return parseJson(res)
@@ -351,7 +359,7 @@ export async function streamChat({ token, message, conversationId = null, assist
            just conversation lifecycle changes — the final `creditsRemaining`
            chunk is how the top-of-workspace pill stays honest without an
            extra /me fetch per reply. */
-        if ((json.isNew != null || json.conversationId || json.creditsRemaining != null || json.assistantMessageId) && onMeta) onMeta(json)
+        if ((json.isNew != null || json.conversationId || json.creditsRemaining != null || json.providerQuota || json.assistantMessageId) && onMeta) onMeta(json)
         const delta = json.choices?.[0]?.delta?.content
         if (delta) {
           fullText += delta

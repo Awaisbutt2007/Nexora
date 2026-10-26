@@ -123,6 +123,11 @@ function migrate(database) {
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS provider_quota (
+      day TEXT PRIMARY KEY,
+      tokens_used INTEGER NOT NULL DEFAULT 0
+    );
+
     CREATE INDEX IF NOT EXISTS idx_conversations_user ON conversations(user_id, updated_at DESC);
     CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages(conversation_id, created_at ASC);
     CREATE INDEX IF NOT EXISTS idx_memories_user ON memories(user_id);

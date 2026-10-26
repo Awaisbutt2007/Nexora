@@ -25,6 +25,24 @@ export const config = {
   openaiApiKey: process.env.OPENAI_API_KEY || '',
   openaiBaseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
   openaiModel: process.env.OPENAI_MODEL || 'gpt-4o-mini',
+  /* Groq's free tier caps EACH model with its own daily token budget, so when the
+     shipped primary (qwen3.8-27b) burns its tokens-per-day the whole chat would go
+     dark even though sibling models still have room. On a rate-limit the AI service
+     rolls through this chain so a conversation keeps answering instead of showing
+     "at its limit". Override with a comma-separated AI_FALLBACK_MODELS; set it empty
+     to disable failover. These ids are the ONLY text-chat models this key can reach
+     (verified against GET /v1/models — the llama-* staples 404 here). They are
+     reasoning models, so they need the normal 900-token headroom to emit content.
+     They are text-only, so a vision turn still relies on the primary alone. */
+  fallbackModels: (process.env.AI_FALLBACK_MODELS
+    ?? 'openai/gpt-oss-120b,openai/gpt-oss-20b')
+    .split(',').map((s) => s.trim()).filter(Boolean),
+  /* Groq's free tier also caps the PRIMARY model with a daily token budget (the
+     qwen3.8-27b wall is 200000 tokens/day). The server counts the tokens it spends
+     on that primary model against this number and exposes the remaining balance so
+     the top-bar pill can show a live countdown instead of a static "Unlimited".
+     Override with AI_DAILY_TOKEN_LIMIT if you upgrade the key or switch models. */
+  aiDailyTokenLimit: Number(process.env.AI_DAILY_TOKEN_LIMIT || 200000),
   /* Optional Pollinations token. The free anonymous image tier now sheds most
      requests with a 402 "at its limit" wall, so image generation is unreliable
      without one. A token (free sign-up at enter.pollinations.ai) lifts that cap;

@@ -11,10 +11,18 @@ import { completeChat, estimateCredits, streamChatCompletion } from '../services
 import { detectImageRequest, imageProxyPath, isNsfwPrompt, isSelfUiRequest } from '../services/images.js'
 import { safeProviderMessage } from '../services/providerErrors.js'
 import { deductCredits, ensureCredits } from '../services/credits.js'
+import { getQuotaSnapshot } from '../services/quota.js'
 import { titleFromPrompt } from './conversations.js'
 
 const router = Router()
 router.use(requireAuth)
+
+/* The primary model's remaining daily token budget, so the top-bar pill can show
+   a live countdown instead of a static "Unlimited". Numbers only — no model, no
+   vendor — so it can never reveal the engine behind the companion. */
+router.get('/quota', (_req, res) => {
+  res.json(getQuotaSnapshot())
+})
 
 const chatSchema = z.object({
   message: z.string().trim().max(20000).optional(),
@@ -257,6 +265,7 @@ router.post('/completions', aiLimiter, async (req, res, next) => {
         ],
         usage: result.usage,
         creditsCharged: cost,
+        providerQuota: getQuotaSnapshot(),
         user: sanitizeUser(updated),
       })
     }
@@ -422,6 +431,7 @@ router.post('/completions', aiLimiter, async (req, res, next) => {
         choices: [],
         creditsCharged: cost,
         creditsRemaining: updated?.credits_remaining ?? null,
+        providerQuota: getQuotaSnapshot(),
       })
 
       writeSse(res, '[DONE]')
