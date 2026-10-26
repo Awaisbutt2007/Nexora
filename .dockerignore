@@ -1,0 +1,25 @@
+# Dependencies are installed inside the image from the lockfiles — never copied.
+node_modules
+**/node_modules
+
+# Build output is produced by stage 1; the host copy must not shadow it.
+dist
+
+# Git history, docs and tooling are not part of the running service.
+.git
+.github
+docs
+desktop-agent
+*.md
+.qoder
+
+# --- Runtime state and secrets: NEVER belong in an image layer ---
+.env
+**/.env
+data
+backend/data
+backend/uploads
+**/*.db
+**/*.db-shm
+**/*.db-wal
+**/*.log

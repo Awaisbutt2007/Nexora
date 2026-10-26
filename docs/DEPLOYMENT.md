@@ -58,6 +58,42 @@ npm --prefix backend start          # API on :8787 (put behind nginx/caddy or a 
 - Put TLS termination + HSTS at the proxy (HSTS is also emitted by the app in prod).
 - Install from lockfiles (`npm ci`) in CI deploys for reproducibility.
 
+## 3a. One-service container deploy (fastest path to a public URL)
+
+Because the backend already **hosts the built frontend** (`clientDir` = `../dist`),
+the whole product ships as **one image on one URL** — the page calls relative
+`/api` on its own origin, so CORS can never break a request. The repo now carries
+`Dockerfile` (multi-stage: build Vite client → run `node backend/src/index.js`),
+`.dockerignore` (never bakes `node_modules`, the local DB/uploads, or any `.env`),
+and `render.yaml` (a Render blueprint). A production boot was verified locally: it
+clears the JWT/CORS guards and serves `/health` 200, `/` 200 `text/html`, and
+`/api/chat/quota` 401 all on the single port.
+
+**Pick a host that runs a long-lived Node process with a persistent disk.** This
+app needs all three: the SQLite file, Server-Sent-Events chat streams, and the
+in-process reminder scheduler are incompatible with serverless static hosts
+(Vercel/Netlify can serve the *frontend* only — deploying it alone yields a site
+whose `/api` calls hit nothing). Use Render, Railway, Fly.io, or any container VM.
+
+- **SQLite persistence is mandatory.** Point `DB_PATH` at a mounted volume and put
+  uploads on it too. The image uses `/data` (`DB_PATH=/data/nexora.db`) and
+  symlinks `backend/uploads` onto `/data/uploads`. A host that gives no disk (e.g.
+  Render's free tier) wipes accounts/chats on every restart — attach a persistent
+  disk/volume (Render disk, Railway volume, Fly volume).
+- **Env to set in the host dashboard** (never in git): `NODE_ENV=production`, a
+  random `JWT_SECRET` (`node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"`),
+  `OPENAI_API_KEY` (+ `OPENAI_BASE_URL`, `OPENAI_MODEL`, `AI_FALLBACK_MODELS`,
+  `AI_DAILY_TOKEN_LIMIT`), and `CORS_ORIGIN` = the service's public `https://…`
+  URL. `CORS_ORIGIN` can't be known before the first deploy, so set it right after
+  and redeploy (the boot fails on a localhost origin on purpose).
+- **Render (Git-connected):** New → Blueprint → connect this repo; it reads
+  `render.yaml`, builds `Dockerfile`, mounts the disk, gives you a URL. Fill the
+  two `sync: false` secrets (`OPENAI_API_KEY`, `CORS_ORIGIN`) in the dashboard.
+- **Railway:** `npm i -g @railway/cli`, `railway login`, `railway up`; add a volume
+  at `/data` and the env vars above.
+- **Fly.io:** `fly launch`/`fly deploy` from the `Dockerfile`; create a volume
+  mounted at `/data` (`fly volumes create nexora_data --path /data`).
+
 ## 4. Pre-deploy gate (must be green)
 ```bash
 npm run security:check:full   # secrets + tracked-file guard, incl. Git history
@@ -90,7 +126,10 @@ npm run audit:all
    boot leaves the previous instance safe to re-enable.
 
 ## 7. What is NOT yet ready for production
-- No deployment manifest/IaC chosen yet (container/PaaS config still to be authored).
+- A container path now exists (`Dockerfile` + `render.yaml` + `.dockerignore`), but
+  **no deploy has been executed** — pointing the service at a real host, generating
+  a production `JWT_SECRET`, and pasting the provider key are manual, credential- and
+  billing-bearing steps that need the operator to sign in to the chosen host.
 - `/health` answers with readiness only; never set `HEALTH_VERBOSE=1` in a public
   deployment (it puts the engine and voice model ids back into that public response).
 - No metrics/alerting; provider timeouts on AI calls are default (`NEXT_STEPS.md` P0-3).

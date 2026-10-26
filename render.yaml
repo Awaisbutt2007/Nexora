@@ -1,0 +1,45 @@
+# Render blueprint — deploy the whole app (frontend + API) as ONE web service
+# from this repo. Render reads the root Dockerfile and mounts a persistent disk
+# at /data so the SQLite DB and uploads survive restarts.
+#
+# Two caveats to read before using the free tier:
+#   • Render free web services have NO persistent disk and sleep when idle, so
+#     accounts/conversations reset on redeploy. Keep the `starter` (or higher)
+#     plan below for real persistence.
+#   • CORS_ORIGIN must equal this service's public URL. It cannot be known
+#     before the first deploy, so set it in the dashboard afterwards (see note).
+services:
+  - type: web
+    name: nexora
+    runtime: docker
+    plan: starter            # paid instance required for the disk to persist
+    region: oregon
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /health
+    disk:
+      name: nexora-data
+      mountPath: /data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DB_PATH
+        value: /data/nexora.db
+      # A strong secret, generated once by Render and kept out of the repo.
+      - key: JWT_SECRET
+        generateValue: true
+      - key: OPENAI_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: OPENAI_MODEL
+        value: qwen/qwen3.8-27b
+      - key: AI_FALLBACK_MODELS
+        value: openai/gpt-oss-120b,openai/gpt-oss-20b
+      - key: AI_DAILY_TOKEN_LIMIT
+        value: "200000"
+      - key: AI_DEVELOPER_NAME
+        value: Awais
+      # Secrets / late-bound values you fill in from the Render dashboard:
+      - key: OPENAI_API_KEY
+        sync: false          # paste your Groq key here (never committed)
+      - key: CORS_ORIGIN
+        sync: false          # set to https://<this-service>.onrender.com
