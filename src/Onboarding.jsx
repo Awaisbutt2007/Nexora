@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { loadSession, updateProfile } from './api/nexora.js'
 import NanoParticles from './NanoParticles.jsx'
+import { Icon } from './icons.jsx'
 import './Onboarding.css'
 
 const AI_PROFILE_KEY = 'nexora_ai_profile'
@@ -630,14 +631,14 @@ export default function Onboarding({ userProfile, source = 'google', onComplete 
                       onClick={(event) => { event.stopPropagation(); previewVoice(char) }}
                       aria-label={`Hear ${char.name} voice`}
                     >
-                      {playingId === char.id ? <WaveBars analyserRef={analyserRef} /> : '▶'}
+                      {playingId === char.id ? <WaveBars analyserRef={analyserRef} /> : <Icon name="play" size={13} />}
                     </button>
                   </li>
                 ))}
               </ul>
               <div className="browse-voices-section">
                 <button type="button" className="browse-voices" onClick={() => fileInputRef.current?.click()}>
-                  <span>⌕</span> Browse voices from your device
+                  <span><Icon name="search" size={15} /></span> Browse voices from your device
                 </button>
                 <input ref={fileInputRef} type="file" accept="audio/*,video/*" multiple hidden onChange={handleFiles} />
                 {naming ? (
@@ -675,7 +676,7 @@ export default function Onboarding({ userProfile, source = 'google', onComplete 
                               className={`transcribe-btn${tr?.status === 'listening' ? ' listening' : ''}`}
                               onClick={() => (tr?.status === 'listening' ? stopPlayback() : transcribeVoice(voice))}
                             >
-                              {tr?.status === 'listening' ? '◉ Scanning…' : '↻ Re-scan'}
+                              {tr?.status === 'listening' ? <><Icon name="record" size={12} /> Scanning…</> : <><Icon name="refresh" size={13} /> Re-scan</>}
                             </button>
                             <button
                               type="button"
@@ -683,7 +684,7 @@ export default function Onboarding({ userProfile, source = 'google', onComplete 
                               onClick={() => toggleFileVoice(voice)}
                               aria-label={playingId === voice.id ? `Stop ${voice.name}` : `Play ${voice.name}`}
                             >
-                              {playingId === voice.id ? <WaveBars analyserRef={analyserRef} /> : '▶'}
+                              {playingId === voice.id ? <WaveBars analyserRef={analyserRef} /> : <Icon name="play" size={13} />}
                             </button>
                           </div>
                           {tr && tr.status === 'error' && (

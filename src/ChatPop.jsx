@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Icon } from './icons.jsx'
 
 /* ── Quick actions / Continue chat ─────────────────────────────────────────
    The floating panel that docks to the top-right of the working area: one big
@@ -18,12 +19,12 @@ import { useState } from 'react'
    survives a reload. */
 /* icon · label · tooltip · what lands in the composer when it is clicked */
 const POP_STARTERS = [
-  ['🎤', 'Talk call', 'Start a voice call with her', ''],
-  ['⚡', 'Quick question', 'Ask and get a short answer', 'Ask me a short answer'],
-  ['✍', 'Brainstorm', 'Throw ideas around', 'Brainstorm ideas for:'],
-  ['🌐', 'Research online', 'Look something up and fact-check it', 'Research and fact-check:'],
-  ['💡', 'Explain simply', 'Break a hard thing down', 'Explain this in simple words:'],
-  ['✨', 'More presets', 'See every starter she has', 'Show me every prompt preset'],
+  ['mic', 'Talk call', 'Start a voice call with her', ''],
+  ['zap', 'Quick question', 'Ask and get a short answer', 'Ask me a short answer'],
+  ['pen', 'Brainstorm', 'Throw ideas around', 'Brainstorm ideas for:'],
+  ['globe', 'Research online', 'Look something up and fact-check it', 'Research and fact-check:'],
+  ['bulb', 'Explain simply', 'Break a hard thing down', 'Explain this in simple words:'],
+  ['magic', 'More presets', 'See every starter she has', 'Show me every prompt preset'],
 ]
 
 const PIN_KEY = 'nexora_pinned_chats'
@@ -52,7 +53,7 @@ export default function ChatPop({ collapsible, open, setOpen, conversations, onN
   /* Collapsed, the panel is gone and only the round handle stays — pinned to the
      same corner so it never jumps when you fold or unfold. */
   if (collapsed) {
-    return <button type="button" className="chat-popover-orb" aria-label="Open chat panel" aria-expanded={false} onClick={fold}><span aria-hidden="true">✦</span></button>
+    return <button type="button" className="chat-popover-orb" aria-label="Open chat panel" aria-expanded={false} onClick={fold}><Icon name="sparkle" size={16} /></button>
   }
 
   const group = (label, threads) => threads.length ? <div className="chat-popover-group">
@@ -62,21 +63,21 @@ export default function ChatPop({ collapsible, open, setOpen, conversations, onN
         <span>{threadTitle(c)}</span>
         <small>{new Date(c.updatedAt || c.createdAt).toLocaleDateString()}{c.messageCount ? ` · ${c.messageCount} turns` : ''}</small>
       </button>
-      <button type="button" className={`chat-popover-pin${pinned.includes(c.id) ? ' on' : ''}`} aria-pressed={pinned.includes(c.id)} aria-label={`${pinned.includes(c.id) ? 'Unpin' : 'Pin'} ${threadTitle(c)}`} onClick={() => togglePin(c.id)}>✦</button>
+      <button type="button" className={`chat-popover-pin${pinned.includes(c.id) ? ' on' : ''}`} aria-pressed={pinned.includes(c.id)} aria-label={`${pinned.includes(c.id) ? 'Unpin' : 'Pin'} ${threadTitle(c)}`} onClick={() => togglePin(c.id)}><Icon name="pin" size={13} /></button>
     </li>)}</ul>
   </div> : null
 
   return <div className="chat-popover">
     <header>
-      <span aria-hidden="true">✦</span>
+      <Icon name="sparkle" size={15} />
       <b>Quick actions</b>
       <small>Continue chat</small>
       {/* Home cannot fold the panel, so it shows no handle at all — a triangle
           that did nothing would just be noise. */}
-      {collapsible && <button type="button" className="chat-popover-toggle" aria-expanded aria-label="Collapse chat panel" onClick={fold}>▶</button>}
+      {collapsible && <button type="button" className="chat-popover-toggle" aria-expanded aria-label="Collapse chat panel" onClick={fold}><Icon name="play" size={13} /></button>}
     </header>
 
-    <button type="button" className="chat-popover-new" onClick={onNewChat}><span aria-hidden="true">+</span>Start new chat</button>
+    <button type="button" className="chat-popover-new" onClick={onNewChat}><Icon name="plus" size={14} />Start new chat</button>
 
     {group('Pinned chats', pinnedThreads)}
     {group('Recent chats', recentThreads)}
@@ -87,8 +88,8 @@ export default function ChatPop({ collapsible, open, setOpen, conversations, onN
         type="button"
         key={label}
         title={hint}
-        onClick={() => (icon === '🎤' ? onTalk() : onPrompt(preset))}
-      ><span aria-hidden="true">{icon}</span>{label}</button>)}
+        onClick={() => (icon === 'mic' ? onTalk() : onPrompt(preset))}
+      ><Icon name={icon} size={15} />{label}</button>)}
       <button type="button" className="chat-popover-trail" onClick={onNewChat}>Trail: Start new chat →</button>
     </div>
   </div>

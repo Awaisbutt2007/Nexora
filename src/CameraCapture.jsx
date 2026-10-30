@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { Icon } from './icons.jsx'
 import './CameraCapture.css'
 
 /* Live webcam capture for the chat composer. The 📷 button opens this: it asks the
@@ -93,7 +94,7 @@ export default function CameraCapture({ onCapture, onClose }) {
     onClick={(event) => { if (event.target === event.currentTarget) onClose() }}>
     <div className="camera-card">
       <div className="camera-head">
-        <span className="camera-title">{error ? '📷 Camera unavailable' : '📷 Take a photo'}</span>
+        <span className="camera-title"><Icon name="camera" size={15} /> {error ? 'Camera unavailable' : 'Take a photo'}</span>
         <button type="button" className="camera-x" aria-label="Close camera" onClick={onClose}>×</button>
       </div>
       <div className={`camera-stage${facing === 'user' ? ' mirrored' : ''}`}>
@@ -102,7 +103,7 @@ export default function CameraCapture({ onCapture, onClose }) {
         {error && <div className="camera-error" role="alert">{error}</div>}
       </div>
       <div className="camera-foot">
-        <button type="button" className="camera-flip" onClick={() => setFacing((f) => (f === 'user' ? 'environment' : 'user'))} disabled={Boolean(error)} aria-label="Switch front or back camera">🔄 Flip</button>
+        <button type="button" className="camera-flip" onClick={() => setFacing((f) => (f === 'user' ? 'environment' : 'user'))} disabled={Boolean(error)} aria-label="Switch front or back camera"><Icon name="flip" size={14} /> Flip</button>
         <button type="button" className="camera-shutter" onClick={shoot} disabled={!ready} aria-label="Capture photo"><span className="camera-shutter-ring" aria-hidden="true" /></button>
         <button type="button" className="camera-cancel" onClick={onClose}>Cancel</button>
       </div>

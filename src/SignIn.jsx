@@ -1,5 +1,6 @@
 import React, { useRef, useState } from 'react'
 import { apiErrorText, googleLogin, login, register, saveSession } from './api/nexora.js'
+import { Icon } from './icons.jsx'
 import './SignIn.css'
 
 const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID
@@ -453,7 +454,7 @@ export default function SignIn({ onBack, onLoginSuccess, targetLabel }) {
       {/* Floating Toast Message */}
       {toast && (
         <div className="auth-toast-alert" role="status">
-          <span style={{ color: '#a866ff' }}>✦</span>
+          <Icon name="sparkle" size={15} style={{ color: '#a866ff' }} />
           <span>{toast}</span>
         </div>
       )}

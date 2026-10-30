@@ -1,8 +1,19 @@
 .toast-message { position: fixed; z-index: 90; right: 22px; top: 82px; max-width: min(360px,calc(100vw - 32px)); display: flex; align-items: center; gap: 10px; padding: 12px 14px; border: 1px solid rgba(162,130,255,.33); border-radius: 9px; color: #e5e3f2; background: #15172b; box-shadow: 0 9px 35px rgba(0,0,0,.32); font-size: 13px; animation: rise-in .2s both; }.toast-message > span { color: #c69eff; }.toast-message button { margin-left: 7px; border: 0; color: #a1a5ba; background: none; cursor: pointer; font-size: 16px; }.mobile-workspace-nav { display: none; }.mobile-more-menu { position: fixed; z-index: 9; right: 10px; bottom: 68px; width: min(220px,calc(100vw - 20px)); display: grid; gap: 4px; padding: 8px; border: 1px solid rgba(149,162,215,.2); border-radius: 10px; background: rgba(12,16,32,.97); box-shadow: 0 12px 36px rgba(0,0,0,.45); backdrop-filter: blur(16px); }.mobile-more-menu button { min-height: 39px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border: 0; border-radius: 6px; color: #d0d3e4; text-align: left; background: transparent; cursor: pointer; font-size: 13px; }.mobile-more-menu button:hover { color: white; background: rgba(127,93,210,.2); }.mobile-more-menu button span { width: 18px; color: #c3a8ff; text-align: center; font-size: 14px; }
 :root { font-family: 'DM Sans', 'Segoe UI', sans-serif; color: #f5f3ff; background: #050611; font-synthesis: none; text-rendering: optimizeLegibility; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; font-optical-sizing: auto; --bg: #050611; --panel: #0b1020; --text: #f5f3ff; --muted: #a0a5c1; --line: rgba(164,174,255,.16); --violet: #9254ff; --pink: #e25fe9; --cyan: #55d8ff; }
 * { box-sizing: border-box; }
+/* Every lucide line icon (see src/icons.jsx): inherit the wrapping element's colour
+   (they stroke with currentColor) and sit on the text baseline, so an icon dropped
+   where an emoji <span> used to be keeps the row aligned. */
+.ui-icon { vertical-align: -.18em; flex: 0 0 auto; display: inline-block; }
 html { min-width: 320px; scroll-behavior: smooth; scroll-padding-top: 110px; }
-body { min-width: 320px; min-height: 100vh; margin: 0; }
+/* `min-width: 320px` is the narrowest layout every breakpoint set is tuned for;
+   `overflow-x: clip` is the safety net under it: no page can ever scroll sideways,
+   even on a sub-320 viewport or a screen narrower than the ones we could measure.
+   `clip` (not `hidden`) because it leaves `overflow-y` visible, so it does not turn
+   the body into a scroll container — the sticky header keeps sticking (verified at
+   618×351 on the tall landing) and nested scrollers (.chat-thread, .vault-stage)
+   keep their own overflow. */
+body { min-width: 320px; min-height: 100vh; margin: 0; overflow-x: clip; }
 /* Scrollbars are invisible but scrolling keeps working (user request). The document
    carries the landing page, the workspace panels scroll inside themselves.
    scrollbar-width = Firefox, ::-webkit-scrollbar = Chrome/Edge/Safari. */

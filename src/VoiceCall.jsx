@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { chatOnce, logVoiceTurn, requestVoiceToken } from './api/nexora.js'
 import { configureUtterForSpeech } from './voiceSelect.js'
+import { Icon } from './icons.jsx'
 import './VoiceCall.css'
 
 /* Aira — live speech-to-speech over the OpenAI Realtime API (WebRTC), with an
@@ -577,7 +578,7 @@ export default function VoiceCall({ authToken, user, prefs = {}, onClose }) {
     <div className="voice-call-overlay" role="dialog" aria-modal="true" aria-label={`Voice call with ${aiName}`}>
       <div className="voice-call-card">
         <button type="button" className="voice-call-close" aria-label="Close voice call" onClick={() => { endCall('user'); onClose() }}>×</button>
-        <span className={`voice-orb ${phase === 'live' ? micState : phase}`} aria-hidden="true">✦</span>
+        <span className={`voice-orb ${phase === 'live' ? micState : phase}`} aria-hidden="true"><Icon name="sparkle" size={28} /></span>
         <h3 className="voice-headline">{headline}</h3>
         <p className="voice-sub">{phase === 'error' ? errorText : STATUS_TEXT[phase]?.[1] || ''}</p>
 

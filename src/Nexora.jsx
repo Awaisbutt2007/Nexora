@@ -2,6 +2,7 @@ import { lazy, Suspense, useState, useEffect, useLayoutEffect, useMemo, useRef, 
 import { createPortal } from 'react-dom'
 import './Nexora.css'
 import './typography.css'
+import { Icon } from './icons.jsx'
 import SignIn from './SignIn.jsx'
 import workspaceShot from './assets/workspace-shot.png'
 import workspaceSchedule from './assets/workspace-schedule.png'
@@ -475,7 +476,7 @@ function initialNavHash() {
   return NAV_SECTIONS.some(([hash]) => hash === window.location.hash) ? window.location.hash : '#home'
 }
 
-const navItems = [['Chat', '◌'], ['Schedule', '⏰'], ['Memory', '◈'], ['Tools', '▦'], ['Desktop', '⌗'], ['Settings', '⚙']]
+const navItems = [['Chat', 'chat'], ['Schedule', 'schedule'], ['Memory', 'memory'], ['Tools', 'tools'], ['Desktop', 'desktop'], ['Settings', 'settings']]
 /* Schedule chips are a lookup, not a render-time clock read (oxlint purity):
    refreshTasks stamps each task with its phase while the data lands. */
 const SCHEDULE_CHIP = { due: ['Due now', 'chip-due'], soon: ['Reminds tomorrow', 'chip-soon'], planned: ['Planned', 'chip-planned'], done: ['Done ✓', 'chip-done'] }
@@ -489,12 +490,12 @@ const PLANS = [
   { key: 'yearly_pro', feat: false, label: 'YEARLY · BEST VALUE', name: 'Yearly Pro', price: '₨80,000', sub: '/ year', desc: 'Poore saal ka magic, saste mein.', items: ['Premium AI models', 'Faster image and file tools', 'No credit limit — unlimited', 'Bigger projects, longer memory', '12 months for the price of 8'], cta: 'Get Yearly Pro', tint: 'outline' },
 ]
 const tools = [
-  ['▧', 'Image Generator', 'Create striking images from a simple prompt.', 'violet', 'image_generator', 'Describe the image you want — scene, style, mood…'],
-  ['⌘', 'Code Assistant', 'Write, debug, and explain code with context.', 'blue', 'code_assistant', 'Describe the code you need: language, inputs, expected behaviour…'],
-  ['▣', 'PDF Reader', 'Ask questions and find details in any PDF.', 'pink', 'pdf_reader', 'Paste the document text, then ask your question…'],
-  ['▶', 'YouTube Notes', 'Turn long videos into clear takeaways.', 'cyan', 'youtube_notes', 'Paste a transcript or describe the video topic…'],
-  ['◉', 'Meeting Notes', 'Capture decisions and next steps automatically.', 'violet', 'meeting_notes', 'Paste your raw meeting notes or agenda…'],
-  ['✦', 'Social Studio', 'Shape one idea into content for every channel.', 'green', 'social_studio', 'Describe the idea and the tone you want…'],
+  ['image', 'Image Generator', 'Create striking images from a simple prompt.', 'violet', 'image_generator', 'Describe the image you want — scene, style, mood…'],
+  ['code', 'Code Assistant', 'Write, debug, and explain code with context.', 'blue', 'code_assistant', 'Describe the code you need: language, inputs, expected behaviour…'],
+  ['pdf', 'PDF Reader', 'Ask questions and find details in any PDF.', 'pink', 'pdf_reader', 'Paste the document text, then ask your question…'],
+  ['youtube', 'YouTube Notes', 'Turn long videos into clear takeaways.', 'cyan', 'youtube_notes', 'Paste a transcript or describe the video topic…'],
+  ['meeting', 'Meeting Notes', 'Capture decisions and next steps automatically.', 'violet', 'meeting_notes', 'Paste your raw meeting notes or agenda…'],
+  ['social', 'Social Studio', 'Shape one idea into content for every channel.', 'green', 'social_studio', 'Describe the idea and the tone you want…'],
 ]
 
 /* Per-tool session kit used when a card in the Tools grid is clicked. The
@@ -533,10 +534,10 @@ const TOOL_STARTERS = {
 }
 
 const featureList = [
-  ['◌', 'Conversational AI', 'A chat that remembers context and truly gets you.'],
-  ['✦', 'Creative Studio', 'Generate images, writing, code and polished content on demand.'],
-  ['◈', 'Unified Memory', 'Your files, chats and ideas live together, always ready.'],
-  ['▤', 'Smart Planning', 'Organize weeks, projects and todos without leaving the flow.'],
+  ['chat', 'Conversational AI', 'A chat that remembers context and truly gets you.'],
+  ['sparkle', 'Creative Studio', 'Generate images, writing, code and polished content on demand.'],
+  ['memory', 'Unified Memory', 'Your files, chats and ideas live together, always ready.'],
+  ['schedule', 'Smart Planning', 'Organize weeks, projects and todos without leaving the flow.'],
 ]
 
 const testimonials = [
@@ -728,12 +729,12 @@ function Landing({ onLogin, onNavigate, isLoggedIn, userProfile, onUpgrade }) {
 
     <section className="hero wrap">
       <div className="hero-copy">
-        <div className="assistant-pill"><span>✦</span> Your personal AI assistant</div>
+        <div className="assistant-pill"><Icon name="sparkle" size={14} /> Your personal AI assistant</div>
         <h1>Nexora<br />More than just<br />an <span>AI assistant.</span></h1>
         <p className="hero-description">Chat, create, plan, and get things done, all in one place. Nexora remembers, thinks, and works with you.</p>
         <div className="hero-actions">
           <button className="button button-primary button-large" type="button" onClick={() => onNavigate('Home', null, 'Nexora Workspace')}>Get started free <span>→</span></button>
-          <a className="button button-ghost button-large" href="#features"><span className="play-icon">▶</span> See what Nexora can do</a>
+          <a className="button button-ghost button-large" href="#features"><span className="play-icon"><Icon name="play" size={13} /></span> See what Nexora can do</a>
         </div>
         <p className="hero-note">Works on every browser · Free to start. A paid plan unlocks more magic.</p>
         <div className="social-proof">
@@ -781,17 +782,17 @@ function Landing({ onLogin, onNavigate, isLoggedIn, userProfile, onUpgrade }) {
         </div>
         <div className="feature-grid">
           {[
-            { k: 'chat', icon: '✦', tint: '', kicker: 'THINK TOGETHER', title: 'A chat that gets you', desc: 'Ask the big question, untangle a tricky thought, or just get started. Your assistant keeps the context.', cta: true },
-            { k: 'create', icon: '▧', tint: 'cyan', kicker: 'MAKE IT REAL', title: 'Create without limits', desc: 'Turn a blank page into images, writing, code, plans, and polished work you can share.', orb: true },
-            { k: 'unified', icon: '◈', tint: 'pink', kicker: 'STAY IN YOUR FLOW', title: 'Everything in one place', desc: 'Your favorite tools, files, and conversations live together, ready whenever you are.', pills: true },
+            { k: 'chat', icon: 'sparkle', tint: '', kicker: 'THINK TOGETHER', title: 'A chat that gets you', desc: 'Ask the big question, untangle a tricky thought, or just get started. Your assistant keeps the context.', cta: true },
+            { k: 'create', icon: 'image', tint: 'cyan', kicker: 'MAKE IT REAL', title: 'Create without limits', desc: 'Turn a blank page into images, writing, code, plans, and polished work you can share.', orb: true },
+            { k: 'unified', icon: 'memory', tint: 'pink', kicker: 'STAY IN YOUR FLOW', title: 'Everything in one place', desc: 'Your favorite tools, files, and conversations live together, ready whenever you are.', pills: true },
           ].map((f) => <article key={f.k} className={`feature-card feature-card-${f.k}`}>
-            <div className={`feature-icon ${f.tint ? `icon-${f.tint}` : ''}`}>{f.icon}</div>
+            <div className={`feature-icon ${f.tint ? `icon-${f.tint}` : ''}`}><Icon name={f.icon} size={22} /></div>
             <span className="card-kicker">{f.kicker}</span>
             <h3>{f.title}</h3>
             <p>{f.desc}</p>
             {f.cta && <a href="#features" onClick={(e) => { e.preventDefault(); onNavigate('Chat', null, 'Conversational AI') }}>Start a conversation <span>↗</span></a>}
-            {f.k === 'chat' && <div className="mini-chat"><span className="mini-avatar">N</span><p>What are you thinking about today?<b>✦</b></p></div>}
-            {f.orb && <div className="create-orb"><span>✦</span><i /><i /><i /></div>}
+            {f.k === 'chat' && <div className="mini-chat"><span className="mini-avatar">N</span><p>What are you thinking about today?<b><Icon name="sparkle" size={12} /></b></p></div>}
+            {f.orb && <div className="create-orb"><span><Icon name="sparkle" size={18} /></span><i /><i /><i /></div>}
             {f.pills && <div className="tool-pills"><span>Chat</span><span>Write</span><span>Plan</span><span>+ more</span></div>}
           </article>)}
         </div>
@@ -809,12 +810,12 @@ function Landing({ onLogin, onNavigate, isLoggedIn, userProfile, onUpgrade }) {
                 onClick={() => onNavigate(targetView, targetTool, title)}
                 onKeyDown={(e) => (e.key === 'Enter' || e.key === ' ') && onNavigate(targetView, targetTool, title)}
               >
-                <span className={`fl-icon fl-${i}`}>{icon}</span>
+                <span className={`fl-icon fl-${i}`}><Icon name={icon} size={20} /></span>
                 <div>
                   <h3>{title}</h3>
                   <p>{desc}</p>
                 </div>
-                <em>↗</em>
+                <em><Icon name="external" size={14} /></em>
               </li>
             )
           })}
@@ -831,8 +832,8 @@ function Landing({ onLogin, onNavigate, isLoggedIn, userProfile, onUpgrade }) {
           <button className="button button-primary button-large" type="button" onClick={() => onNavigate('Tools', null, 'All Tools')}>Explore all tools <span>→</span></button>
         </div>
         <div className="tool-showcase">
-          {tools.slice(0, 4).map(([icon, title, description, tint]) => <button className={`showcase-tool tint-${tint}`} key={title} type="button" onClick={() => onNavigate('Tools', title, title)}><span className="showcase-icon">{icon}</span><span><strong>{title}</strong><small>{description}</small></span><b>↗</b></button>)}
-          <div className="showcase-note"><span>✦</span> Your next favorite tool is one click away</div>
+          {tools.slice(0, 4).map(([icon, title, description, tint]) => <button className={`showcase-tool tint-${tint}`} key={title} type="button" onClick={() => onNavigate('Tools', title, title)}><span className="showcase-icon"><Icon name={icon} size={18} /></span><span><strong>{title}</strong><small>{description}</small></span><b><Icon name="external" size={14} /></b></button>)}
+          <div className="showcase-note"><Icon name="sparkle" size={14} /> Your next favorite tool is one click away</div>
         </div>
       </div>
     </section>
@@ -866,7 +867,7 @@ function Landing({ onLogin, onNavigate, isLoggedIn, userProfile, onUpgrade }) {
           <p className="eyebrow">ROOM TO GROW</p>
           <h2>Start curious.<br /><span>Stay for the possibilities.</span></h2>
           <p>Make yourself at home. There’s a Nexora plan for every kind of day.</p>
-          <p className="plans-note"><span>✦</span> Bring your own vibe, or unlock Nexora Pro for a lot more magic.</p>
+          <p className="plans-note"><Icon name="sparkle" size={14} /> Bring your own vibe, or unlock Nexora Pro for a lot more magic.</p>
         </div>
         <div className="plan-grid">
           {PLANS.map((p) => <article key={p.name} className={`plan-card ${p.feat ? 'plan-featured' : ''}`}>
@@ -875,7 +876,7 @@ function Landing({ onLogin, onNavigate, isLoggedIn, userProfile, onUpgrade }) {
             <h3>{p.name}</h3>
             <p className="plan-price">{p.price} <small>{p.sub}</small></p>
             <p className="plan-description">{p.desc}</p>
-            <ul>{p.items.map(it => <li key={it}><span>✦</span> {it}</li>)}</ul>
+            <ul>{p.items.map(it => <li key={it}><Icon name="sparkle" size={13} /> {it}</li>)}</ul>
             {/* Logged-in → shared pricing modal. Logged-out → sign-in wall carrying
                 THIS plan's own name, so "Get Pro" never inherits a previous CTA's label. */}
             <button className={`button button-${p.tint} button-wide`} type="button" onClick={() => (isLoggedIn && onUpgrade ? onUpgrade() : onNavigate('Home', null, `${p.name} Plan`))}>{p.cta} <span>→</span></button>
@@ -907,7 +908,7 @@ function Landing({ onLogin, onNavigate, isLoggedIn, userProfile, onUpgrade }) {
     </section>
 
     <section className="closing-cta wrap">
-      <div className="cta-spark">✦</div>
+      <div className="cta-spark"><Icon name="sparkle" size={22} /></div>
       <p className="eyebrow">YOUR NEXT CHAPTER STARTS SMALL</p>
       <h2>Good ideas are better<br />when they <span>have room.</span></h2>
       <p>Bring your curiosity. We’ll bring the tools.</p>
@@ -934,11 +935,11 @@ function Landing({ onLogin, onNavigate, isLoggedIn, userProfile, onUpgrade }) {
           <p className="footer-tag">More room for what's next.</p>
           <p className="footer-about">The unified AI workspace for curious minds. Turn an ordinary session into a flow that listens, moves, and feels alive — the kind you’ve only daydreamed about.</p>
           <div className="footer-socials">
-            <a href="#" aria-label="WhatsApp" title="WhatsApp">✆</a>
-            <a href="#" aria-label="Email" title="Email">✉</a>
-            <a href="#" aria-label="GitHub" title="GitHub">⌨</a>
-            <a href="#" aria-label="YouTube" title="YouTube">▶</a>
-            <a href="#" aria-label="X" title="X">✕</a>
+            <a href="#" aria-label="WhatsApp" title="WhatsApp"><Icon name="whatsapp" size={18} /></a>
+            <a href="#" aria-label="Email" title="Email"><Icon name="mail" size={18} /></a>
+            <a href="#" aria-label="GitHub" title="GitHub"><Icon name="code" size={18} /></a>
+            <a href="#" aria-label="YouTube" title="YouTube"><Icon name="youtube" size={18} /></a>
+            <a href="#" aria-label="X" title="X"><Icon name="cross" size={15} /></a>
           </div>
         </div>
         {[
@@ -1147,7 +1148,7 @@ function renderChatContent(text) {
       if (url.startsWith('IMAGE:')) {
         const desc = url.slice(6).trim()
         nodes.push(CLIENT_NSFW.test(desc)
-          ? <span key={`blk-${n++}`} className="chat-img-blocked">🚫 Adult content is not allowed on Nexora.</span>
+          ? <span key={`blk-${n++}`} className="chat-img-blocked"><Icon name="warn" size={14} /> Adult content is not allowed on Nexora.</span>
           : <ChatImage key={`img-${n++}`} src={resourceUrl(`/api/images/generate?prompt=${encodeURIComponent(desc)}`)} />)
       } else if (url) {
         nodes.push(<ChatImage key={`img-${n++}`} src={resourceUrl(url)} />)
@@ -1187,7 +1188,7 @@ function CodeBlock({ lang, code }) {
     <div className="chat-code">
       <div className="chat-code-bar">
         <span className="chat-code-lang">{lang || 'code'}</span>
-        <button type="button" className="chat-code-copy" onClick={copy}>{copied ? '✓ Copied!' : '⧉ Copy code'}</button>
+        <button type="button" className="chat-code-copy" onClick={copy}>{copied ? <><Icon name="check" size={13} /> Copied!</> : <><Icon name="copy" size={13} /> Copy code</>}</button>
       </div>
       <pre className="chat-code-pre"><code>{code}</code></pre>
     </div>
@@ -1260,21 +1261,21 @@ function ChatImage({ src, alt = 'Generated image' }) {
       {status !== 'ready' && (
         <span className="chat-img-ph" role="status" aria-live="polite">
           {status === 'error'
-            ? <button type="button" onClick={() => { setStatus('loading'); setObjUrl(''); setAttempt(0); setNonce((v) => v + 1) }}>😕 The image service is busy — tap to try again</button>
+            ? <button type="button" onClick={() => { setStatus('loading'); setObjUrl(''); setAttempt(0); setNonce((v) => v + 1) }}><Icon name="warn" size={14} /> The image service is busy — tap to try again</button>
             : <><span className="chat-img-spin" aria-hidden="true" />{attempt > 1 ? `Image service is busy — retrying (${attempt}/6)…` : 'Generating image…'}</>}
         </span>
       )}
       {status === 'ready' && objUrl && (
         <img className="chat-inline-image" src={objUrl} alt={alt} onClick={() => setOpen(true)} />
       )}
-      {status === 'ready' && <span className="chat-img-hint" aria-hidden="true">🔍 Click to view</span>}
+      {status === 'ready' && <span className="chat-img-hint" aria-hidden="true"><Icon name="search" size={13} /> Click to view</span>}
       {open && createPortal(
         <div className="chat-lightbox" role="dialog" aria-modal="true" aria-label="Image preview" onClick={() => setOpen(false)}>
           <div className="chat-lightbox-inner" onClick={(e) => e.stopPropagation()}>
             <img src={objUrl} alt={alt} className="chat-lightbox-img" />
             <div className="chat-lightbox-actions">
-              <button type="button" className="chat-lightbox-btn primary" onClick={download}>⬇ Download</button>
-              <button type="button" className="chat-lightbox-btn" onClick={() => setOpen(false)}>✕ Close</button>
+              <button type="button" className="chat-lightbox-btn primary" onClick={download}><Icon name="download" size={14} /> Download</button>
+              <button type="button" className="chat-lightbox-btn" onClick={() => setOpen(false)}><Icon name="cross" size={13} /> Close</button>
             </div>
           </div>
         </div>,
@@ -1320,7 +1321,7 @@ const desktopActions = [
   { id: 'desktop.type', scope: 'desktop', risk: 'high', confirm: true, example: { text: 'hello from Aira' } },
   { id: 'desktop.key', scope: 'desktop', risk: 'medium', confirm: true, example: { combo: 'ctrl+c' } },
 ]
-const desktopScopes = [['browser', '🌐', 'Drive the dedicated automation browser (not your personal profile)'], ['files', '🗂', 'Read / organize inside folders you approve'], ['apps', '🖥', 'Launch & close approved apps only'], ['system', '⚙', 'Read-only info; power needs per-action confirm, never from voice'], ['screen', '👁', 'Let Aira look at your screen to describe it (nothing is saved unless you ask)'], ['desktop', '🖱️', 'Move / click / scroll / type / key on your PC — every action needs your approval, typing needs a fresh confirm each time']]
+const desktopScopes = [['browser', 'globe', 'Drive the dedicated automation browser (not your personal profile)'], ['files', 'folder', 'Read / organize inside folders you approve'], ['apps', 'desktop', 'Launch & close approved apps only'], ['system', 'settings', 'Read-only info; power needs per-action confirm, never from voice'], ['screen', 'eye', 'Let Aira look at your screen to describe it (nothing is saved unless you ask)'], ['desktop', 'mouse', 'Move / click / scroll / type / key on your PC — every action needs your approval, typing needs a fresh confirm each time']]
 
 /* Aira acting on the local Windows PC through the hardened desktop agent.
    Real connection only: if the backend bridge is disabled or the agent isn't
@@ -1518,7 +1519,7 @@ function DesktopView({ token, aiName, isLoggedIn, onLogin }) {
 
   if (!isLoggedIn || !token) {
     return <section className="workspace-page-panel desktop-panel">
-      <div className="settings-icon">🖥</div>
+      <div className="settings-icon"><Icon name="desktop" size={26} /></div>
       <h2>Desktop actions</h2>
       <p>{aiName} can open apps, browse and organize files on this PC — but only while you're signed in, and only for actions you explicitly approve.</p>
       <button type="button" className="tool-runner-run" onClick={onLogin}>Sign in to connect</button>
@@ -1528,24 +1529,24 @@ function DesktopView({ token, aiName, isLoggedIn, onLogin }) {
   return <section className="workspace-page-panel desktop-panel">
     <div className="desktop-head">
       <div><h2>Desktop actions</h2><p>{aiName} proposes an action, you preview and approve it. The agent — not the model — decides what's allowed.</p></div>
-      <button type="button" className="desktop-stop" onClick={doStop} disabled={busy === 'stopping'}>🛑 Stop</button>
+      <button type="button" className="desktop-stop" onClick={doStop} disabled={busy === 'stopping'}><Icon name="stop" size={13} /> Stop</button>
     </div>
 
     <div className={`desktop-status${enabled ? ' is-ok' : ' is-off'}`}>
       {health == null && <span>Checking for the desktop agent on your PC…</span>}
-      {paired && enabled && <span>🟢 Connected to your PC (local agent) — {health.bind || '127.0.0.1'} · loopback only, this browser only.</span>}
+      {paired && enabled && <span><Icon name="dotOn" size={14} /> Connected to your PC (local agent) — {health.bind || '127.0.0.1'} · loopback only, this browser only.</span>}
       {!paired && health && enabled && <span>● Connected — {health.agent?.bind || '127.0.0.1'} · loopback only. Automation browser, approved apps and folders only.</span>}
       {health && !enabled && <span>○ Not connected — {paired ? 'your paired agent is not reachable right now — make sure it is still running on this PC.' : (health.error?.message || 'no local Nexora Agent detected and the backend bridge is off')}.</span>}
       {paired && <button type="button" className="desktop-link danger" onClick={doRevokeThisPc}>Revoke this PC</button>}
     </div>
 
-    {desktopArmed && <div className="desktop-active" role="status"><span>🔵 Desktop control is ARMED — {aiName} can act on this PC, but only with your approval. Press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>S</kbd> or Stop to halt what is running.</span>{busy && <strong className="desktop-running">{busy === 'running' ? 'An action is running…' : 'Working…'}</strong>}</div>}
+    {desktopArmed && <div className="desktop-active" role="status"><span><Icon name="dotOn" size={14} /> Desktop control is ARMED — {aiName} can act on this PC, but only with your approval. Press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>S</kbd> or Stop to halt what is running.</span>{busy && <strong className="desktop-running">{busy === 'running' ? 'An action is running…' : 'Working…'}</strong>}</div>}
 
     {!enabled && <div className="desktop-card">
-      <div className="settings-icon">🔗</div>
+      <div className="settings-icon"><Icon name="link" size={26} /></div>
       <h3>Connect {aiName} to your PC</h3>
       <p className="desktop-muted">{paired ? 'This browser is already paired, but your Nexora Agent is not reachable right now — make sure it is still running on this PC.' : 'Run the Nexora Agent on this computer, then paste the 6-digit pairing code it prints to its console. We confirm your paid Nexora account before the agent hands this browser a token.'}</p>
-      {pairStatus && <p className="desktop-notice" role="status">✅ Nexora Agent detected and awaiting pairing — enter the code shown in its window.</p>}
+      {pairStatus && <p className="desktop-notice" role="status"><Icon name="check" size={14} /> Nexora Agent detected and awaiting pairing — enter the code shown in its window.</p>}
       <ol className="desktop-steps">
         <li>Start the agent: <code>cd desktop-agent</code> → <code>npm install</code> → <code>npm run dev:agent</code>.</li>
         <li>Allow this site: set the agent's <code>AGENT_ALLOWED_ORIGINS</code> to <code>{AGENT_SELF_ORIGIN || 'this page origin'}</code> and its <code>NEXORA_BACKEND_URL</code> to your Nexora backend, then restart it.</li>
@@ -1556,21 +1557,21 @@ function DesktopView({ token, aiName, isLoggedIn, onLogin }) {
         <input id="desktop-pair" className="tool-runner-input desktop-field" type="text" inputMode="numeric" maxLength={6} autoComplete="off" placeholder="6-digit code" value={pairCode} onChange={(event) => setPairCode(event.target.value.replace(/\D/g, '').slice(0, 6))} disabled={busy === 'pairing'} />
         <button type="button" className="tool-runner-run" onClick={doPair} disabled={busy === 'pairing' || pairCode.length !== 6}>{busy === 'pairing' ? 'Connecting…' : 'Connect'}</button>
       </div>
-      {pairErr && <div className="tool-runner-error" role="alert">⚠️ {pairErr}</div>}
+      {pairErr && <div className="tool-runner-error" role="alert"><Icon name="warn" size={14} /> {pairErr}</div>}
     </div>}
 
     {enabled && <>
     <div className="desktop-tabs">{[['run', 'Run'], ['permissions', 'Permissions'], ['audit', 'Audit log']].map(([id, label]) => <button type="button" key={id} className={`desktop-tab${tab === id ? ' selected' : ''}`} onClick={() => goTab(id)}>{label}</button>)}</div>
 
-    {error && <div className="tool-runner-error" role="alert">⚠️ {error}</div>}
+    {error && <div className="tool-runner-error" role="alert"><Icon name="warn" size={14} /> {error}</div>}
     {notice && <div className="desktop-notice" role="status">{notice}</div>}
 
     {tab === 'run' && <div className="desktop-run">
       {!paired && <div className="desktop-card desktop-screen-card">
         <div className="desktop-screen-actions">
-          <button type="button" className="tool-runner-run" onClick={doCapture} disabled={busy !== '' || !enabled}>👁 Observe Screen</button>
-          <button type="button" className="tool-runner-run" onClick={doInspect} disabled={busy !== '' || !enabled}>✨ Describe my screen</button>
-          <button type="button" className="desktop-link" onClick={() => { pickAction('browser.open'); setNotice('🌐 Inspect Website — set the URL, then Preview → Approve. Use browser.snapshot to read the page and browser.screenshot to capture it.') }}>🌐 Inspect Website</button>
+          <button type="button" className="tool-runner-run" onClick={doCapture} disabled={busy !== '' || !enabled}><Icon name="eye" size={15} /> Observe Screen</button>
+          <button type="button" className="tool-runner-run" onClick={doInspect} disabled={busy !== '' || !enabled}><Icon name="magic" size={15} /> Describe my screen</button>
+          <button type="button" className="desktop-link" onClick={() => { pickAction('browser.open'); setNotice('🌐 Inspect Website — set the URL, then Preview → Approve. Use browser.snapshot to read the page and browser.screenshot to capture it.') }}><Icon name="globe" size={15} /> Inspect Website</button>
           {(screen || report) && <button type="button" className="desktop-link danger" onClick={clearScreen}>Clear</button>}
         </div>
         <p className="desktop-muted">Needs the “screen” permission (Permissions tab). The picture is shown to you and sent to {aiName} for this one look — never saved to disk unless you ask to.</p>
@@ -1592,14 +1593,14 @@ function DesktopView({ token, aiName, isLoggedIn, onLogin }) {
         <div className="desktop-row"><button type="button" className="tool-runner-run" onClick={planManual} disabled={busy !== ''}>Preview action</button></div>
       </div>
 
-      {clarify && <div className="desktop-clarify">❓ {clarify}</div>}
+      {clarify && <div className="desktop-clarify"><Icon name="help" size={14} /> {clarify}</div>}
 
       {plan && (plan.ok ?
         <div className="desktop-plan">
           <div className="desktop-plan-head"><strong>{plan.action}</strong><span className={`desktop-risk risk-${plan.risk}`}>{plan.risk}</span><span className="desktop-scope-chip">{plan.scope}</span></div>
           <p className="desktop-preview">{plan.preview}</p>
-          {plan.needsScope && <p className="desktop-warn">🔒 Needs the “{plan.needsScope}” permission first — <button type="button" className="desktop-link" onClick={() => goTab('permissions')}>open Permissions</button> to grant it, then preview again.</p>}
-          {plan.needsConfirm && <p className="desktop-warn">⚠ High-risk / irreversible — “Approve & run” is your explicit confirmation.</p>}
+          {plan.needsScope && <p className="desktop-warn"><Icon name="lock" size={14} /> Needs the “{plan.needsScope}” permission first — <button type="button" className="desktop-link" onClick={() => goTab('permissions')}>open Permissions</button> to grant it, then preview again.</p>}
+          {plan.needsConfirm && <p className="desktop-warn"><Icon name="warn" size={14} /> High-risk / irreversible — “Approve & run” is your explicit confirmation.</p>}
           <div className="desktop-row">
             <button type="button" className="desktop-cancel" onClick={() => setPlan(null)}>Cancel</button>
             <button type="button" className="desktop-approve" onClick={approveAndRun} disabled={busy !== '' || Boolean(plan.needsScope)}>{busy === 'running' ? 'Running…' : 'Approve & run'}</button>
@@ -1619,7 +1620,7 @@ function DesktopView({ token, aiName, isLoggedIn, onLogin }) {
       <div className="desktop-scopes">{desktopScopes.map(([scope, icon, desc]) => {
         const granted = perms?.scopes?.[scope] === true
         return <div className={`desktop-scope${granted ? ' is-on' : ''}`} key={scope}>
-          <div className="desktop-scope-main"><span className="showcase-icon">{icon}</span><div><strong>{scope}</strong><small>{desc}</small></div></div>
+          <div className="desktop-scope-main"><span className="showcase-icon"><Icon name={icon} size={18} /></span><div><strong>{scope}</strong><small>{desc}</small></div></div>
           {granted
             ? <button type="button" className="desktop-link danger" onClick={() => mutatePerms(() => api.revokePerm({ scope }), `Revoked ${scope}`)}>Revoke</button>
             : <button type="button" className="desktop-link" onClick={() => mutatePerms(() => api.grant({ scope }), `Granted ${scope}`)}>Grant</button>}
@@ -1657,10 +1658,10 @@ function DesktopView({ token, aiName, isLoggedIn, onLogin }) {
 /* Starter prompts shown on the chat home hero. Clicking one sends the message
    immediately — no need to press Enter or the send button afterwards. */
 const chatStarters = [
-  { icon: '💡', label: 'Explain something in simple words' },
-  { icon: '✏️', label: 'Help me with my work' },
-  { icon: '🧠', label: 'Remember my preferences' },
-  { icon: '✨', label: 'Just have a conversation' },
+  { icon: 'bulb', label: 'Explain something in simple words' },
+  { icon: 'pen', label: 'Help me with my work' },
+  { icon: 'brain', label: 'Remember my preferences' },
+  { icon: 'magic', label: 'Just have a conversation' },
 ]
 
 /* Small clock shown under each chat turn, matching the reference layout. */
@@ -1711,10 +1712,10 @@ function AdminBillingPanel({ authToken }) {
   const planLabel = (p) => (p === 'yearly_pro' ? 'Yearly Pro' : 'Pro')
   const methodLabel = (m) => (m === 'easypaisa' ? 'Easypaisa' : 'JazzCash')
   return <div className="settings-group">
-    <h3><span aria-hidden="true">💵</span> Upgrade requests <small className="billing-admin-tag">admin</small></h3>
+    <h3><Icon name="dollar" size={16} /> Upgrade requests <small className="billing-admin-tag">admin</small></h3>
     <p className="settings-hint">Har request tab banti hai jab user Easypaisa/JazzCash se paisa bhej kar Transaction ID darj karta hai. Pehle apne wallet app mein paisa confirm karein, phir Approve dabayein — Approve ke baad hi user ka plan badalta hai.</p>
-    {!status.manualEnabled && <p className="billing-warn">⚠ Aap ne abhi koi Easypaisa/JazzCash number set nahi kiya (backend/.env), is liye users payment nahi bhej pa rahe.</p>}
-    {err && <p className="billing-warn">⚠ {err}</p>}
+    {!status.manualEnabled && <p className="billing-warn"><Icon name="warn" size={14} /> Aap ne abhi koi Easypaisa/JazzCash number set nahi kiya (backend/.env), is liye users payment nahi bhej pa rahe.</p>}
+    {err && <p className="billing-warn"><Icon name="warn" size={14} /> {err}</p>}
     <div className="billing-filters" role="tablist">
       {['pending', 'approved', 'rejected', ''].map((f) => <button type="button" role="tab" aria-selected={filter === f} key={f || 'all'} className={`billing-filter${filter === f ? ' selected' : ''}`} onClick={() => setFilter(f)}>{f ? f[0].toUpperCase() + f.slice(1) : 'All'}</button>)}
     </div>
@@ -1793,7 +1794,7 @@ function SettingsView({ isLoggedIn, userProfile, authToken, onProfileUpdate, onT
   return (
     <section className="workspace-page-panel settings-panel settings-column">
       <div className="settings-head">
-        <div className="settings-icon" aria-hidden="true">⚙</div>
+        <div className="settings-icon" aria-hidden="true"><Icon name="settings" size={26} /></div>
         <div className="settings-head-copy">
           <h2>Your space, your way.</h2>
           <p>Manage your account, the way {aiName} looks and talks, and how {subj} replies — all in one place.</p>
@@ -1801,7 +1802,7 @@ function SettingsView({ isLoggedIn, userProfile, authToken, onProfileUpdate, onT
       </div>
       <div className="settings-body">
         <div className="settings-group">
-          <h3><span aria-hidden="true">👤</span> Your account</h3>
+          <h3><Icon name="user" size={16} /> Your account</h3>
           {isLoggedIn ? <>
             <div className="settings-row">
               <label htmlFor="set-name">Display name</label>
@@ -1832,7 +1833,7 @@ function SettingsView({ isLoggedIn, userProfile, authToken, onProfileUpdate, onT
         </div>
 
         <div className="settings-group">
-          <h3><span aria-hidden="true">✦</span> Your AI companion</h3>
+          <h3><Icon name="sparkle" size={16} /> Your AI companion</h3>
           <div className="settings-row">
             <label htmlFor="set-ai">Assistant name</label>
             <input id="set-ai" className="settings-input" type="text" value={aiNameDraft} maxLength={30} onChange={(e) => setAiNameDraft(e.target.value)} placeholder="e.g. Aira" />
@@ -1846,8 +1847,8 @@ function SettingsView({ isLoggedIn, userProfile, authToken, onProfileUpdate, onT
           <div className="settings-row">
             <label>Face</label>
             <div className="settings-seg" role="group" aria-label="Assistant face">
-              <button type="button" className={voicePrefs.gender === 'female' ? 'on' : ''} aria-pressed={voicePrefs.gender === 'female'} onClick={() => setGender('female')}>♀ Her</button>
-              <button type="button" className={voicePrefs.gender === 'male' ? 'on' : ''} aria-pressed={voicePrefs.gender === 'male'} onClick={() => setGender('male')}>♂ Him</button>
+              <button type="button" className={voicePrefs.gender === 'female' ? 'on' : ''} aria-pressed={voicePrefs.gender === 'female'} onClick={() => setGender('female')}><Icon name="female" size={14} /> Her</button>
+              <button type="button" className={voicePrefs.gender === 'male' ? 'on' : ''} aria-pressed={voicePrefs.gender === 'male'} onClick={() => setGender('male')}><Icon name="male" size={14} /> Him</button>
             </div>
             <span className="settings-hint">Picks the 3D particle portrait — {voicePrefs.gender === 'male' ? 'him' : 'her'}. (The Talk voice is set just below.)</span>
           </div>
@@ -1855,7 +1856,7 @@ function SettingsView({ isLoggedIn, userProfile, authToken, onProfileUpdate, onT
         </div>
 
         <div className="settings-group">
-          <h3><span aria-hidden="true">🎙</span> Voice &amp; language</h3>
+          <h3><Icon name="mic" size={16} /> Voice &amp; language</h3>
           <div className="settings-row">
             <label htmlFor="set-voice">Talk voice</label>
             <select id="set-voice" className="settings-select" value={voicePrefs.voice} onChange={(e) => persistVoicePrefs({ ...voicePrefs, voice: e.target.value })}>
@@ -1878,7 +1879,7 @@ function SettingsView({ isLoggedIn, userProfile, authToken, onProfileUpdate, onT
         {isLoggedIn && <AdminBillingPanel authToken={authToken} />}
 
         <div className="settings-group">
-          <h3><span aria-hidden="true">🔐</span> Session</h3>
+          <h3><Icon name="lock" size={16} /> Session</h3>
           <div className="settings-row">
             <p className="settings-hint">{isLoggedIn ? `Signed in as ${userProfile?.email || 'you'}.` : 'You are browsing in a local session.'}</p>
           </div>
@@ -3506,7 +3507,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
                   type="button"
                   title={remaining <= 0 ? 'Aaj ka primary model quota khatam — backup model chal raha hai' : `Aaj ${fmtTokens(remaining)} tokens bache hain (limit ${fmtTokens(limit)}) — ${new Date(providerQuota.resetsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} ko reset`}
                 >
-                  <span className="credits-icon" aria-hidden="true">{remaining <= 0 ? '⚠️' : '✦'}</span>
+                  <span className="credits-icon" aria-hidden="true"><Icon name={remaining <= 0 ? 'warn' : 'sparkle'} size={15} /></span>
                   <CreditsValue value={remaining} format={fmtTokens} />
                   <span className="credits-label">tokens left</span>
                 </button>
@@ -3519,7 +3520,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
                 onClick={() => { if (onUpgrade) onUpgrade() }}
                 title={`Aap ke paas ${creditsRemaining} credits bache hain${creditsRemaining === 0 ? ' — recharge karne ke liye click karein' : ''}`}
               >
-                <span className="credits-icon" aria-hidden="true">{creditsRemaining === 0 ? '⚠️' : '✦'}</span>
+                <span className="credits-icon" aria-hidden="true"><Icon name={creditsRemaining === 0 ? 'warn' : 'sparkle'} size={15} /></span>
                 <CreditsValue value={creditsRemaining} />
                 <span className="credits-label">credits</span>
               </button>
@@ -3537,7 +3538,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
                 if (onUpgrade) onUpgrade()
               }}
             >
-              <span>✦</span> Upgrade
+              <Icon name="sparkle" size={14} /> Upgrade
             </button>
           )}
           <div className="account-anchor">
@@ -3591,7 +3592,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
                     setActiveView('Memory')
                   }}
                 >
-                  <span>◈</span> Memory &amp; chats
+                  <Icon name="memory" size={15} /> Memory &amp; chats
                 </button>
 
                 <button
@@ -3603,7 +3604,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
                     setActiveView('Settings')
                   }}
                 >
-                  <span>⚙</span> Account Settings
+                  <Icon name="settings" size={15} /> Account Settings
                 </button>
 
                 {isLoggedIn && (
@@ -3615,7 +3616,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
                       onLogout()
                     }}
                   >
-                    <span>⇥</span> Log Out
+                    <Icon name="logout" size={15} /> Log Out
                   </button>
                 )}
               </div>
@@ -3625,7 +3626,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
       </header>
       <div className="workspace-content" key={view}>
         {scheduleReminder && <div className="reminder-card" role="status">
-          <span className="reminder-icon" aria-hidden="true">⏰</span>
+          <span className="reminder-icon" aria-hidden="true"><Icon name="schedule" size={18} /></span>
           <div className="reminder-body"><b>{aiName} · Schedule reminder</b><p>{scheduleReminder.content}</p></div>
           <button type="button" className="reminder-close" aria-label="Dismiss reminder" onClick={() => setScheduleReminder(null)}>×</button>
         </div>}
@@ -3635,12 +3636,12 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
               <div className="chat-hero">
                 <div className="chat-hero-orbwrap" aria-hidden="true">
                   <svg className="chat-hero-waves" viewBox="0 0 420 120" preserveAspectRatio="none"><path d="M0 60 Q 105 8 210 60 T 420 60" /><path d="M0 60 Q 105 112 210 60 T 420 60" /></svg>
-                  <span className="chat-hero-orb"><i>✦</i></span>
+                  <span className="chat-hero-orb"><i><Icon name="sparkle" size={22} /></i></span>
                 </div>
                 <h1 className="chat-hero-title">Hello <span className="chat-hero-name">{userName}</span></h1>
                 <p className="chat-hero-sub">I’m {aiName} — your AI companion.<br />Ask me anything, I’m here to help.</p>
                 <div className="chat-hero-starters">{chatStarters.map((s) => (
-                  <button type="button" key={s.label} onClick={() => sendPrompt(null, s.label)}><span aria-hidden="true">{s.icon}</span>{s.label}</button>
+                  <button type="button" key={s.label} onClick={() => sendPrompt(null, s.label)}><Icon name={s.icon} size={15} />{s.label}</button>
                 ))}</div>
               </div>
               <span className="chat-hero-corner" aria-hidden="true">{aiName} · Personal · Always With You</span>
@@ -3659,7 +3660,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
               <div className="chat-body">
               <div className="chat-thread-bar">
                 <span className="chat-thread-title">{aiName}<b className="chat-thread-dot" aria-hidden="true" /></span>
-                <button type="button" className="chat-new-thread" onClick={startNewChat}>＋ New chat</button>
+                <button type="button" className="chat-new-thread" onClick={startNewChat}><Icon name="plus" size={14} /> New chat</button>
               </div>
               <div className="chat-thread chat-thread-in" role="log" aria-live="polite">
                 {messages.filter((m) => m.role === 'user' || m.role === 'assistant').map((m, i) => {
@@ -3679,17 +3680,17 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
                   const copyable = !m.streaming && !m.error && Boolean(m.content)
                   return (
                     <div key={m.id} className={`chat-msg${mine ? ' mine' : ''}${m.error ? ' is-error' : ''}`} style={{ '--i': Math.min(i, 12) }}>
-                      <span className="chat-msg-avatar" aria-hidden="true">{mine ? initial : '✦'}</span>
+                      <span className="chat-msg-avatar" aria-hidden="true">{mine ? initial : <Icon name="sparkle" size={16} />}</span>
                       <div className="chat-msg-main">
                         <span className="chat-msg-name">{mine ? 'You' : aiName}</span>
                         <div className="chat-msg-bubble">
-                          {quoteText ? <div className="chat-msg-quote"><b aria-hidden="true">↩ {mine ? aiName : 'You'}</b>{quoteText.slice(0, 150)}{quoteText.length > 150 ? '…' : ''}</div> : null}
+                          {quoteText ? <div className="chat-msg-quote"><b aria-hidden="true"><Icon name="reply" size={12} /> {mine ? aiName : 'You'}</b>{quoteText.slice(0, 150)}{quoteText.length > 150 ? '…' : ''}</div> : null}
                           {m.images?.length ? <div className="chat-msg-imgs">{m.images.map((src) => <a key={src} href={resourceUrl(src)} target="_blank" rel="noreferrer"><img src={resourceUrl(src)} alt={mine ? 'Attached reference' : 'Screenshot taken by the app itself'} loading="lazy" /></a>)}</div> : null}
                           {/* The face shot takes a few seconds to assemble — say so instead of looking stuck. */}
-                          {m.shooting ? <div className="chat-shot-caption is-pending">📸 Taking a real screenshot…</div> : null}
+                          {m.shooting ? <div className="chat-shot-caption is-pending"><Icon name="camera" size={13} /> Taking a real screenshot…</div> : null}
                           <div className="chat-text">{m.streaming && !m.content ? <span className="chat-thinking"><span className="chat-dots" aria-hidden="true"><i /><i /><i /></span><em>{aiName} is thinking…</em></span> : <>{renderChatContent(m.content)}{m.streaming ? <span className="chat-cursor" aria-hidden="true" /> : null}</>}</div>
                         </div>
-                        {m.ts || replyable || copyable ? <div className="chat-msg-meta">{m.ts ? <span className="chat-msg-time">{formatChatTime(m.ts)}</span> : null}{copyable ? <button type="button" className={`chat-msg-copy${copiedMsgId === m.id ? ' copied' : ''}`} aria-label={copiedMsgId === m.id ? 'Copied to clipboard' : 'Copy message'} onClick={() => copyMessage(m)}>{copiedMsgId === m.id ? '✓ Copied' : '⧉ Copy'}</button> : null}{replyable ? <button type="button" className="chat-msg-reply" aria-label={`Reply to ${aiName}'s message`} onClick={() => startReply(m)}>↩ Reply</button> : null}</div> : null}
+                        {m.ts || replyable || copyable ? <div className="chat-msg-meta">{m.ts ? <span className="chat-msg-time">{formatChatTime(m.ts)}</span> : null}{copyable ? <button type="button" className={`chat-msg-copy${copiedMsgId === m.id ? ' copied' : ''}`} aria-label={copiedMsgId === m.id ? 'Copied to clipboard' : 'Copy message'} onClick={() => copyMessage(m)}>{copiedMsgId === m.id ? <><Icon name="check" size={12} /> Copied</> : <><Icon name="copy" size={12} /> Copy</>}</button> : null}{replyable ? <button type="button" className="chat-msg-reply" aria-label={`Reply to ${aiName}'s message`} onClick={() => startReply(m)}><Icon name="reply" size={12} /> Reply</button> : null}</div> : null}
                       </div>
                     </div>
                   )
@@ -3701,7 +3702,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
           )}
           <form className={`prompt-box${pendingImgs.length ? ' has-attachments' : ''}${replyTarget ? ' has-reply' : ''}`} onSubmit={sendPrompt}>
             {replyTarget && <div className="prompt-reply">
-              <span className="prompt-reply-mark" aria-hidden="true">↩</span>
+              <span className="prompt-reply-mark" aria-hidden="true"><Icon name="reply" size={14} /></span>
               <div className="prompt-reply-main"><b>{aiName}</b><small>{replyTarget.content.replace(/\s+/g, ' ').trim().slice(0, 150)}{replyTarget.content.length > 150 ? '…' : ''}</small></div>
               <button type="button" className="prompt-reply-cancel" aria-label="Cancel reply" onClick={() => setReplyTarget(null)}>×</button>
             </div>}
@@ -3712,10 +3713,10 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
               </span>)}
             </div>}
             <div className="prompt-row">
-              <span className="prompt-box-spark" aria-hidden="true">✦</span>
-              <button type="button" className="prompt-attach" aria-label="Attach image" title="Attach a reference image — or just Ctrl+V a copied one" onClick={() => attachInputRef.current?.click()}>📎</button>
+              <span className="prompt-box-spark" aria-hidden="true"><Icon name="sparkle" size={16} /></span>
+              <button type="button" className="prompt-attach" aria-label="Attach image" title="Attach a reference image — or just Ctrl+V a copied one" onClick={() => attachInputRef.current?.click()}><Icon name="attach" size={17} /></button>
               <input ref={attachInputRef} className="prompt-file" type="file" accept="image/*" multiple onChange={(event) => { addImageFiles(event.target.files); event.target.value = '' }} />
-              <button type="button" className="prompt-attach" aria-label="Take a photo" title="Take a photo with your camera" onClick={() => setCameraOpen(true)}>📷</button>
+              <button type="button" className="prompt-attach" aria-label="Take a photo" title="Take a photo with your camera" onClick={() => setCameraOpen(true)}><Icon name="camera" size={17} /></button>
               <label className="sr-only" htmlFor="chat-prompt">Type your message</label>
               {/* Never disabled: a greyed-out field blurs itself, which used to force the
                   user to click back into the composer before typing the next prompt. The
@@ -3744,7 +3745,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
                   }}
                 >
                   <span className="prompt-mic-dot" aria-hidden="true" />
-                  <span aria-hidden="true">{voiceAsleep ? '🤫' : '🎙'}</span>
+                  <span aria-hidden="true"><Icon name={voiceAsleep ? 'asleep' : 'mic'} size={16} /></span>
                   <em className="prompt-mic-chip">{!wakeEnabled ? 'paused' : voiceAsleep ? 'sleeping' : voiceTurn ? 'your turn' : wakeStatus === 'listening' ? 'listening' : wakeStatus === 'denied' ? 'blocked' : wakeStatus === 'no-mic' ? 'no mic' : wakeStatus === 'unsupported' ? 'no STT' : 'starting'}</em>
                 </button>
                 <button
@@ -3762,10 +3763,10 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
                        not just browser TTS — the user hit 🔇 meaning "go silent". */
                     if (!next) cancelServerAudio()
                   }}
-                ><span aria-hidden="true">{speakReplies ? '🔊' : '🔇'}</span></button>
+                ><span aria-hidden="true"><Icon name={speakReplies ? 'volOn' : 'volOff'} size={16} /></span></button>
               </div>
-              <button type="submit" aria-label="Send message" disabled={streaming || pendingImgs.some((p) => p.uploading) || providerQuota?.exhausted || (!prompt.trim() && !pendingImgs.length)}>➤</button>
-              {streaming && <button type="button" className="chat-stop-btn" aria-label="Stop generating" onClick={stopGeneration}>■ Stop</button>}
+              <button type="submit" aria-label="Send message" disabled={streaming || pendingImgs.some((p) => p.uploading) || providerQuota?.exhausted || (!prompt.trim() && !pendingImgs.length)}><Icon name="send" size={18} /></button>
+              {streaming && <button type="button" className="chat-stop-btn" aria-label="Stop generating" onClick={stopGeneration}><Icon name="stop" size={13} /> Stop</button>}
             </div>
           </form>
         </section>}
@@ -3777,11 +3778,11 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
              reads the `[<tool> · session]` prefix in that draft on the first
              send and answers in the right lane. See `startToolSession` and
              `TOOL_STARTERS` for the per-tool copy. */}
-          <div className="workspace-tool-grid">{tools.map(([icon, title, description, tint]) => <button className={`workspace-tool tint-${tint}${selectedTool === title ? ' tool-highlighted' : ''}`} type="button" key={title} onClick={() => startToolSession(title)}><span className="showcase-icon">{icon}</span><strong>{title}</strong><small>{description}</small><b>{selectedTool === title ? 'Opened ✓' : 'Open tool →'}</b></button>)}</div>
+          <div className="workspace-tool-grid">{tools.map(([icon, title, description, tint]) => <button className={`workspace-tool tint-${tint}${selectedTool === title ? ' tool-highlighted' : ''}`} type="button" key={title} onClick={() => startToolSession(title)}><span className="showcase-icon"><Icon name={icon} size={18} /></span><strong>{title}</strong><small>{description}</small><b>{selectedTool === title ? 'Opened ✓' : 'Open tool →'}</b></button>)}</div>
         </div>}
         {view === 'Desktop' && <DesktopView token={authToken} aiName={aiName} isLoggedIn={isLoggedIn} onLogin={onLogin} />}
         {view === 'Schedule' && <section className="workspace-page-panel history-panel">
-          <div className="settings-icon">⏰</div>
+          <div className="settings-icon"><Icon name="schedule" size={26} /></div>
           <h2>Schedule it once — {aiName} keeps bringing it up.</h2>
           <p>Give any task a date and time. {aiName} reminds you one day before with practical advice for that exact task, then again the moment it is due — never twice for the same stage.</p>
           <form className="schedule-form" onSubmit={addScheduleTask}>
@@ -3791,7 +3792,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
             <button className="settings-save" type="submit" disabled={taskBusy || !taskDraft.title.trim() || !taskDraft.dueAt}>{taskBusy ? 'Scheduling…' : 'Schedule task'}</button>
           </form>
           {!isLoggedIn ? <p className="history-empty">Sign in to schedule tasks and get reminders.</p> : tasks.length === 0 ? <p className="history-empty">Nothing scheduled yet. Add your first task above.</p> : <ul className="schedule-list">{tasks.map((t) => <li key={t.id} className={t.status === 'done' ? 'done' : ''}>
-            <button type="button" className="schedule-check" aria-pressed={t.status === 'done'} aria-label={`Toggle done: ${t.title}`} onClick={() => toggleScheduleTask(t)}>{t.status === 'done' ? '✓' : ''}</button>
+            <button type="button" className="schedule-check" aria-pressed={t.status === 'done'} aria-label={`Toggle done: ${t.title}`} onClick={() => toggleScheduleTask(t)}>{t.status === 'done' ? <Icon name="check" size={14} /> : ''}</button>
             <div className="schedule-main"><strong>{t.title}</strong>{t.notes && <small>{t.notes}</small>}<span className="schedule-due">{new Date(t.dueAt).toLocaleString()}</span></div>
             <span className={`schedule-chip ${SCHEDULE_CHIP[t.phase][1]}`}>{SCHEDULE_CHIP[t.phase][0]}</span>
             <button type="button" className="schedule-delete" aria-label={`Delete ${t.title}`} onClick={() => removeScheduleTask(t.id)}>×</button>
@@ -3813,14 +3814,14 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
             aria-live="polite" but not "assertive" — Chrome refines the text
             every ~200 ms and screen readers would otherwise stutter. */}
         {wakeLive && <div className="wake-live-caption" aria-live="polite"><span className="wake-live-dot" aria-hidden="true" /><em>You, saying:</em> {wakeLive}</div>}
-        {notice && <div className="toast-message" role="status"><span>✦</span>{notice}<button type="button" aria-label="Dismiss notification" onClick={() => setNotice('')}>×</button></div>}
+        {notice && <div className="toast-message" role="status"><Icon name="sparkle" size={14} />{notice}<button type="button" aria-label="Dismiss notification" onClick={() => setNotice('')}>×</button></div>}
       </div>
     </section>
 
-    {mobileMoreOpen && <div className="mobile-more-menu" role="menu">{navItems.slice(4).map(([label, icon]) => <button type="button" role="menuitem" key={label} onClick={() => { setActiveView(label); setMobileMoreOpen(false) }}><span>{icon}</span>{label}</button>)}</div>}
+    {mobileMoreOpen && <div className="mobile-more-menu" role="menu">{navItems.slice(4).map(([label, icon]) => <button type="button" role="menuitem" key={label} onClick={() => { setActiveView(label); setMobileMoreOpen(false) }}><Icon name={icon} size={18} />{label}</button>)}</div>}
     <nav className="mobile-workspace-nav" aria-label="Mobile workspace navigation">
-      {navItems.slice(0, 4).map(([label, icon]) => <button className={activeView === label ? 'selected' : ''} type="button" key={label} onClick={() => { setActiveView(label); setMobileMoreOpen(false) }}><span>{icon}</span><small>{label}</small></button>)}
-      <button type="button" aria-expanded={mobileMoreOpen} onClick={() => setMobileMoreOpen((open) => !open)}><span>•••</span><small>More</small></button>
+      {navItems.slice(0, 4).map(([label, icon]) => <button className={activeView === label ? 'selected' : ''} type="button" key={label} onClick={() => { setActiveView(label); setMobileMoreOpen(false) }}><Icon name={icon} size={18} /><small>{label}</small></button>)}
+      <button type="button" aria-expanded={mobileMoreOpen} onClick={() => setMobileMoreOpen((open) => !open)}><Icon name="more" size={18} /><small>More</small></button>
     </nav>
 
     {/* Live voice call — full-screen dialog over the workspace */}
@@ -3862,18 +3863,18 @@ function PricingModal({ open, currentPlan, busy, error, notice, onClose, onChoos
   return createPortal(<div className="modal-backdrop pricing-backdrop" role="dialog" aria-modal="true" aria-label="Choose a plan" onClick={onClose}>
     <div className="pricing-modal" onClick={(event) => event.stopPropagation()}>
       <button type="button" className="pricing-close" aria-label="Close plans" onClick={onClose}>×</button>
-      {notice && <p className="pricing-notice" role="status"><span>✦</span> {notice}</p>}
-      {error && <p className="pricing-error" role="alert"><span>⚠</span> {error}</p>}
+      {notice && <p className="pricing-notice" role="status"><Icon name="sparkle" size={14} /> {notice}</p>}
+      {error && <p className="pricing-error" role="alert"><Icon name="warn" size={14} /> {error}</p>}
 
       {chosen ? <div className="pricing-pay">
-        <button type="button" className="pricing-back" onClick={onBack}>← Back to plans</button>
+        <button type="button" className="pricing-back" onClick={onBack}><Icon name="arrowLeft" size={14} /> Back to plans</button>
         <h2>Activate <span>{chosen.name}</span></h2>
         <p className="pricing-sub">Payment {chosen.price} — {chosen.sub}. Apne Easypaisa ya JazzCash app se neeche diye number par bhejein, phir Transaction ID darj karein. Owner verify karke plan chalu kar dega.</p>
         {!billing && <p className="pricing-muted">Loading payment options…</p>}
-        {billing && !billing.manualEnabled && <p className="pricing-error" role="alert"><span>⚠</span> Online payment is not enabled yet — the site owner hasn't added an Easypaisa/JazzCash account. Your current plan keeps working; please check back later.</p>}
-        {billing && billing.manualEnabled && !methods.length && <p className="pricing-error" role="alert"><span>⚠</span> No payment account is configured on this server yet.</p>}
+        {billing && !billing.manualEnabled && <p className="pricing-error" role="alert"><Icon name="warn" size={14} /> Online payment is not enabled yet — the site owner hasn't added an Easypaisa/JazzCash account. Your current plan keeps working; please check back later.</p>}
+        {billing && billing.manualEnabled && !methods.length && <p className="pricing-error" role="alert"><Icon name="warn" size={14} /> No payment account is configured on this server yet.</p>}
         {billing && billing.manualEnabled && pending ? <div className="pricing-pending" role="status">
-          <strong>⏳ Payment submitted — awaiting approval</strong>
+          <strong><Icon name="hourglass" size={15} /> Payment submitted — awaiting approval</strong>
           <p>Aap ne {pending.amount} PKR ({pending.method === 'easypaisa' ? 'Easypaisa' : 'JazzCash'}) bheja, Transaction ID <code>{pending.txnId}</code>. Owner approve karte hi {chosen.name} chalu ho jayega — thora intezar karein.</p>
           <p className="pricing-muted">Naya payment bhejne ke liye neeche wapas jaayein.</p>
         </div> : billing && billing.manualEnabled && activeMethod ? <form className="pricing-pay-form" onSubmit={(event) => { event.preventDefault(); onSubmit() }}>
@@ -3900,7 +3901,7 @@ function PricingModal({ open, currentPlan, busy, error, notice, onClose, onChoos
             <h3>{p.name}</h3>
             <p className="plan-price">{p.price} <small>{p.sub}</small></p>
             <p className="plan-description">{p.desc}</p>
-            <ul>{p.items.map((it) => <li key={it}><span>✦</span> {it}</li>)}</ul>
+            <ul>{p.items.map((it) => <li key={it}><Icon name="sparkle" size={13} /> {it}</li>)}</ul>
             <button className={`button button-${p.tint} button-wide`} type="button" disabled={busy || currentPlan === p.key} onClick={() => onChoose(p.key)}>{currentPlan === p.key ? 'Current plan' : (busy ? 'Working…' : p.cta)} <span>→</span></button>
           </article>)}
         </div>

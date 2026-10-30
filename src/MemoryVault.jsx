@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { getConversation } from './api/nexora.js'
+import { Icon } from './icons.jsx'
 import './MemoryVault.css'
 /* ─────────────────────────────────────────────────────────────────────────────
    The Memory vault.
@@ -477,12 +478,12 @@ export default function MemoryVault({ aiName, isLoggedIn, authToken, facts, chat
 
   return <section className="workspace-page-panel memory-page vault-page">
     {phase === 'gate' ? <div className="vault-gate">
-      <div className="settings-icon" aria-hidden="true">◈</div>
+      <div className="settings-icon" aria-hidden="true"><Icon name="memory" size={26} /></div>
       <h2>Everything {aiName} remembers about you is behind this door.</h2>
       <p>Every fact she has kept, and every chat and Talk call the two of you have saved — folded up and strung together as one living map.</p>
       <p>Nothing shows until you open it. Press the button and the vault lights up.</p>
       <div className="vault-gate-actions">
-        <button type="button" className="vault-open" onClick={openDoor} disabled={!isLoggedIn}><span aria-hidden="true">◈</span>View memory</button>
+        <button type="button" className="vault-open" onClick={openDoor} disabled={!isLoggedIn}><Icon name="memory" size={16} />View memory</button>
         <small className="vault-gate-hint">{isLoggedIn ? 'It spins once it opens — drag to turn it.' : `Sign in and ${aiName} will start remembering you — every fact and every chat lands behind this door.`}</small>
       </div>
     </div> : <div className="vault-stage">
@@ -495,23 +496,23 @@ export default function MemoryVault({ aiName, isLoggedIn, authToken, facts, chat
         data-kind={node.kind}
         aria-expanded={selected === node.id}
         onClick={() => setSelected(selected === node.id ? null : node.id)}
-      ><i aria-hidden="true">{node.kind === 'fact' ? '◈' : '⧗'}</i><b>{node.label}</b></button>)}</div>
+      ><i aria-hidden="true"><Icon name={node.kind === 'fact' ? 'memory' : 'thread'} size={13} /></i><b>{node.label}</b></button>)}</div>
       <div className="vault-topline">
-        <button type="button" className="vault-close-door" onClick={closeDoor}><span aria-hidden="true">←</span>Close the door</button>
-        <span className="vault-legend" aria-hidden="true"><em className="lg-fact">◈ memory</em><em className="lg-chat">⧗ chat</em></span>
+        <button type="button" className="vault-close-door" onClick={closeDoor}><Icon name="arrowLeft" size={15} />Close the door</button>
+        <span className="vault-legend" aria-hidden="true"><em className="lg-fact"><Icon name="memory" size={12} /> memory</em><em className="lg-chat"><Icon name="thread" size={12} /> chat</em></span>
         <button type="button" className="vault-ledger-btn" aria-expanded={ledgerOpen} onClick={() => setLedgerOpen((isOpen) => !isOpen)}>{ledgerOpen ? 'Hide' : 'Manage'} the ledger</button>
       </div>
       {selectedNode ? <div className="vault-sheet" role="dialog" aria-label={selectedNode.kind === 'fact' ? 'Memory detail' : 'Conversation detail'}>
-        <header><span aria-hidden="true">{selectedNode.kind === 'fact' ? '◈' : '⧗'}</span><b>{selectedNode.label}</b><button type="button" className="vault-sheet-close" aria-label="Close detail" onClick={() => setSelected(null)}>×</button></header>
+        <header><span aria-hidden="true"><Icon name={selectedNode.kind === 'fact' ? 'memory' : 'thread'} size={15} /></span><b>{selectedNode.label}</b><button type="button" className="vault-sheet-close" aria-label="Close detail" onClick={() => setSelected(null)}>×</button></header>
         {selectedNode.kind === 'fact' ? <p className="vault-sheet-value">{selectedNode.sub}</p> : <small className="vault-sheet-when">{selectedNode.sub}</small>}
         <div className="vault-sheet-links">
           <small aria-live="polite">{selectedNode.kind === 'fact'
             ? (linkedChats.length ? `Cabled into ${linkedChats.length} ${linkedChats.length === 1 ? 'thread' : 'threads'}` : 'No thread mentions this yet')
             : (linkedFacts.length ? `${linkedFacts.length} memor${linkedFacts.length === 1 ? 'y' : 'ies'} cabled in here` : 'No memory cabled in here yet')}</small>
           {(selectedNode.kind === 'fact' ? linkedChats : linkedFacts).map((other) => <button type="button" className="vault-link" key={other.id} onClick={() => (selectedNode.kind === 'fact' ? chats.open(other.ref.id) : setSelected(other.id))}>
-            <span aria-hidden="true">{selectedNode.kind === 'fact' ? '⧗' : '◈'}</span>{other.label}
+            <span aria-hidden="true"><Icon name={selectedNode.kind === 'fact' ? 'thread' : 'memory'} size={14} /></span>{other.label}
           </button>)}
-          {selectedNode.kind === 'chat' && <button type="button" className="vault-link" onClick={() => chats.open(selectedNode.ref.id)}><span aria-hidden="true">→</span>Open this chat with {aiName}</button>}
+          {selectedNode.kind === 'chat' && <button type="button" className="vault-link" onClick={() => chats.open(selectedNode.ref.id)}><Icon name="external" size={13} />Open this chat with {aiName}</button>}
         </div>
         <div className="vault-sheet-actions">
           {selectedNode.kind === 'fact' ? <>
@@ -530,7 +531,7 @@ export default function MemoryVault({ aiName, isLoggedIn, authToken, facts, chat
     {open && ledgerOpen && <div className="vault-drawer" role="region" aria-label="Memory ledger">
       <div className="memory-grid">
         <section className="memory-card" aria-label="Remembered facts">
-          <header><span aria-hidden="true">◈</span><b>Remembered facts</b><small>{memories.length} {memories.length === 1 ? 'note' : 'notes'}</small></header>
+          <header><Icon name="memory" size={16} /><b>Remembered facts</b><small>{memories.length} {memories.length === 1 ? 'note' : 'notes'}</small></header>
           <form className="memory-add" onSubmit={facts.submit}>
             <input value={facts.draft.key} onChange={(event) => facts.setDraft((draft) => ({ ...draft, key: event.target.value }))} placeholder="Topic (e.g. Preferred language)" maxLength={80} aria-label="Memory topic" />
             <input value={facts.draft.value} onChange={(event) => facts.setDraft((draft) => ({ ...draft, value: event.target.value }))} placeholder="Detail (e.g. Reply in Roman Urdu)" maxLength={2000} aria-label="Memory detail" />
@@ -548,10 +549,10 @@ export default function MemoryVault({ aiName, isLoggedIn, authToken, facts, chat
           </li>)}</ul>
         </section>
         <section className="memory-card" aria-label="Conversations">
-          <header><span aria-hidden="true">⧗</span><b>Conversations</b><small>{conversations.length} saved</small></header>
+          <header><Icon name="thread" size={16} /><b>Conversations</b><small>{conversations.length} saved</small></header>
           {conversations.length > 0 && <div className="history-toolbar">
             <label className="history-search">
-              <span aria-hidden="true">⌕</span>
+              <Icon name="search" size={15} />
               <input type="search" value={chats.query} onChange={(event) => chats.setQuery(event.target.value)} placeholder="Search conversations" aria-label="Search conversations" autoComplete="off" />
             </label>
             {chats.confirming ? <div className="history-confirm" role="group" aria-label="Confirm delete all">
