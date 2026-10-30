@@ -28,6 +28,7 @@
  */
 
 import { respellCommonWords, respellKnownNames } from './namePronunciation.js'
+import { REPLY_LANGUAGE_LOCALES } from './worldLanguages.js'
 
 /* Well-known built-in voice display names across Windows / macOS / Chrome /
  * Android, grouped by the gender they sound. Matching is substring + lowercase,
@@ -122,6 +123,21 @@ export const TTS_LOCALE_CHAIN = {
   hinglish: ['hi', 'en-IN', 'en-GB', 'en'],
   auto: ['en-IN', 'hi', 'en-GB', 'en'],
 }
+/* Locale chain for every OTHER language on the world table, derived from the
+ * mirror so a new language automatically gets its own BCP-47 locale tried
+ * first, then a Latin-script fallback (en-IN, which is the widest-coverage
+ * voice on Windows/macOS), then plain en. Without this a user who picked
+ * Japanese heard an English voice reading Latin letters. */
+for (const [code, locale] of Object.entries(REPLY_LANGUAGE_LOCALES)) {
+  if (TTS_LOCALE_CHAIN[code]) continue
+  const base = locale.split('-')[0]
+  const chain = [locale]
+  if (base !== locale) chain.push(base)
+  /* Non-Latin scripts get en-IN as a rescue only so the browser has SOMETHING
+     to speak with; the voice will mispronounce but silence is worse. */
+  chain.push('en-IN', 'en-GB', 'en')
+  TTS_LOCALE_CHAIN[code] = chain
+}
 /* Mixed-script replies still need to breathe, but the user asked for a
  * livelier delivery, so every rate is raised roughly +0.1 from the previous
  * tuning (Hinglish 0.78 → 0.88, Urdu 0.74 → 0.84, auto 0.82 → 0.92) while the
@@ -132,6 +148,10 @@ export const TTS_LOCALE_CHAIN = {
  * touching anything else — that value is the one the engine is least able to
  * read quickly. */
 const LANG_RATE = { en: 1.15, hinglish: 0.88, ur: 0.84, auto: 0.92 }
+/* Every other language on the world table falls back to natural speed (1.0) —
+ * no one has ear-tuned them yet and a wrong rate is worse than no rate. If a
+ * user reports a specific language rushing or dragging, add ONE number here
+ * rather than guessing at all of them. */
 export const MIXED_LANGUAGES = new Set(['hinglish', 'auto', 'ur'])
 /* Natural locale hint per reply language (the value we set on `utter.lang`
  * before we know which voice we're going to end up with; after picking the
@@ -140,7 +160,13 @@ export const MIXED_LANGUAGES = new Set(['hinglish', 'auto', 'ur'])
  * VoiceCall.jsx / useWakeWord.js deliberately keep en-US for *listening* — that
  * choice is about which engine transcribes a mixed sentence best, not about how the
  * companion sounds, and the en-US recogniser has the widest coverage. */
-export const TTS_NATURAL_LOCALE = { en: 'en-IN', ur: 'ur-PK', hinglish: 'hi-IN', auto: 'en-IN' }
+export const TTS_NATURAL_LOCALE = {
+  en: 'en-IN', ur: 'ur-PK', hinglish: 'hi-IN', auto: 'en-IN',
+  /* Every other language's natural locale comes straight from the mirror table.
+     A user who picked Japanese gets `ja-JP` on `utter.lang` and the browser
+     picks a Japanese voice if installed, or falls through the chain. */
+  ...Object.fromEntries(Object.entries(REPLY_LANGUAGE_LOCALES).filter(([code]) => code !== 'en' && code !== 'ur' && code !== 'hinglish')),
+}
 
 /* Kept in lock-step with INDIC_REWRITES in backend/src/services/tts.js — the
  * backend does the same pass before hitting `gpt-4o-mini-tts`, so a user

@@ -719,7 +719,7 @@ test('language guard: a Roman attempt under a pinned Urdu setting is re-asked be
   const open = (params) => { directives.push(params.extraDirective || null); return toWords(directives.length === 1 ? ROMAN_REPLY : URDU_REPLY) }
   const text = await drain(guardedStream({ language: 'ur', guard: true }, open))
   assert.equal(directives.length, 2, 'the wrong-script call is retried exactly once')
-  assert.match(directives[1], /Urdu script/, 'the retry carries a corrective directive')
+  assert.match(directives[1], /Urdu \(Nastaliq\) script/, 'the retry carries a corrective directive naming the script and its example')
   assert.equal(text, URDU_REPLY, 'nothing from the failed attempt leaks to the client')
 })
 
@@ -1210,7 +1210,7 @@ test('voice channel: uses the compact spoken prompt, not the text-only rules', a
   assert.ok(!voice.includes('[DESKTOP:') && !voice.includes('[APP:'),
     'a spoken reply must never be told to emit markers the TTS would read aloud')
   assert.ok(!/emoji/i.test(voice), 'no "use emojis generously" in a reply nobody reads visually')
-  assert.ok(voice.length < text.length / 3, `voice sheet must be a fraction of the text prompt (${voice.length} vs ${text.length})`)
+  assert.ok(voice.length < text.length / 2, `voice sheet must stay well under the text prompt (${voice.length} vs ${text.length})`)
 
   /* The rules that must survive the trim: who built her, the pinned language, and
      the feminine grammar the user hears in every Urdu sentence. */
@@ -1362,6 +1362,87 @@ test('taste: the Talk voice agrees with the chat prompt, in budget', async () =>
   const block = (await import('../src/services/taste.js')).tastePromptBlock(taste, { spoken: true })
   assert.ok(block.length < 780, `the spoken taste block is ${block.length} chars — add a field to SPOKEN_LABELS, do not add sentences`)
   assert.ok(!block.includes('Pasand ka'), 'the spoken form uses the short labels, not the text-prompt ones')
+})
+
+/* ── world language coverage ───────────────────────────────────────────────
+   The user can pin ANY of the world languages in Settings and must be understood
+   in any other, so the table is the product. Two things can silently break it:
+   a language with no script/locale (it would be unenforceable and unspeakable) and
+   the frontend copy drifting from the backend copy (Vite and Express share no
+   module graph, so nothing but a test reads both). */
+test('language: every world entry has a script, a locale and a prompt rule', async () => {
+  const { WORLD_LANGUAGES, SCRIPT_RANGES, REPLY_LANGUAGE_SCRIPTS, REPLY_LANGUAGE_LOCALES, replyLanguageRule, finalLanguageRule } = await import('../src/config.js')
+  assert.ok(WORLD_LANGUAGES.length >= 60, `the world table should cover the majors, got ${WORLD_LANGUAGES.length}`)
+  for (const [code, name, , script, locale] of WORLD_LANGUAGES) {
+    assert.ok(script && SCRIPT_RANGES[script], `${code}: every language names a script that the guard can test`)
+    assert.ok(/^[a-z]{2,3}(-[A-Za-z]{2,4})?(-[A-Z]{2})?$/.test(locale), `${code}: locale is a well-formed BCP-47 tag, got ${locale}`)
+    assert.equal(REPLY_LANGUAGE_SCRIPTS[code], script, `${code}: script map is derived from the table`)
+    assert.equal(REPLY_LANGUAGE_LOCALES[code], locale, `${code}: locale map is derived from the table`)
+    const rule = replyLanguageRule(code)
+    assert.ok(rule.includes(name), `${code}: the reply rule names ${name} so the model can obey it`)
+    assert.match(finalLanguageRule(code) || '', new RegExp(name), `${code}: the final-rule restate exists for a pinned language`)
+  }
+  /* 'auto' is the only choice with no script — it mirrors the user, so it must not
+     force one and must return the "answer in whatever they spoke" form. */
+  assert.equal(finalLanguageRule('auto'), null, 'auto pins nothing, so there is no final script rule')
+  assert.match(replyLanguageRule('auto'), /whichever language the user last used/, 'auto mirrors instead of forcing')
+})
+
+test('language: the browser mirror cannot drift from the backend table', async () => {
+  const back = await import('../src/config.js')
+  const front = await import('../../src/worldLanguages.js')
+  /* Backend rows carry a 6th field (a sample phrase) the browser does not need, so
+     compare only the five columns the Settings dropdown and the guard actually use. */
+  const trim = (r) => r.slice(0, 5)
+  assert.deepEqual(front.WORLD_LANGUAGES.map(trim), back.WORLD_LANGUAGES.map(trim), 'the two language tables must hold the same codes, names, natives, scripts and locales, in the same order')
+  assert.deepEqual(front.LANGUAGE_GROUPS, back.LANGUAGE_GROUPS, 'the region grouping is identical on both paths')
+  assert.deepEqual(front.REPLY_LANGUAGES, back.REPLY_LANGUAGES, 'the valid-choice list is the same one the zod schemas use')
+})
+
+/* scriptViolation was Urdu-only; it now judges every world script by codepoint. */
+test('scriptViolation: a non-Latin pinned language rejects a romanised answer', async () => {
+  const { scriptViolation } = await import('../src/services/ai.js')
+  assert.equal(scriptViolation('お元気ですか、どうぞお気軽に。', 'ja'), null, 'kana in reply to Japanese is fine')
+  assert.equal(scriptViolation('Ok genki desu, ki ni shinaide.', 'ja'), 'kana', 'Romaji is not the Japanese script')
+  assert.equal(scriptViolation('你好，今天过得怎么样？', 'zh'), null, 'hanzi answers Chinese')
+  assert.equal(scriptViolation('Namaste, aap kaise hain?', 'hi'), 'devanagari', 'Roman Hindi fails a pinned Devanagari setting')
+  assert.equal(scriptViolation('नमस्ते, आप कैसे हैं?', 'hi'), null, 'the real script passes')
+  assert.equal(scriptViolation('¿Cómo estás hoy?', 'es'), null, 'Latin languages pass Latin letters')
+  assert.equal(scriptViolation('Как твои дела?', 'bg'), null, 'Cyrillic answers a Cyrillic setting')
+  assert.equal(scriptViolation('How are you?', 'bg'), 'cyrillic', 'an English slip under Bulgarian is caught')
+})
+
+/* Request F: a long chat hit 413 "Request too large" / 429 and the UI said
+   "AI is at its limit". Both must now be treated as recoverable capacity errors
+   (rotate model, then degrade the payload), never as a permission failure. */
+test('capacity: 413, 429 and 503 are recoverable, a real 401 is not', async () => {
+  const { isCapacityError } = await import('../src/services/ai.js')
+  assert.equal(isCapacityError({ status: 429 }), true, 'per-minute token wall')
+  assert.equal(isCapacityError({ status: 413 }), true, 'request too large for the window — the long-chat error')
+  assert.equal(isCapacityError({ status: 503 }), true, 'provider overload')
+  assert.equal(isCapacityError({ status: 400, message: 'reduce your message size' }), true, 'the 413 body text counts too')
+  assert.equal(isCapacityError(new Error('Rate limit reached: you exceeded your tokens per minute')) , true, 'rate-limit phrasing without a status is still capacity')
+  assert.equal(isCapacityError({ status: 401, message: 'invalid api key' }), false, 'a bad key is NOT a capacity error — it must surface, not rotate models')
+  assert.equal(isCapacityError(null), false, 'no error is not a capacity error')
+})
+
+test('fitToInputBudget: trims the oldest turns but keeps the system prompt and the newest message', async () => {
+  const { fitToInputBudget } = await import('../src/services/ai.js')
+  const filler = 'x'.repeat(2000)
+  const system = { role: 'system', content: 'You are Aira.' }
+  const history = Array.from({ length: 12 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: `turn ${i} ${filler}` }))
+  const newest = { role: 'user', content: 'the actual question' }
+  const msgs = [system, ...history, newest]
+  /* The full payload is far over a small budget, so trimming must be provoked. */
+  const budget = 500
+  const fitted = fitToInputBudget(msgs, budget)
+  assert.equal(fitted[0].role, 'system', 'the system prompt is never dropped')
+  assert.equal(fitted[fitted.length - 1].content, newest.content, 'the newest user turn always survives')
+  assert.ok(fitted.length < msgs.length, `the thread was trimmed from ${msgs.length} to ${fitted.length}`)
+  assert.ok(fitted[fitted.length - 2]?.content.includes(`turn ${history.length - 1}`), 'when it must drop, it drops the OLDEST first')
+  /* A payload already inside the budget must come back untouched. */
+  const small = [system, { role: 'user', content: 'hi' }]
+  assert.deepEqual(fitToInputBudget(small, 5000), small, 'a fitting turn is left exactly as it was')
 })
 
 

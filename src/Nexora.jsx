@@ -81,6 +81,10 @@ import { captureCurrentPage, captureNode, captureSelfFace } from './selfCapture.
 import { useWakeWord } from './useWakeWord.js'
 import { configureUtterForSpeech, warmVoiceList } from './voiceSelect.js'
 import { streamFeed, streamFinal, cancelSpeakQueue, setSpeakMarkers } from './sentenceSpeak.js'
+/* Frontend mirror of the backend's WORLD_LANGUAGES table. Adding a language on
+   the server without adding it here fails the "language mirror cannot drift"
+   test in api.test.mjs, so the two lists cannot silently disagree. */
+import { LANGUAGE_OPTIONS, LANGUAGE_GROUPS_UI } from './worldLanguages.js'
 
 const ThreeHero = lazy(() => import('./ThreeHero.jsx'))
 const Onboarding = lazy(() => import('./Onboarding.jsx'))
@@ -128,7 +132,11 @@ const VOICE_OPTIONS = [
   ['ash', 'Ash', 'friendly · even'],
   ['cedar', 'Cedar', 'firm · male-leaning'],
 ]
-const VOICE_LANGUAGES = [['auto', 'Auto — mix freely (English + Urdu + Roman Urdu)'], ['en', 'English first'], ['ur', 'Urdu first'], ['hinglish', 'Hinglish (Roman Hindi-Urdu)']]
+/* Reply-language list is derived from the mirror (see worldLanguages.js). The
+   old 4-entry array here is what made every other language on earth invisible
+   to the Settings dropdown, even though the backend had accepted them since the
+   WORLD_LANGUAGES table shipped. */
+const VOICE_LANGUAGES = LANGUAGE_OPTIONS.map(({ id, label }) => [id, label])
 
 /* Wake-word spoken responses. Kept as short canned lines because the goal is a
    sub-two-second earcon so it never collides with the actual streamed reply
@@ -1792,7 +1800,11 @@ function SettingsView({ isLoggedIn, userProfile, authToken, onProfileUpdate, onT
           <div className="settings-row">
             <label htmlFor="set-lang">Reply language</label>
             <select id="set-lang" className="settings-select" value={voicePrefs.language} onChange={(e) => persistVoicePrefs({ ...voicePrefs, language: e.target.value })}>
-              {VOICE_LANGUAGES.map(([id, label]) => <option key={id} value={id}>{label}</option>)}
+              {LANGUAGE_GROUPS_UI.map(({ region, entries }) => (
+                <optgroup key={region} label={region}>
+                  {entries.map(({ id, label }) => <option key={id} value={id}>{label}</option>)}
+                </optgroup>
+              ))}
             </select>
             <span className="settings-hint">Not English? Pick your language here and {aiName} will reply in it.</span>
           </div>
@@ -2703,17 +2715,14 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
       setNotice(`${aiName} sun rahi hai.`)
       handledSelfControl = true
     }
-    /* Auto-resume from a PAUSE: if the AI previously paused itself (mic off +
-       voice off) and the user now types a NEW message (not a self-control
-       command), silently restore both features so the conversation continues
-       naturally. The user shouldn't have to say "wake up" — typing itself is
-       the wake signal. Skipped when handledSelfControl is true so a pause
-       command doesn't immediately undo itself. */
-    if (!handledSelfControl && !wakeEnabled && !speakReplies) {
-      setWakeEnabled(true)
-      setSpeakReplies(true)
-      try { localStorage.setItem('nexora_speak_replies', '1') } catch { /* ignore */ }
-    }
+    /* Auto-resume from an AI-initiated PAUSE is handled above: the
+       `if (voiceAsleepRef.current)` block clears the sleep flag on any deliberate
+       input, so a typed message wakes her naturally without the user having to
+       say "wake up". What MUST NOT happen here is silently re-enabling the mic
+       pill or the 🔇 button when the user turned them off by hand — that was the
+       old bug ("paused / muted dobara ON ho jaata hai"). Manual clicks are an
+       explicit choice; only the user's next click (or an [APP:resume] /
+       [APP:mic-on] / [APP:unmute] marker they asked for) may change them. */
     /* If a self-control command was executed by the frontend, append a brief
        HINT so the model knows the action is ALREADY done and must just
        acknowledge it — not refuse or joke about "existing in text". */

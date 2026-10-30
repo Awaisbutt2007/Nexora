@@ -7,3 +7,14 @@ createRoot(document.getElementById('root')).render(
     <Nexora />
   </StrictMode>,
 )
+
+/* Register the service worker so Nexora is installable and its shell works offline.
+   Production only — in dev Vite hot-reloads and a cached shell would fight it. The
+   worker never touches /api or /uploads, so a signed-in user's data is never cached.
+   Failures are swallowed: a blocked/unavailable SW just means a normal website, not a
+   broken one. */
+if (import.meta.env.PROD && 'serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js').catch(() => {})
+  })
+}

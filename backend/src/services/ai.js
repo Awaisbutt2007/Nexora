@@ -1,5 +1,5 @@
 import OpenAI from 'openai'
-import { config, systemPromptFor, REPLY_LANGUAGE_SCRIPTS } from '../config.js'
+import { config, systemPromptFor, REPLY_LANGUAGE_SCRIPTS, REPLY_LANGUAGE_NAMES, REPLY_LANGUAGE_SAMPLES, SCRIPT_RANGES, SCRIPT_NAMES, NON_LATIN_RE } from '../config.js'
 import { addTokensUsed } from './quota.js'
 import { buildVoiceInstructions } from './realtime.js'
 
@@ -11,18 +11,54 @@ function createClient() {
   })
 }
 
-/* Groq's free tier gives every model its OWN daily token budget, so one exhausted
-   model must not black out the whole chat. When the primary call fails for a
-   CAPACITY reason (429 / tokens-per-day / overload) we roll through
-   config.fallbackModels; a genuine 4xx (bad request, bad key) is NOT retried on
-   another model because it would fail there too — we surface it instead. */
-const CAPACITY_RE = /(rate.?limit|too many requests|tokens per (day|hour|min|minute)|insufficient_quota|quota|overload|capacity|try again in|\b429\b|\b503\b)/i
-function isCapacityError(err) {
-  if (!err) return false
-  if (err.status === 429 || err.status === 503) return true
-  return CAPACITY_RE.test(String(err?.message || err))
+/* ── Token estimation & input-budget fitting ─────────────────────────────────
+   Groq free tier gives every model its OWN per-minute input-token window (~7k).
+   A single system prompt (~3.9k tokens) plus the conversation history can exceed
+   that by mid-thread, making turn 6+ fail 429 and turn 24+ fail 413. The fix:
+   estimate the payload size BEFORE sending and trim old history until it fits,
+   and treat 413 as a capacity error so the chain can roll. */
+const EST_CHARS_PER_TOKEN = 4
+function estimateTokens(text) {
+  return Math.ceil(String(text || '').length / EST_CHARS_PER_TOKEN)
 }
-/* Primary first, then the fallback chain, de-duplicated and empties dropped. */
+function estimateMessageTokens(messages) {
+  let total = 0
+  for (const m of messages) {
+    if (typeof m.content === 'string') total += estimateTokens(m.content)
+    else if (Array.isArray(m.content)) {
+      for (const part of m.content) {
+        total += part.type === 'text' ? estimateTokens(part.text) : 1500 /* image overhead */
+      }
+    }
+    total += 4 /* role/separator overhead per message */
+  }
+  return total
+}
+/* Trim the oldest non-system messages to fit within `budget` tokens. The system
+   message (index 0) and the last user message always survive. */
+export function fitToInputBudget(messages, budget) {
+  const sys = messages[0]?.role === 'system' ? [messages[0]] : []
+  const last = messages[messages.length - 1]
+  const middle = messages.slice(sys.length, messages.length - 1)
+  let head = sys.length ? 0 : 0 /* nothing to skip */
+  while (middle.length - head > 1) {
+    const candidate = [...sys, ...middle.slice(head), last]
+    if (estimateMessageTokens(candidate) <= budget) return candidate
+    head += 1
+  }
+  /* Even with just the last message, the system prompt + user text may still be
+     over — send it anyway so the user gets SOME response instead of a silent error. */
+  return [...sys, ...(middle.length > head ? [middle[middle.length - 1]] : []), last]
+}
+
+/* ── Model-chain rotation ────────────────────────────────────────────────────
+   Each Groq model has its OWN per-minute window, so two turns of one conversation
+   can share the load across three models instead of hitting the same limiter twice.
+   A simple round-robin counter is incremented on every text-only call that does NOT
+   pin a vision model. Image turns always start at the vision model (the only one
+   that can see a picture) and never rotate. */
+let rotationIdx = 0
+/* Non-rotating chain for vision (image) turns — the vision model MUST be first. */
 function modelChain(primary) {
   const seen = new Set()
   const out = []
@@ -31,6 +67,29 @@ function modelChain(primary) {
     if (id && !seen.has(id)) { seen.add(id); out.push(id) }
   }
   return out
+}
+function rotatedChain(primary) {
+  const seen = new Set()
+  const out = []
+  for (const m of [primary, ...(config.fallbackModels || [])]) {
+    const id = String(m || '').trim()
+    if (id && !seen.has(id)) { seen.add(id); out.push(id) }
+  }
+  if (out.length <= 1) return out
+  /* Rotate the starting point for non-vision models (text threads). */
+  const offset = rotationIdx % out.length
+  rotationIdx += 1
+  return [...out.slice(offset), ...out.slice(0, offset)]
+}
+
+/* ── Capacity / failover logic ──────────────────────────────────────────────
+   Groq rate-limits are 429 (per-minute/per-day) and 413 (request too large for the
+   TPM window). Both are recoverable by changing model or reducing payload. */
+const CAPACITY_RE = /(rate.?limit|too many requests|tokens per (day|hour|min|minute)|insufficient_quota|quota|overload|capacity|try again in|reduce your message size|request too large|\b429\b|\b413\b|\b503\b)/i
+export function isCapacityError(err) {
+  if (!err) return false
+  if (err.status === 429 || err.status === 413 || err.status === 503) return true
+  return CAPACITY_RE.test(String(err?.message || err))
 }
 
 /* Exported for tests: this is the single place that decides how big a turn is, so
@@ -63,22 +122,45 @@ export function buildMessages(history, userMemories = [], ctx = {}, extraDirecti
     { role: 'system', content: systemPrompt },
     /* A turn with attached images becomes OpenAI-style multimodal content — a
        text part plus one image_url part per picture (base64 data URLs, because
-       the provider cannot reach our localhost /uploads). */
-    ...history.map((m) => (m.images?.length && m.role === 'user'
-      ? {
-          role: m.role,
-          content: [
-            { type: 'text', text: m.content || `The user attached ${m.images.length} image${m.images.length > 1 ? 's' : ''}. Look at ${m.images.length > 1 ? 'them' : 'it'} and reply.` },
-            ...m.images.map((url) => ({ type: 'image_url', image_url: { url } })),
-          ],
+       the provider cannot reach our localhost /uploads).
+       IMPORTANT: only the NEWEST image-bearing user turn keeps its images. Every
+       earlier picture turn is downgraded to text-only (with a small note so the
+       model knows a picture was there). Re-inlining every base64 image on every
+       turn is what pushed a long chat past Groq's 7k ITPM and produced the
+       "AI is at its limit" error the user reported — a single phone photo costs
+       ~1.5k tokens, so three old pictures silently cost 4.5k tokens per turn.
+       The AI already saw the earlier pictures and answered them once; she does
+       not need to re-look at them to keep the thread coherent. */
+    ...(() => {
+      let newestImageIdx = -1
+      for (let i = history.length - 1; i >= 0; i -= 1) {
+        if (history[i].role === 'user' && history[i].images?.length) { newestImageIdx = i; break }
+      }
+      return history.map((m, idx) => {
+        const keepImages = idx === newestImageIdx && m.role === 'user' && m.images?.length
+        if (keepImages) {
+          return {
+            role: m.role,
+            content: [
+              { type: 'text', text: m.content || `The user attached ${m.images.length} image${m.images.length > 1 ? 's' : ''}. Look at ${m.images.length > 1 ? 'them' : 'it'} and reply.` },
+              ...m.images.map((url) => ({ type: 'image_url', image_url: { url } })),
+            ],
+          }
         }
-      /* An assistant turn is plain text, always. Multimodal array content is only
-         legal on a user part, so once her own screenshots started living on
-         assistant messages, feeding them back made the provider reject the WHOLE
-         request ("for 'role:assistant' ... content must be a string") and bricked
-         every later turn in that conversation. She does not need to re-see a picture
-         she already described. */
-      : { role: m.role, content: m.content })),
+        /* Older image turns: text-only, with a hint so the model knows a picture
+           was there and does not hallucinate about it. */
+        const hadImages = m.role === 'user' && m.images?.length
+        const text = hadImages
+          ? `${m.content || ''}\n\n[An image was attached to this earlier turn — the model already saw it then; the picture is not re-attached to save input tokens.]`
+          : m.content
+        /* An assistant turn is plain text, always. Multimodal array content is only
+           legal on a user part, so once her own screenshots started living on
+           assistant messages, feeding them back made the provider reject the WHOLE
+           request ("for 'role:assistant' ... content must be a string") and bricked
+           every later turn in that conversation. */
+        return { role: m.role, content: text }
+      })
+    })(),
     /* A pinned reply language is a hard rule the prompt states twice, yet a small
        model still answers the FIRST turn of a thread in the script it was just
        shown. When that happens the guard below re-asks once, and this is the line
@@ -129,23 +211,36 @@ const MAX_SCRIPT_ATTEMPTS = 2
    the "1 to 3 short sentences" the voice instructions demand, so it constrains only
    the model that was going to ramble. */
 const VOICE_MAX_TOKENS = 220
-const URDU_SCRIPT_RE = /[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/
-const SCRIPT_FIXUP = {
-  urdu: '(Your previous attempt was written in Roman letters, which the user cannot read. Answer the SAME message again, this time with every word in the Urdu script — e.g. "وہ بالکل ٹھیک ہے، آپ بتائیں آگے کیا ہوا؟". Do not write a single Roman-lettered sentence.)',
-  latin: '(Your previous attempt used the Urdu/Arabic script, but the user pinned a Latin-script language. Answer the SAME message again using Roman/Latin letters only.)',
+
+/* The corrective directive, built on demand from the same table the prompt uses.
+   Naming the script and (when we have one) showing a real phrase in it is what a
+   small model can actually act on — "write in Devanagari" alone is too abstract. */
+function scriptFixup(script, language) {
+  if (!script) return null
+  if (script === 'latin') {
+    return `(Your previous attempt used a non-Latin script, but the user pinned a Latin-script language (${REPLY_LANGUAGE_NAMES[language] || 'this language'}). Answer the SAME message again using Roman/Latin letters only — no other alphabet.)`
+  }
+  const name = SCRIPT_NAMES[script] || script
+  const sample = REPLY_LANGUAGE_SAMPLES[language]
+  const example = sample ? ` — e.g. "${sample}"` : ''
+  return `(Your previous attempt was written in the wrong script, which the user cannot read. Answer the SAME message again, this time entirely in ${name}${example}. Do not write a single sentence in any other script.)`
 }
 
 /* null = the sample honours the pinned language (also returned when there is
-   nothing to judge yet, so a short reply is never retried on a hunch). */
+   nothing to judge yet, so a short reply is never retried on a hunch). The verdict
+   value is the SCRIPT name, which is also the key the fixup is built from. */
 export function scriptViolation(text, language) {
   const wanted = REPLY_LANGUAGE_SCRIPTS[language]
   const body = String(text || '')
   if (!wanted || body.trim().length < 2) return null
-  const hasUrdu = URDU_SCRIPT_RE.test(body)
-  if (wanted === 'urdu') return hasUrdu ? null : 'urdu'
-  /* An Urdu character inside an English or Hinglish reply is the model slipping
-     back to the script of the thread, not a bracketed term — both are wrong. */
-  return hasUrdu ? 'latin' : null
+  const re = SCRIPT_RANGES[wanted]
+  if (!re) return null
+  /* A Latin-pinned language (English, Spanish, Hinglish…) fails when ANY non-Latin
+     character appears — the model slipping back to the script of the thread. */
+  if (wanted === 'latin') return NON_LATIN_RE.test(body) ? wanted : null
+  /* A non-Latin pinned script fails when its own characters are missing from the
+     opening sample — the model answered in English or in Roman transliteration. */
+  return re.test(body) ? null : wanted
 }
 
 const asIterable = (it) => ({ [Symbol.asyncIterator]: () => it })
@@ -163,7 +258,7 @@ export async function* guardedStream(params, open = providerStream) {
     let sample = ''
     let verdict = false /* false = still sampling, null = fine, string = wrong script */
     let finished = false
-    const source = open({ ...params, extraDirective: attempt > 1 ? SCRIPT_FIXUP[REPLY_LANGUAGE_SCRIPTS[language]] : null })[Symbol.asyncIterator]()
+    const source = open({ ...params, extraDirective: attempt > 1 ? scriptFixup(REPLY_LANGUAGE_SCRIPTS[language], language) : null })[Symbol.asyncIterator]()
     while (true) {
       const step = await source.next()
       if (step.done) { finished = true; break }
@@ -196,7 +291,7 @@ export async function* guardedStream(params, open = providerStream) {
 }
 
 async function* providerStream({ history, memories, model, assistantName, userName, persona, language, gender, channel, signal, extraDirective }) {
-  const messages = buildMessages(history, memories, { assistantName, userName, persona, language, gender, channel }, extraDirective)
+  let messages = buildMessages(history, memories, { assistantName, userName, persona, language, gender, channel }, extraDirective)
   const client = createClient()
   let usedModel = model || config.openaiModel
 
@@ -208,24 +303,20 @@ async function* providerStream({ history, memories, model, assistantName, userNa
     return
   }
 
+  /* Fit the payload to the per-minute input-token budget before sending.
+     Images always stay on the newest turn only (the oldest picture turns are
+     text-summarised or dropped by trimHistory already). */
+  messages = fitToInputBudget(messages, config.aiInputTokenBudget)
+
   const streamReq = {
     messages,
-    /* A spoken reply is 1-3 short sentences by rule, so the 900-token text cap is
-       dead room on a voice turn that only invites a mini-essay the listener never
-       hears the end of. */
     max_tokens: channel === 'voice' ? VOICE_MAX_TOKENS : 900,
-    /* When the user pinned a specific language, cool the sampling down so the
-       model sticks to the (mandatory) language rule instead of drifting back to
-       English/Roman the way it can at the default temperature. */
     ...(language && language !== 'auto' ? { temperature: 0.35 } : {}),
     stream: true,
     stream_options: { include_usage: true },
   }
-  /* Cross-model failover: an exhausted primary rolls onto the next model. maxRetries:0
-     makes a rate-limited model fail FAST so the crossover is immediate instead of the
-     SDK re-hammering the same spent model. If every model is busy we rethrow the
-     ORIGINAL capacity error so the client still sees the honest "at its limit" line. */
-  const chain = modelChain(usedModel)
+  const isVision = history.some((m) => m.images?.length)
+  const chain = isVision ? modelChain(usedModel) : rotatedChain(usedModel)
   let stream = null
   let capacityErr = null
   for (let idx = 0; idx < chain.length; idx += 1) {
@@ -235,10 +326,21 @@ async function* providerStream({ history, memories, model, assistantName, userNa
       break
     } catch (err) {
       if (signal?.aborted) throw err
-      if (idx === 0 && !isCapacityError(err)) throw err /* a real 4xx won't be fixed by another model */
+      if (idx === 0 && !isCapacityError(err)) throw err
       if (idx === 0) capacityErr = err
       console.warn(`[nexora] model ${chain[idx]} unavailable — trying fallback: ${String(err?.message || err).slice(0, 120)}`)
     }
+  }
+  /* If the entire chain is busy AND the error was a capacity issue, do one final
+     retry on the last model with a much smaller budget — trim history hard. */
+  if (!stream && capacityErr && isCapacityError(capacityErr)) {
+    const degradedBudget = Math.floor(config.aiInputTokenBudget * 0.45)
+    const degraded = fitToInputBudget(messages, degradedBudget)
+    try {
+      stream = await client.chat.completions.create({ model: chain[0], ...streamReq, messages: degraded }, { signal, maxRetries: 0 })
+      usedModel = chain[0]
+      messages = degraded
+    } catch { /* fall through to rethrow */ }
   }
   if (!stream) throw capacityErr
 
@@ -268,7 +370,7 @@ export function streamChatCompletion(params) {
 }
 
 async function providerComplete({ history, memories, model, assistantName, userName, persona, language, gender, channel, extraDirective }) {
-  const messages = buildMessages(history, memories, { assistantName, userName, persona, language, gender, channel }, extraDirective)
+  let messages = buildMessages(history, memories, { assistantName, userName, persona, language, gender, channel }, extraDirective)
   const client = createClient()
   let usedModel = model || config.openaiModel
 
@@ -282,12 +384,16 @@ async function providerComplete({ history, memories, model, assistantName, userN
     }
   }
 
+  /* Fit the payload before sending (same as stream path). */
+  messages = fitToInputBudget(messages, config.aiInputTokenBudget)
+
   const completeReq = {
     messages,
     max_tokens: channel === 'voice' ? VOICE_MAX_TOKENS : 900,
     ...(language && language !== 'auto' ? { temperature: 0.35 } : {}),
   }
-  const chain = modelChain(usedModel)
+  const isVision = history.some((m) => m.images?.length)
+  const chain = isVision ? modelChain(usedModel) : rotatedChain(usedModel)
   let completion = null
   let capacityErr = null
   for (let idx = 0; idx < chain.length; idx += 1) {
@@ -300,6 +406,15 @@ async function providerComplete({ history, memories, model, assistantName, userN
       if (idx === 0) capacityErr = err
       console.warn(`[nexora] model ${chain[idx]} unavailable — trying fallback: ${String(err?.message || err).slice(0, 120)}`)
     }
+  }
+  /* Degraded retry if the chain exhausted on capacity. */
+  if (!completion && capacityErr && isCapacityError(capacityErr)) {
+    const degradedBudget = Math.floor(config.aiInputTokenBudget * 0.45)
+    const degraded = fitToInputBudget(messages, degradedBudget)
+    try {
+      completion = await client.chat.completions.create({ model: chain[0], ...completeReq, messages: degraded }, { maxRetries: 0 })
+      usedModel = chain[0]
+    } catch { /* fall through */ }
   }
   if (!completion) throw capacityErr
 
@@ -318,7 +433,7 @@ export async function completeChat(params) {
   const first = await providerComplete(params)
   const verdict = config.openaiApiKey ? scriptViolation(first.content, params.language) : null
   if (!verdict) return first
-  return providerComplete({ ...params, extraDirective: SCRIPT_FIXUP[verdict] })
+  return providerComplete({ ...params, extraDirective: scriptFixup(verdict, params.language) })
 }
 
 export function estimateCredits(usage) {

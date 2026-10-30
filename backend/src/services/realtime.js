@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { config, creatorRules, clockLine } from '../config.js'
+import { config, creatorRules, clockLine, replyLanguageRule, REPLY_LANGUAGE_LOCALES } from '../config.js'
 /* Speech-to-speech has NO text pass — the provider turns its own tokens into audio
    as it generates them, so `prepareTextForSpeech` and the browser respell tables
    cannot help here. `instructions` is the ONLY lever this surface has, which is
@@ -28,9 +28,15 @@ import { tasteFor, tastePromptBlock } from './taste.js'
 
 const PROVIDER_VOICES = ['alloy', 'ash', 'ballad', 'coral', 'echo', 'sage', 'shimmer', 'verse', 'marin', 'cedar']
 
-/* Session language → ISO-639-1 hint for the ASR lane; 'auto' means let the
-   transcriber detect per utterance (needed for natural code-switching). */
-const LANGUAGE_CODES = { en: 'en', ur: 'ur', hinglish: null, auto: null }
+/* Session language → ISO-639-1 hint for the ASR lane; 'auto'/'hinglish' and any
+   language we have no locale for mean let the transcriber detect per utterance
+   (needed for natural code-switching). Derived from REPLY_LANGUAGE_LOCALES so a
+   new language in the world table automatically gets its ASR hint too. */
+function asrLanguageCode(language) {
+  const locale = REPLY_LANGUAGE_LOCALES[String(language || '').toLowerCase()]
+  if (!locale) return null
+  return locale.split('-')[0]
+}
 
 export function isSupportedVoice(voice) {
   return PROVIDER_VOICES.includes(voice)
@@ -58,13 +64,12 @@ export function buildVoiceInstructions({ assistantName = 'Aira', userName = '', 
      honesty rule below is what made her say it, so the two are now stated together. */
   const tasteBlock = `\n${tastePromptBlock(tasteFor({ assistantName, userName }), { spoken: true })}`
   /* The language chosen in Settings is a hard override for speech too, so a Talk
-     call answers in the one language they picked instead of mirroring each turn. */
+     call answers in the one language they picked instead of mirroring each turn.
+     Same rule the text prompt uses, spoken form — comprehension stays open to any
+     language, production is pinned. Deriving from WORLD_LANGUAGES means a new
+     language automatically reaches the voice surface too. */
   const lang = typeof language === 'string' ? language.trim().toLowerCase() : ''
-  const languageRule =
-    lang === 'en' ? 'The user set their language to English: ALWAYS speak in English, no matter what language they reply in.'
-    : lang === 'ur' ? 'The user set their language to Urdu: ALWAYS speak in Urdu, no matter what language they reply in.'
-    : lang === 'hinglish' ? 'The user set their language to Hinglish: ALWAYS speak in Hinglish — Hindi/Urdu conversation mixed with English words (e.g. "main badhiya hoon, tum sunao") — NOT plain English, no matter what language they reply in.'
-    : 'Reply in whichever language the user last used unless they ask otherwise.'
+  const languageRule = replyLanguageRule(lang, { spoken: true })
 
   /* The companion's own gender drives both its spoken voice and its grammar: a
      female Aira must say "رکھوں گی"/"rakhoongi", a male one "رکھوں گا"/"rakhoonga".
@@ -83,8 +88,7 @@ Voice and style:
 - Match the user's energy: casual with casual, focused with serious.
 
 Languages:
-- Understand English, Urdu, Roman Urdu and Hinglish, including mixed sentences like "Aira, mujhe mera project explain karo in English".
-- ${languageRule}${genderGrammar}
+- Understand ANY language the user speaks — never ask them to repeat themselves in English.${languageRule ? ` ${languageRule}` : ''}${genderGrammar}
 - When reading Roman Urdu/Hinglish aloud, pronounce it as natural spoken Urdu/Hindi.
 
 Pronunciation — follow this as strictly as the language rule, it is what makes you understandable:
@@ -106,7 +110,7 @@ Honesty:
 
 export function buildRealtimeSession({ assistantName, userName, voice, language, memories, persona, gender }) {
   const transcription = { model: config.voiceTranscribeModel }
-  const langCode = LANGUAGE_CODES[language] ?? LANGUAGE_CODES.auto
+  const langCode = asrLanguageCode(language)
   if (langCode) transcription.language = langCode
   else transcription.prompt = 'Expect English, Urdu and Roman Urdu, often mixed in one sentence.'
 
