@@ -2900,10 +2900,19 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
     const speakOpts = { language: voicePrefs.language, gender: voicePrefs.gender, voice: voicePrefs.voice, names: speakNames, authToken }
     const shouldStreamSpeak = Boolean(speakReplies && !voiceOpen)
 
+    /* Recent visible turns, sent so a serverless chat endpoint (Vercel) can answer
+       with context. The `messages` state here is the thread BEFORE the two temp
+       bubbles we are about to append, so it is exactly the prior context. */
+    const chatHistory = (messages || [])
+      .filter((m) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
+      .slice(-12)
+      .map((m) => ({ role: m.role, content: m.content }))
+
     try {
       const result = await streamChat({
         token: authToken,
         message: promptForModel,
+        history: chatHistory,
         assistantName: aiName,
         persona: voicePrefs.persona,
         gender: voicePrefs.gender,
