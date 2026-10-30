@@ -1,0 +1,31 @@
+# Keep throwaway / locked / irrelevant paths out of the Vercel upload.
+# The build only needs the Vite frontend source + public/; Vercel runs
+# `npm run build` and serves `dist/` (see vercel.json).
+
+# Stray browser temp profiles from local verification runs (these hold
+# exclusive file locks on Windows, which crashed the uploader with EBUSY).
+.tmp-*
+*-profile/
+.tmp-edge-profile/
+.tmp-chrome-profile/
+
+# Vercel helper temp scripts/logs.
+.vercel-tmp/
+
+# The Express/SQLite backend and desktop agent are deployed separately
+# (Render / local), so they must not be uploaded or watched here.
+backend/
+desktop-agent/
+
+# Local runtime state, logs and one-off probe artifacts.
+debug.log
+debug-*.log
+*.log
+WORLD_PROBE_REPORT.md
+IMPLEMENTATION_STATUS.md
+NEXT_STEPS.md
+
+# Verification screenshots dropped in the repo root during testing.
+verify-*.png
+nexora-*.png
+public/_facetest.png

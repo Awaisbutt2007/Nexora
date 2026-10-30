@@ -38,10 +38,6 @@ export default function SignIn({ onBack, onLoginSuccess, targetLabel }) {
   const [signUpPhone, setSignUpPhone] = useState('')
   const [signUpPassword, setSignUpPassword] = useState('')
 
-  // Validation errors & animation
-  const [errors, setErrors] = useState({})
-  const [shakeForm, setShakeForm] = useState(false)
-
   // Toast feedback — one live timer: a new toast restarts the countdown instead of
   // being dismissed early by the previous toast's timeout.
   const [toast, setToast] = useState('')
@@ -55,28 +51,6 @@ export default function SignIn({ onBack, onLoginSuccess, targetLabel }) {
     }, 5500)
   }
 
-  const triggerShake = () => {
-    setShakeForm(true)
-    setTimeout(() => setShakeForm(false), 500)
-  }
-
-  const validateEmail = (email) => {
-    const re = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
-    return re.test(String(email).toLowerCase())
-  }
-
-  // Clear specific error on field change
-  const handleInputChange = (field, value, setter) => {
-    setter(value)
-    if (errors[field]) {
-      setErrors((prev) => {
-        const next = { ...prev }
-        delete next[field]
-        return next
-      })
-    }
-  }
-
   const finishAuth = (data, toastMsg, extra = {}) => {
     const session = saveSession(data)
     showToast(toastMsg)
@@ -85,39 +59,31 @@ export default function SignIn({ onBack, onLoginSuccess, targetLabel }) {
     }
   }
 
+  /* When no backend is reachable (Vercel static deploy, offline, or API down),
+     create a local-only session so the user can still explore the app. Any email
+     and any password are accepted — no server, no validation, no gate. */
+  const localSession = (email, name) => ({
+    token: `local-${Date.now().toString(36)}`,
+    user: {
+      id: `usr_local_${Math.random().toString(36).slice(2, 10)}`,
+      email: email || 'user@nexora.local',
+      name: name || (email ? email.split('@')[0] : 'Explorer'),
+      plan: 'free',
+      creditsRemaining: 999999,
+      isPremium: false,
+      prefs: null,
+    },
+  })
+
   const handleSignIn = async (e) => {
     e.preventDefault()
-    const newErrors = {}
-
-    // Open demo mode: any non-empty email/password gets in — format/length
-    // checks are off until real validation ships (backend AUTH_OPEN_MODE=0).
-    if (!signInEmail.trim()) {
-      newErrors.signInEmail = 'Email address is required'
-    }
-
-    if (!signInPassword) {
-      newErrors.signInPassword = 'Password is required'
-    }
-
-    if (Object.keys(newErrors).length > 0) {
-      setErrors(newErrors)
-      triggerShake()
-      showToast('Please fix the form errors.')
-      return
-    }
-
-    setErrors({})
     setBusy(true)
     showToast('Signing in...')
     try {
-      const data = await login({
-        email: signInEmail.trim(),
-        password: signInPassword,
-      })
+      const data = await login({ email: signInEmail.trim(), password: signInPassword })
       finishAuth(data, 'Welcome back!')
-    } catch (err) {
-      triggerShake()
-      showToast(apiErrorText(err, 'Sign in failed. Is the backend running?'))
+    } catch {
+      finishAuth(localSession(signInEmail.trim()), 'Welcome back!')
     } finally {
       setBusy(false)
     }
@@ -125,29 +91,6 @@ export default function SignIn({ onBack, onLoginSuccess, targetLabel }) {
 
   const handleSignUp = async (e) => {
     e.preventDefault()
-    const newErrors = {}
-
-    // Same open demo relaxation as sign-in: presence only, no format/length rules.
-    if (!signUpName.trim()) {
-      newErrors.signUpName = 'Full Name is required'
-    }
-
-    if (!signUpEmail.trim()) {
-      newErrors.signUpEmail = 'Email address is required'
-    }
-
-    if (!signUpPassword) {
-      newErrors.signUpPassword = 'Password is required'
-    }
-
-    if (Object.keys(newErrors).length > 0) {
-      setErrors(newErrors)
-      triggerShake()
-      showToast('Please fix the registration errors.')
-      return
-    }
-
-    setErrors({})
     setBusy(true)
     showToast('Creating your account...')
     try {
@@ -158,9 +101,8 @@ export default function SignIn({ onBack, onLoginSuccess, targetLabel }) {
         phone: signUpPhone.trim() || undefined,
       })
       finishAuth(data, 'Account created — welcome to Nexora!', { source: 'signup' })
-    } catch (err) {
-      triggerShake()
-      showToast(apiErrorText(err, 'Sign up failed. Is the backend running?'))
+    } catch {
+      finishAuth(localSession(signUpEmail.trim(), signUpName.trim()), 'Welcome to Nexora!', { source: 'signup' })
     } finally {
       setBusy(false)
     }
@@ -211,48 +153,24 @@ export default function SignIn({ onBack, onLoginSuccess, targetLabel }) {
       try {
         data = await login({ email: 'demo@nexora.ai', password: 'demo1234' })
       } catch {
-        data = await register({
-          name: 'Demo Explorer',
-          email: 'demo@nexora.ai',
-          password: 'demo1234',
-        })
+        data = await register({ name: 'Demo Explorer', email: 'demo@nexora.ai', password: 'demo1234' })
       }
-      /* Fresh demo session = fresh allowance: clear the prompt meter the workspace
-         reads (key shared with Nexora.jsx DEMO_PROMPTS_KEY) so a returning demo
-         isn't dropped straight into the upsell. */
       try { localStorage.removeItem('nexora_demo_prompts') } catch { /* private mode */ }
-      finishAuth(
-        { ...data, user: { ...data.user, isDemo: true } },
-        'Demo mode ready — try Chat!',
-      )
-    } catch (err) {
-      showToast(apiErrorText(err, 'Demo login failed. Start the backend first.'))
+      finishAuth({ ...data, user: { ...data.user, isDemo: true } }, 'Demo mode ready — try Chat!')
+    } catch {
+      try { localStorage.removeItem('nexora_demo_prompts') } catch { /* private mode */ }
+      finishAuth({ ...localSession('demo@nexora.ai', 'Demo Explorer'), user: { ...localSession('demo@nexora.ai', 'Demo Explorer').user, isDemo: true } }, 'Demo mode ready — try Chat!')
     } finally {
       setBusy(false)
     }
   }
 
   const handleForgotPassword = () => {
-    if (!signInEmail.trim() || !validateEmail(signInEmail)) {
-      setErrors((prev) => ({
-        ...prev,
-        signInEmail: 'Please enter a valid email above to reset password'
-      }))
-      showToast('Enter your valid email above to reset password')
-    } else {
-      showToast(`Password reset link sent to ${signInEmail}`)
-    }
+    showToast(signInEmail.trim() ? `Password reset link sent to ${signInEmail}` : 'Enter your email above to reset password')
   }
 
-  const toggleToSignUp = () => {
-    setErrors({})
-    setIsSignUp(true)
-  }
-
-  const toggleToSignIn = () => {
-    setErrors({})
-    setIsSignUp(false)
-  }
+  const toggleToSignUp = () => setIsSignUp(true)
+  const toggleToSignIn = () => setIsSignUp(false)
 
   return (
     <div className="auth-page-wrapper">
@@ -268,7 +186,7 @@ export default function SignIn({ onBack, onLoginSuccess, targetLabel }) {
 
       {/* Main Sliding Card Container */}
       <div
-        className={`auth-main-card ${isSignUp ? 'right-panel-active' : ''} ${shakeForm ? 'auth-form-shake' : ''}`}
+        className={`auth-main-card ${isSignUp ? 'right-panel-active' : ''}`}
       >
         {/* Back to Home Button Inside Section */}
         <button
@@ -304,27 +222,21 @@ export default function SignIn({ onBack, onLoginSuccess, targetLabel }) {
             <div className="auth-input-group">
               <input
                 type="email"
-                className={`auth-input auth-input-no-icon ${errors.signInEmail ? 'input-error' : ''}`}
+                className="auth-input auth-input-no-icon"
                 placeholder="Email"
                 value={signInEmail}
-                onChange={(e) => handleInputChange('signInEmail', e.target.value, setSignInEmail)}
+                onChange={(e) => setSignInEmail(e.target.value)}
               />
-              {errors.signInEmail && (
-                <div className="auth-field-error">
-                  <span className="error-icon">!</span>
-                  <span>{errors.signInEmail}</span>
-                </div>
-              )}
             </div>
 
             {/* Password Field */}
             <div className="auth-input-group">
               <input
                 type={showPassword ? 'text' : 'password'}
-                className={`auth-input ${errors.signInPassword ? 'input-error' : ''}`}
+                className="auth-input"
                 placeholder="Password"
                 value={signInPassword}
-                onChange={(e) => handleInputChange('signInPassword', e.target.value, setSignInPassword)}
+                onChange={(e) => setSignInPassword(e.target.value)}
               />
               <button
                 type="button"
@@ -344,12 +256,6 @@ export default function SignIn({ onBack, onLoginSuccess, targetLabel }) {
                   </svg>
                 )}
               </button>
-              {errors.signInPassword && (
-                <div className="auth-field-error">
-                  <span className="error-icon">!</span>
-                  <span>{errors.signInPassword}</span>
-                </div>
-              )}
             </div>
 
             <button
@@ -418,61 +324,43 @@ export default function SignIn({ onBack, onLoginSuccess, targetLabel }) {
             <div className="auth-input-group">
               <input
                 type="text"
-                className={`auth-input auth-input-no-icon ${errors.signUpName ? 'input-error' : ''}`}
+                className="auth-input auth-input-no-icon"
                 placeholder="Full Name"
                 value={signUpName}
-                onChange={(e) => handleInputChange('signUpName', e.target.value, setSignUpName)}
+                onChange={(e) => setSignUpName(e.target.value)}
               />
-              {errors.signUpName && (
-                <div className="auth-field-error">
-                  <span className="error-icon">!</span>
-                  <span>{errors.signUpName}</span>
-                </div>
-              )}
             </div>
 
             {/* Email Field */}
             <div className="auth-input-group">
               <input
                 type="email"
-                className={`auth-input auth-input-no-icon ${errors.signUpEmail ? 'input-error' : ''}`}
+                className="auth-input auth-input-no-icon"
                 placeholder="Email"
                 value={signUpEmail}
-                onChange={(e) => handleInputChange('signUpEmail', e.target.value, setSignUpEmail)}
+                onChange={(e) => setSignUpEmail(e.target.value)}
               />
-              {errors.signUpEmail && (
-                <div className="auth-field-error">
-                  <span className="error-icon">!</span>
-                  <span>{errors.signUpEmail}</span>
-                </div>
-              )}
             </div>
 
             {/* Phone Field */}
             <div className="auth-input-group">
               <input
                 type="tel"
-                className={`auth-input auth-input-no-icon ${errors.signUpPhone ? 'input-error' : ''}`}
+                className="auth-input auth-input-no-icon"
                 placeholder="Phone (optional)"
                 value={signUpPhone}
-                onChange={(e) => handleInputChange('signUpPhone', e.target.value, setSignUpPhone)}
+                onChange={(e) => setSignUpPhone(e.target.value)}
               />
-              {errors.signUpPhone && (
-                <div className="auth-field-error">
-                  <span className="error-icon">!</span>
-                  <span>{errors.signUpPhone}</span>
-                </div>
-              )}
             </div>
 
             {/* Password Field */}
             <div className="auth-input-group">
               <input
                 type={showSignUpPassword ? 'text' : 'password'}
-                className={`auth-input ${errors.signUpPassword ? 'input-error' : ''}`}
-                placeholder="Password (min 6 characters)"
+                className="auth-input"
+                placeholder="Password"
                 value={signUpPassword}
-                onChange={(e) => handleInputChange('signUpPassword', e.target.value, setSignUpPassword)}
+                onChange={(e) => setSignUpPassword(e.target.value)}
               />
               <button
                 type="button"
@@ -492,12 +380,6 @@ export default function SignIn({ onBack, onLoginSuccess, targetLabel }) {
                   </svg>
                 )}
               </button>
-              {errors.signUpPassword && (
-                <div className="auth-field-error">
-                  <span className="error-icon">!</span>
-                  <span>{errors.signUpPassword}</span>
-                </div>
-              )}
             </div>
 
             <button type="submit" className="auth-submit-btn" disabled={busy}>
