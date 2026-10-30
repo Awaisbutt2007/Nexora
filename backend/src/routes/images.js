@@ -4,10 +4,11 @@ import { fetchGeneratedImage, isNsfwPrompt } from '../services/images.js'
 const router = Router()
 
 /* Clamp a requested dimension into a sane band so nobody asks for a 8000² image
-   and pins the server while Pollinations renders it. */
+   and pins the server while Pollinations renders it. 1024 is the Flux-native
+   resolution and the default, so the band brackets it (Flux degrades above it). */
 const clampInt = (raw, fallback) => {
   const n = Number(raw)
-  return Number.isFinite(n) ? Math.min(1280, Math.max(256, Math.round(n))) : fallback
+  return Number.isFinite(n) ? Math.min(1440, Math.max(256, Math.round(n))) : fallback
 }
 
 /* GET /api/images/generate?prompt=… — the ONE image endpoint the chat and the
@@ -31,8 +32,8 @@ router.get('/generate', async (req, res, next) => {
     if (isNsfwPrompt(prompt)) {
       return res.status(400).json({ error: { message: 'Adult/NSFW content is not allowed on Nexora.', type: 'invalid_request_error' } })
     }
-    const width = clampInt(req.query.width, 768)
-    const height = clampInt(req.query.height, 768)
+    const width = clampInt(req.query.width, 1024)
+    const height = clampInt(req.query.height, 1024)
 
     const { buffer, contentType } = await fetchGeneratedImage(prompt, { width, height })
     res.setHeader('Content-Type', contentType)

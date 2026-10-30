@@ -19,11 +19,15 @@
  *
  * The Hinglish tuning below is what the user hears on a Groq-only install (no
  * OpenAI speech key → the server /synth call 503s → we fall through here):
- * a slower rate so consonant clusters unstack, a slightly lower pitch so "her"
- * sounds grounded not cartoonish, and a minimal phonetic pass so en-IN voices
- * don't read "kyun" as "keween". Same rewrite list as the backend `tts.js` —
- * keep them in sync so the two paths don't drift apart.
+ * a rate that still sits under the server's `TTS_SPEED` for the same language
+ * (the browser engine needs more room than gpt-4o-mini-tts to unstack
+ * consonant clusters), a slightly lower pitch so "her" sounds grounded not
+ * cartoonish, and a minimal phonetic pass so en-IN voices don't read "kyun" as
+ * "keween". Same rewrite list as the backend `tts.js` — keep them in sync so
+ * the two paths don't drift apart.
  */
+
+import { respellCommonWords, respellKnownNames } from './namePronunciation.js'
 
 /* Well-known built-in voice display names across Windows / macOS / Chrome /
  * Android, grouped by the gender they sound. Matching is substring + lowercase,
@@ -107,25 +111,36 @@ export function getCachedVoices() {
  * "bil-kuhl" / "bill-cull"). So the chain is: native locale first, then
  * en-IN, then the rest. */
 export const TTS_LOCALE_CHAIN = {
-  en: ['en-US', 'en-GB', 'en-IN', 'en'],
+  /* An English reply used to start at en-US — an American voice reading "Awais"
+     "a-WAYS" and "comfortable" "comfor-table", the exact accent the user asked NOT
+     to hear. en-IN is now first everywhere: the same clear Indian-English diction
+     the pronunciation tables aim at, on a voice that already has those phonemes.
+     en-US stays in the chain as a rescue, because a machine with only an American
+     voice installed must still speak. */
+  en: ['en-IN', 'en-GB', 'en-US', 'en'],
   ur: ['ur', 'hi', 'en-IN', 'en-GB', 'en'],
   hinglish: ['hi', 'en-IN', 'en-GB', 'en'],
   auto: ['en-IN', 'hi', 'en-GB', 'en'],
 }
-/* Mixed-script replies need to breathe — the same sentence read at 1.05
- * through an en-IN voice is far harder to parse than one in the user's
- * native tongue. Hinglish drops to 0.78 (from 0.85, further from the
- * original 0.92) because the default English engine rushes consonant
- * clusters and the user cannot follow the reply. Urdu 0.74 is even slower
- * because the engine struggles more with Arabic-origin phonemes written in
- * Latin script. `auto` sits at 0.82 because most auto replies still contain
- * 30-50 % Latin Hindi. */
-const LANG_RATE = { en: 1.05, hinglish: 0.78, ur: 0.74, auto: 0.82 }
+/* Mixed-script replies still need to breathe, but the user asked for a
+ * livelier delivery, so every rate is raised roughly +0.1 from the previous
+ * tuning (Hinglish 0.78 → 0.88, Urdu 0.74 → 0.84, auto 0.82 → 0.92) while the
+ * relative ordering is preserved: Hinglish and Urdu stay under English because
+ * the default engine rushes consonant clusters on those scripts and the
+ * phonetic rewrite below adds syllable breaks that need time to land. If
+ * Hinglish starts garbling again, drop `hinglish` back toward 0.85 before
+ * touching anything else — that value is the one the engine is least able to
+ * read quickly. */
+const LANG_RATE = { en: 1.15, hinglish: 0.88, ur: 0.84, auto: 0.92 }
 export const MIXED_LANGUAGES = new Set(['hinglish', 'auto', 'ur'])
 /* Natural locale hint per reply language (the value we set on `utter.lang`
  * before we know which voice we're going to end up with; after picking the
  * voice we sync it to that voice's own tag). */
-export const TTS_NATURAL_LOCALE = { en: 'en-US', ur: 'ur-PK', hinglish: 'hi-IN', auto: 'en-IN' }
+/* Only the SYNTHESIS side moved to en-IN. The `REC_LOCALES` tables in
+ * VoiceCall.jsx / useWakeWord.js deliberately keep en-US for *listening* — that
+ * choice is about which engine transcribes a mixed sentence best, not about how the
+ * companion sounds, and the en-US recogniser has the widest coverage. */
+export const TTS_NATURAL_LOCALE = { en: 'en-IN', ur: 'ur-PK', hinglish: 'hi-IN', auto: 'en-IN' }
 
 /* Kept in lock-step with INDIC_REWRITES in backend/src/services/tts.js — the
  * backend does the same pass before hitting `gpt-4o-mini-tts`, so a user
@@ -236,17 +251,23 @@ function casePreservingSwap(match, replacement) {
     : replacement
 }
 /**
- * Speaker-facing phonetic pass for Roman-Hindi/Urdu. Applies ONLY to the
- * mixed-script languages — plain English replies are never touched, and the
- * function is idempotent on already-corrected text (the regexes are
- * anchored to the ORIGINAL spellings, so re-running it can't produce
- * "kay-un" or "kayayun").
+ * Speaker-facing phonetic pass. Two tables, both mirrored from the backend so the
+ * fallback voice and `gpt-4o-mini-tts` say the same word:
+ *  - names, corrected in EVERY language (an English reply can address "Awais" too);
+ *  - the commonly-mispronounced ENGLISH words, also every language — the one place
+ *    the old "never touch English" rule left a real defect in place, because an
+ *    en-IN/en-GB letter table reads `comfortable` and `February` exactly as spelled.
+ * The Roman-Hindi/Urdu rewrite list then runs on the mixed scripts only, so a plain
+ * English reply is still never re-ordered or re-vowelled by a rule meant for Hindi.
  */
 export function normalizeForSpeech(text, language) {
   const t = String(text || '')
   if (!t) return ''
-  if (language !== 'hinglish' && language !== 'ur' && language !== 'auto') return t
-  let out = t
+  /* Names first, then the English words: the two tables do not overlap, and doing
+     both before the Indic pass means a rewrite can never mask a word key. */
+  const withNames = respellCommonWords(respellKnownNames(t))
+  if (language !== 'hinglish' && language !== 'ur' && language !== 'auto') return withNames
+  let out = withNames
   for (const [re, rep] of INDIC_REWRITES) {
     out = out.replace(re, typeof rep === 'function'
       ? (...args) => casePreservingSwap(args[0], rep(...args))
@@ -287,8 +308,10 @@ export function configureUtterForSpeech(utter, voices, { language, gender } = {}
        which is what turned Latin Hindi into garble. */
     if (chosen.lang) utter.lang = chosen.lang
   }
-  /* Rate profile per language — see LANG_RATE above for the reasoning. */
-  utter.rate = LANG_RATE[language] ?? 1.05
+  /* Rate profile per language — see LANG_RATE above for the reasoning. The
+     1.1 fallback matches `en`, the most likely locale when the caller hands us
+     an unknown or missing language key. */
+  utter.rate = LANG_RATE[language] ?? 1.1
   /* Pitch: the pre-tune female value (1.05) made Aira sound cutesy on
      Windows voices like Zira/Hazel. Dropping to 0.98 keeps her clearly
      female but grounded — closer to how an adult Urdu/Hindi speaker sounds.

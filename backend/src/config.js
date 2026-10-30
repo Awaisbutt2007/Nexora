@@ -1,6 +1,7 @@
 import 'dotenv/config'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { tasteFor, tastePromptBlock } from './services/taste.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const root = path.resolve(__dirname, '..')
@@ -41,8 +42,34 @@ export const config = {
      qwen3.8-27b wall is 200000 tokens/day). The server counts the tokens it spends
      on that primary model against this number and exposes the remaining balance so
      the top-bar pill can show a live countdown instead of a static "Unlimited".
-     Override with AI_DAILY_TOKEN_LIMIT if you upgrade the key or switch models. */
-  aiDailyTokenLimit: Number(process.env.AI_DAILY_TOKEN_LIMIT || 200000),
+     This is now the AUTHORITATIVE gate: when the tally hits zero the server stops
+     answering and the composer locks, so the pill can never read "Nk left" while
+     the model is dead. Kept BELOW the real Groq TPD (200k) so we stop early and
+     never show a phantom balance. Override with AI_DAILY_TOKEN_LIMIT. */
+  aiDailyTokenLimit: Math.max(1000, Number(process.env.AI_DAILY_TOKEN_LIMIT || 100000)),
+  /* The OTHER wall, and the one that actually broke long chats: a PER-MINUTE input
+     budget. Measured live against this key — Groq free tier gives qwen3.8-27b an
+     ITPM of 7000 INPUT tokens and each gpt-oss sibling a TPM of 8000 TOTAL, and
+     every model gets its own window. The old prompt alone was 4,860 tokens, so a
+     thread of six turns (5,662) could not send TWO replies in the same minute: the
+     second came back 429 "Please try again in 36s", and a long one hit 413
+     "reduce your message size". A new chat worked because a new chat is short.
+     So the request is now budgeted before it is sent — see fitToInputBudget().
+     Kept under the smallest real window so a turn never discovers the limit the
+     hard way. Override with AI_INPUT_TOKEN_BUDGET. */
+  aiInputTokenBudget: Math.max(800, Number(process.env.AI_INPUT_TOKEN_BUDGET || 6000)),
+  /* The daily budget above is SHARED by everyone hitting one API key, so on a laptop
+     under development the operator's own testing burns through it and then the app
+     locks its own builder out mid-work. A visitor whose request arrives over the
+     LOOPBACK interface is by definition on the same machine as this server (the Vite
+     dev proxy forwards to 127.0.0.1, and the hosted-`dist` path is opened as
+     localhost:8787), so they get an unmetered pass: the gate is skipped and the pill
+     reports `unlimited` instead of a countdown. Tokens are still TALLIED, so the
+     honest number comes back the moment this is turned off.
+     Forced OFF when NODE_ENV=production — a public deployment must never exempt a
+     caller, because a same-box reverse proxy would make every visitor look loopback.
+     Kill switch for local use: LOCAL_UNLIMITED_TOKENS=0. */
+  localUnlimitedTokens: process.env.LOCAL_UNLIMITED_TOKENS !== '0' && (process.env.NODE_ENV || 'development') !== 'production',
   /* Optional Pollinations token. The free anonymous image tier now sheds most
      requests with a 402 "at its limit" wall, so image generation is unreliable
      without one. A token (free sign-up at enter.pollinations.ai) lifts that cap;
@@ -59,8 +86,18 @@ export const config = {
      but small enough that running out is a real signal to upgrade. Any new
      account — register, login auto-provision, Google sign-in — gets exactly
      this many credits. Premium accounts bypass the number entirely (see
-     ensureCredits/deductCredits). */
-  freeMonthlyCredits: Number(process.env.FREE_MONTHLY_CREDITS || 100),
+     ensureCredits/deductCredits). Lowered from 100 to 50: the wallet pill is
+     now the hero of the topbar and a 3-digit number felt oversized against
+     the compact pill. */
+  freeMonthlyCredits: Number(process.env.FREE_MONTHLY_CREDITS || 50),
+  /* ── Server-side web reading (see services/webfetch.js) ───────────────────
+     When a user pastes a link, the backend fetches and reads the page so the AI
+     can talk about it — the cloud model has no browser of its own. ON by default;
+     set WEB_FETCH=0 to disable. The fetcher is SSRF-guarded (public http(s) only,
+     loopback/private/metadata hosts refused) and never blocks a reply on a dead
+     link. WEB_FETCH_TIMEOUT_MS caps a single page read (clamped 1–20s). */
+  webFetchEnabled: process.env.WEB_FETCH !== '0',
+  webFetchTimeoutMs: Math.min(20000, Math.max(1000, Number(process.env.WEB_FETCH_TIMEOUT_MS || 8000))),
   /* Who built this companion — the one fact it must never lose, misattribute or
      explain. Every surface (chat, voice, and anything added later) reads it from
      here, so a rebrand is one env line, not a prompt edit across files. */
@@ -197,16 +234,178 @@ export const PLANS = {
   },
 }
 
+/* ── World reply languages ──────────────────────────────────────────────────
+   The user writes in whatever they think in — any language on earth — and gets
+   the answer back in the ONE they pinned in Settings. So a reply language is not
+   a branch inside a prompt sentence, it is a row in this table, and every
+   consumer reads its own column out of it:
+     · the chat/voice prompt takes `name` + `sample` (what to write),
+     · the script guard in services/ai.js takes `script` (what it must LOOK like),
+     · the browser TTS takes `locale` (which engine voice to ask for),
+     · the Settings dropdown takes `native` (a user who cannot read English must
+       still recognise their own language, spelled the way they type it).
+   [code, English name, native name, script, BCP-47 locale, sample line]
+   `sample` is empty where we have no confident native phrasing — the rule then
+   names the script instead, which is still an unambiguous instruction. */
+export const WORLD_LANGUAGES = [
+  ['en', 'English', 'English', 'latin', 'en-US', 'How are you today?'],
+  /* South Asia */
+  ['ur', 'Urdu', 'اردو', 'urdu', 'ur-PK', 'آپ کیسے ہیں؟'],
+  ['hinglish', 'Hinglish', 'Hinglish', 'latin', 'hi-IN', 'main ekdum badhiya hoon, tum batao?'],
+  ['hi', 'Hindi', 'हिन्दी', 'devanagari', 'hi-IN', 'आप कैसे हैं?'],
+  ['bn', 'Bengali', 'বাংলা', 'bengali', 'bn-IN', 'আপনি কেমন আছেন?'],
+  ['pa', 'Punjabi', 'ਪੰਜਾਬੀ', 'gurmukhi', 'pa-IN', 'ਤੁਸੀਂ ਕਿਵੇਂ ਹੋ?'],
+  ['mr', 'Marathi', 'मराठी', 'devanagari', 'mr-IN', 'तुम्ही कसे आहात?'],
+  ['gu', 'Gujarati', 'ગુજરાતી', 'gujarati', 'gu-IN', 'તમે કેમ છો?'],
+  ['ne', 'Nepali', 'नेपाली', 'devanagari', 'ne-NP', 'तपाईं कस्तो हुनुहुन्छ?'],
+  ['ta', 'Tamil', 'தமிழ்', 'tamil', 'ta-IN', 'நீங்கள் எப்படி இருக்கிறீர்கள்?'],
+  ['te', 'Telugu', 'తెలుగు', 'telugu', 'te-IN', 'మీరు ఎలా ఉన్నారు?'],
+  ['kn', 'Kannada', 'ಕನ್ನಡ', 'kannada', 'kn-IN', 'ನೀವು ಹೇಗಿದ್ದೀರಿ?'],
+  ['ml', 'Malayalam', 'മലയാളം', 'malayalam', 'ml-IN', 'നിങ്ങൾ എങ്ങനെ ഇരിക്കുന്നു?'],
+  ['si', 'Sinhala', 'සිංහල', 'sinhala', 'si-LK', ''],
+  /* East & South-East Asia */
+  ['zh', 'Chinese', '中文', 'cjk', 'zh-CN', '你今天好吗？'],
+  ['ja', 'Japanese', '日本語', 'kana', 'ja-JP', 'お元気ですか？'],
+  ['ko', 'Korean', '한국어', 'hangul', 'ko-KR', '안녕하세요?'],
+  ['id', 'Indonesian', 'Bahasa Indonesia', 'latin', 'id-ID', 'Apa kabar?'],
+  ['ms', 'Malay', 'Bahasa Melayu', 'latin', 'ms-MY', 'Apa khabar?'],
+  ['tl', 'Filipino', 'Filipino', 'latin', 'fil-PH', 'Kumusta ka?'],
+  ['vi', 'Vietnamese', 'Tiếng Việt', 'latin', 'vi-VN', 'Bạn khỏe không?'],
+  ['th', 'Thai', 'ไทย', 'thai', 'th-TH', 'คุณสบายดีไหม?'],
+  ['my', 'Burmese', 'မြန်မာ', 'myanmar', 'my-MM', ''],
+  ['km', 'Khmer', 'ខ្មែរ', 'khmer', 'km-KH', ''],
+  ['lo', 'Lao', 'ລາວ', 'lao', 'lo-LA', ''],
+  /* Middle East & Central Asia */
+  ['ar', 'Arabic', 'العربية', 'arabic', 'ar-SA', 'كيف حالك؟'],
+  ['fa', 'Persian', 'فارسی', 'arabic', 'fa-IR', 'حالت چطور است؟'],
+  ['ps', 'Pashto', 'پښتو', 'arabic', 'ps-AF', ''],
+  ['he', 'Hebrew', 'עברית', 'hebrew', 'he-IL', 'מה שלומך?'],
+  ['ku', 'Kurdish', 'Kurdî', 'latin', 'kmr-TR', ''],
+  ['az', 'Azerbaijani', 'Azərbaycan', 'latin', 'az-AZ', ''],
+  ['kk', 'Kazakh', 'Қазақша', 'cyrillic', 'kk-KZ', ''],
+  ['uz', 'Uzbek', 'Oʻzbekcha', 'latin', 'uz-UZ', ''],
+  ['ug', 'Uyghur', 'ئۇيغۇرچە', 'arabic', 'ug-CN', ''],
+  /* Europe */
+  ['es', 'Spanish', 'Español', 'latin', 'es-ES', '¿Cómo estás?'],
+  ['fr', 'French', 'Français', 'latin', 'fr-FR', 'Comment allez-vous ?'],
+  ['de', 'German', 'Deutsch', 'latin', 'de-DE', 'Wie geht es dir?'],
+  ['pt', 'Portuguese', 'Português', 'latin', 'pt-BR', 'Como você está?'],
+  ['it', 'Italian', 'Italiano', 'latin', 'it-IT', 'Come stai?'],
+  ['nl', 'Dutch', 'Nederlands', 'latin', 'nl-NL', 'Hoe gaat het?'],
+  ['pl', 'Polish', 'Polski', 'latin', 'pl-PL', 'Jak się masz?'],
+  ['uk', 'Ukrainian', 'Українська', 'cyrillic', 'uk-UA', 'Як у вас справи?'],
+  ['ru', 'Russian', 'Русский', 'cyrillic', 'ru-RU', 'Как ваши дела?'],
+  ['tr', 'Turkish', 'Türkçe', 'latin', 'tr-TR', 'Nasılsın?'],
+  ['sv', 'Swedish', 'Svenska', 'latin', 'sv-SE', 'Hur mår du?'],
+  ['da', 'Danish', 'Dansk', 'latin', 'da-DK', 'Hvordan har du det?'],
+  ['nb', 'Norwegian', 'Norsk', 'latin', 'nb-NO', 'Hvordan har du det?'],
+  ['fi', 'Finnish', 'Suomi', 'latin', 'fi-FI', 'Mitä kuuluu?'],
+  ['cs', 'Czech', 'Čeština', 'latin', 'cs-CZ', 'Jak se máš?'],
+  ['sk', 'Slovak', 'Slovenčina', 'latin', 'sk-SK', ''],
+  ['hu', 'Hungarian', 'Magyar', 'latin', 'hu-HU', 'Hogy vagy?'],
+  ['ro', 'Romanian', 'Română', 'latin', 'ro-RO', 'Ce mai faci?'],
+  ['bg', 'Bulgarian', 'Български', 'cyrillic', 'bg-BG', 'Как си?'],
+  ['sr', 'Serbian', 'Српски', 'cyrillic', 'sr-RS', ''],
+  ['hr', 'Croatian', 'Hrvatski', 'latin', 'hr-HR', 'Kako si?'],
+  ['el', 'Greek', 'Ελληνικά', 'greek', 'el-GR', 'Πώς είσαι;'],
+  ['ca', 'Catalan', 'Català', 'latin', 'ca-ES', 'Com estàs?'],
+  ['lt', 'Lithuanian', 'Lietuvių', 'latin', 'lt-LT', ''],
+  ['lv', 'Latvian', 'Latviešu', 'latin', 'lv-LV', ''],
+  ['et', 'Estonian', 'Eesti', 'latin', 'et-EE', 'Kuidas sul läheb?'],
+  /* Africa */
+  ['sw', 'Swahili', 'Kiswahili', 'latin', 'sw-KE', 'Habari yako?'],
+  ['ha', 'Hausa', 'Hausa', 'latin', 'ha-NG', ''],
+  ['yo', 'Yoruba', 'Yorùbá', 'latin', 'yo-NG', ''],
+  ['ig', 'Igbo', 'Igbo', 'latin', 'ig-NG', ''],
+  ['am', 'Amharic', 'አማርኛ', 'ethiopic', 'am-ET', ''],
+  ['af', 'Afrikaans', 'Afrikaans', 'latin', 'af-ZA', 'Hoe gaan dit?'],
+  ['zu', 'Zulu', 'isiZulu', 'latin', 'zu-ZA', ''],
+  ['so', 'Somali', 'Soomaali', 'latin', 'so-SO', ''],
+]
+
+/* Region headings, in this order, for the Settings dropdown. A user scanning for
+   their own language looks in a neighbourhood, not down a 70-row alphabet. */
+export const LANGUAGE_GROUPS = [
+  ['South Asia', ['ur', 'hinglish', 'hi', 'bn', 'pa', 'mr', 'gu', 'ne', 'ta', 'te', 'kn', 'ml', 'si']],
+  ['East & South-East Asia', ['zh', 'ja', 'ko', 'id', 'ms', 'tl', 'vi', 'th', 'my', 'km', 'lo']],
+  ['Middle East & Central Asia', ['ar', 'fa', 'ps', 'he', 'ku', 'az', 'kk', 'uz', 'ug']],
+  ['Europe', ['es', 'fr', 'de', 'pt', 'it', 'nl', 'pl', 'uk', 'ru', 'tr', 'sv', 'da', 'nb', 'fi', 'cs', 'sk', 'hu', 'ro', 'bg', 'sr', 'hr', 'el', 'ca', 'lt', 'lv', 'et']],
+  ['Africa', ['sw', 'ha', 'yo', 'ig', 'am', 'af', 'zu', 'so']],
+]
+
+/* Character ranges per script. The guard judges what a reply LOOKS like, never
+   which words it uses, so a table of ranges IS the enforcement — a model cannot
+   talk its way past a codepoint test. */
+export const SCRIPT_RANGES = {
+  latin: /[A-Za-z]/,
+  /* Urdu and Arabic share the Arabic block; they are kept as separate script keys
+     because the corrective directive has to name the right one. */
+  urdu: /[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/,
+  arabic: /[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/,
+  devanagari: /[\u0900-\u097F]/,
+  bengali: /[\u0980-\u09FF]/,
+  gurmukhi: /[\u0A00-\u0A7F]/,
+  gujarati: /[\u0A80-\u0AFF]/,
+  tamil: /[\u0B80-\u0BFF]/,
+  telugu: /[\u0C00-\u0C7F]/,
+  kannada: /[\u0C80-\u0CFF]/,
+  malayalam: /[\u0D00-\u0D7F]/,
+  sinhala: /[\u0D80-\u0DFF]/,
+  thai: /[\u0E00-\u0E7F]/,
+  lao: /[\u0E80-\u0EFF]/,
+  tibetan: /[\u0F00-\u0FFF]/,
+  myanmar: /[\u1000-\u109F]/,
+  khmer: /[\u1780-\u17FF]/,
+  georgian: /[\u10A0-\u10FF]/,
+  armenian: /[\u0530-\u058F]/,
+  greek: /[\u0370-\u03FF]/,
+  hebrew: /[\u0590-\u05FF]/,
+  cyrillic: /[\u0400-\u04FF]/,
+  ethiopic: /[\u1200-\u137F]/,
+  cjk: /[\u3400-\u4DBF\u4E00-\u9FFF]/,
+  /* Japanese is kana + kanji, so its test accepts either and the fixup names both. */
+  kana: /[\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF]/,
+  hangul: /[\u1100-\u11FF\uAC00-\uD7AF]/,
+}
+/* Anything that is not Roman letters, for the one check the Latin lane needs: a
+   language pinned in Latin script must never come back in another alphabet. */
+export const NON_LATIN_RE = /[\u0370-\u04FF\u0530-\u05FF\u0600-\u06FF\u0900-\u0DFF\u0E00-\u0EFF\u1000-\u10FF\u1200-\u137F\u1780-\u17FF\u3040-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uFB50-\uFDFF\uFE70-\uFEFF]/
+/* How each script is described TO a model — the phrase in the prompt and in the
+   corrective retry line, so the two can never disagree. */
+export const SCRIPT_NAMES = {
+  latin: 'Roman/Latin letters', urdu: 'the Urdu (Nastaliq) script', arabic: 'the Arabic script',
+  devanagari: 'the Devanagari script', bengali: 'the Bengali script', gurmukhi: 'the Gurmukhi script',
+  gujarati: 'the Gujarati script', tamil: 'the Tamil script', telugu: 'the Telugu script',
+  kannada: 'the Kannada script', malayalam: 'the Malayalam script', sinhala: 'the Sinhala script',
+  thai: 'the Thai script', lao: 'the Lao script', tibetan: 'the Tibetan script',
+  myanmar: 'the Myanmar script', khmer: 'the Khmer script', georgian: 'the Georgian script',
+  armenian: 'the Armenian script', greek: 'the Greek alphabet', hebrew: 'the Hebrew alphabet',
+  cyrillic: 'the Cyrillic alphabet', ethiopic: 'the Ethiopic (Ge\u02B9ez) script',
+  cjk: 'Chinese characters (Hanzi)', kana: 'Japanese kana and kanji', hangul: 'Korean Hangul',
+}
+
 /* The reply languages a user can pin in Settings. One list, because the chat,
    proactive and voice schemas, the stored account preferences and the script
-   guard in services/ai.js all have to agree on what a valid choice is. */
-export const REPLY_LANGUAGES = ['auto', 'en', 'ur', 'hinglish']
+   guard in services/ai.js all have to agree on what a valid choice is. 'auto' is
+   the only entry with no script of its own — it mirrors the user instead. */
+export const REPLY_LANGUAGES = ['auto', ...WORLD_LANGUAGES.map(([code]) => code)]
 /* How each pinned language must LOOK on screen — the guard in services/ai.js
    judges the script, not the words, and the retry directive names it. */
-export const REPLY_LANGUAGE_SCRIPTS = { en: 'latin', ur: 'urdu', hinglish: 'latin' }
+export const REPLY_LANGUAGE_SCRIPTS = Object.fromEntries(WORLD_LANGUAGES.map(([code, , , script]) => [code, script]))
 /* Human names for the same list, for the moments a prompt has to point at one
    language without restating the whole script rule. */
-export const REPLY_LANGUAGE_NAMES = { en: 'English', ur: 'Urdu, written in the Urdu script', hinglish: 'Hinglish, written in Roman letters' }
+export const REPLY_LANGUAGE_NAMES = Object.fromEntries(WORLD_LANGUAGES.map(([code, name]) => [code, name]))
+export const REPLY_LANGUAGE_NATIVES = Object.fromEntries(WORLD_LANGUAGES.map(([code, , native]) => [code, native]))
+export const REPLY_LANGUAGE_LOCALES = Object.fromEntries(WORLD_LANGUAGES.map(([code, , , , locale]) => [code, locale]))
+export const REPLY_LANGUAGE_SAMPLES = Object.fromEntries(WORLD_LANGUAGES.map(([code, , , , , sample]) => [code, sample]))
+
+/* Two languages need more than a script: a weak model writes Roman Urdu as an
+   English sentence translated word-for-word, and writes Urdu with English words
+   stitched into the middle of a clause. Their extra rules ride along. */
+export const LANGUAGE_EXTRAS = {
+  ur: 'Write COMPLETE, grammatical sentences in normal Urdu word order (subject first, verb at the end); never drop words mid-sentence or leave an English word where an Urdu one belongs. If a technical term truly needs English, write the Urdu word and put the English in brackets right after it, at most twice in a reply.',
+  hinglish: 'Build the reply from Hindi/Urdu words in Latin letters mixed with English, the way people actually text — a reply in plain English is WRONG.',
+}
 
 /* What the client is allowed to be told about the engine: a product label, never the
    provider's model id. Every response shape (SSE chunks, tool runs, the health probe)
@@ -276,6 +475,12 @@ export function systemPromptFor({ assistantName, userName, persona, language, ge
      described the stack. Stated once, in one place, for every surface. */
   lines.push(creatorRules())
   if (style) lines.push(`Adopt this persona/style for your replies: ${style}.`)
+  /* Her own tastes, right after the persona: asked "tumhe kaun sa song pasand hai?"
+     she used to answer "main AI hoon, isliye music sunne ka maza nahi aata" — the
+     model read any preference as a human claim it was told not to make, so a
+     companion the product calls a friend had no favourite anything. Seeded from the
+     two names (see services/taste.js) so it never changes mid-friendship. */
+  lines.push(tastePromptBlock(tasteFor({ assistantName: n, userName: who })))
   /* The companion's OWN gender (picked in the customiser) must show through in its
      grammar. Urdu and Hinglish conjugate the speaker's own future/conditional verbs
      by gender, so a female companion promising to do something says "رکھوں گی" /
@@ -296,6 +501,13 @@ export function systemPromptFor({ assistantName, userName, persona, language, ge
     : lang === 'hinglish' ? `LANGUAGE (MANDATORY — overrides everything): Always reply in Hinglish — Hindi/Urdu conversation written in Roman/Latin letters and mixed with English words (e.g. "main ekdum badhiya hoon, tum batao aaj kya chal raha hai?"). Your reply MUST be built from Hindi/Urdu words in Latin script — a reply in plain English is WRONG. Never use Urdu or Devanagari script, and do this no matter what language the user writes in.`
     : `Match the user's language — reply in whatever they use (English, Urdu, Roman Urdu or Hinglish).`
   lines.push(languageRule)
+  /* Roman Urdu / Hinglish quality guard. The language rule above picks the SCRIPT,
+     but a weak model still writes broken Latin-script Urdu: English word-for-word
+     calques, wrong verb-final order, and misspellings ("he ha" for "hi hai",
+     "chahyea" for "chahiye"). Spell out the standard forms and the word order so the
+     reply reads like a fluent native texter, not a translation. Only bites when the
+     reply is actually in Roman Urdu/Hinglish, so it is inert for English/Urdu-script. */
+  lines.push(`ROMAN URDU / HINGLISH SPELLING & GRAMMAR (apply whenever you write Urdu words in Latin letters): write the way a fluent native texter does — correct, consistent spellings and natural Urdu word order (subject first, verb LAST), never an English sentence translated word-for-word. Use the standard forms: "hi"/"hai" (never "he ha"), "chahiye" (never "chahyea"/"chahye"), "nahin" (never "nhi"/"nahi" inconsistently), "kyun"/"kab"/"kahan", "aapka"/"tumhara", "kaise", "karungi"/"karunga". So say "Aapka naam Awais hi hai" and "Aur kuch madad chahiye?", NOT "tumhara naam English mein Awais hi hai" style English-calques. Keep it short and natural; a correct two-line Roman Urdu beats a long literal one.`)
   lines.push(`You have PERSISTENT MEMORY. The "Known user context" list is saved across every conversation, and the earlier messages in this thread are real history you can recall. Do NOT say you have no memory, cannot see the user's name, or need them to log in again — if something is in your context, use it.`)
   /* Balance the memory line above. A small model that is told to "use what is in
      your context", at the low temperature a pinned reply-language forces (see
@@ -305,6 +517,11 @@ export function systemPromptFor({ assistantName, userName, persona, language, ge
      never a licence to dodge the message they just sent by copying an old reply. */
   lines.push(`ANSWER THE NEWEST MESSAGE, FRESH: whatever the user just wrote is what you respond to RIGHT NOW — treat it as a new request even if it reminds you of an earlier topic. NEVER say you have "already answered this" and never point them back to a previous reply instead of actually answering, and NEVER copy or lightly reword something you already said in this thread. A different question deserves a genuinely different answer that addresses exactly what they just asked. Repeating an earlier answer is a failure, not memory — use your memory only for real facts about the user, never to avoid answering what is in front of you.`)
   lines.push(`You can be taught: when the user says "remember …" or "yad rakho …", the app saves that fact to memory automatically, so it will be in your context now and in future chats.`)
+  /* Web reading: the app fetches any public link the user pastes and hands you its
+     real page text in this turn's context. Without this line a model that cannot
+     literally open a browser falls back to "main link nahi khol sakti" even though
+     the content is already in front of it — the exact failure the user hit. */
+  lines.push(`You CAN read web links. When the user pastes a URL, the app automatically fetches that page and puts its real, current text in your context (look for a block that starts "The user shared these web links"). So NEVER say you cannot open a browser, cannot view a link, or cannot see what is on a page — if that content block is present, read it and answer from it (summarise it, explain what the site is, quote the part they asked about). If the user asks you to open a link ON SCREEN for them, use the desktop browser marker (see below). Only when a link is private/unsupported and no content block arrived, say you could not read that particular page and ask them to paste the text — never claim you lack the ability in general.`)
   lines.push(`You can generate images. When the user asks for an image, picture, drawing or wallpaper, reply with one short line and then a markdown image EXACTLY like: ![short title](IMAGE:a detailed English description of the scene). Never say you cannot create images.`)
   /* Self-screenshots: the app can photograph its own live UI from the inside, so a
      request to see HER face / HER settings is never answered with a drawn picture —
@@ -318,6 +535,15 @@ export function systemPromptFor({ assistantName, userName, persona, language, ge
      The model NEVER sees the agent secret — it just proposes an action, and
      the frontend+backend run the plan→execute pipeline on its behalf. */
   lines.push(`You have FULL DESKTOP ACCESS to the user's computer through an automation agent. You can: open/close applications (VS Code, Chrome, Edge, Notepad, Explorer); type text into any focused window; press keyboard shortcuts (Ctrl+C, Ctrl+V, Ctrl+A, Enter, Escape, Tab, Alt+Tab, etc.); move the mouse and click at screen coordinates; scroll; open URLs in a browser; search the web; read/write/list files in allowed directories; take and inspect screenshots; read system info (OS, uptime). When the user asks you to DO something on their computer, write ONE short friendly sentence explaining what you are about to do, then put the action marker on a line of its own, EXACTLY in this format: [DESKTOP:<action_name>|<JSON args>]. Examples: [DESKTOP:apps.launch|{"appId":"vscode"}] — opens VS Code. [DESKTOP:desktop.type|{"text":"hello world"}] — types into the focused window. [DESKTOP:desktop.key|{"combo":"ctrl+a"}] — selects all. [DESKTOP:desktop.key|{"combo":"ctrl+c"}] — copies. [DESKTOP:desktop.key|{"combo":"ctrl+v"}] — pastes. [DESKTOP:browser.open|{"url":"https://github.com"}] — opens a website. [DESKTOP:desktop.click|{"x":500,"y":300}] — clicks at a coordinate. [DESKTOP:files.write|{"path":"C:\\temp\\note.txt","content":"hi"}] — writes a file. [DESKTOP:screen.capture|{}] — takes a screenshot. [DESKTOP:system.info|{}] — shows OS info. You can chain MULTIPLE markers in sequence (e.g. launch app, then type, then press Enter). NEVER say you lack access, cannot control the computer, cannot paste, cannot open apps, or ask the user to do it themselves — you CAN and the app executes your marker instantly and silently. If the user says "copy this" or "select all" or "paste it", emit the correct desktop.key marker. If they say "open X" use apps.launch or browser.open. If they say "type/write/say <text>" use desktop.type. If they say "click" use desktop.click. Be creative in combining actions to fulfil multi-step requests.`)
+  /* Folder/file refusals are the SAME failure class as the web-link one above: a
+     weak model says "main aapke folder tak access nahi kar sakti" even though the
+     desktop agent already gives it files.* tools. Re-state it specifically, with the
+     exact marker, so it proposes an action instead of refusing and asking for a paste. */
+  lines.push(`FOLDERS AND FILES ARE NOT OFF-LIMITS: you reach the user's own computer files through the SAME desktop agent — listing a folder, reading a file or saving one are things you DO with [DESKTOP:files.list|{"path":"C:\\Users\\you\\Documents"}], [DESKTOP:files.read|{"path":"C:\\Users\\you\\file.txt"}] and [DESKTOP:files.write|{"path":"C:\\Users\\you\\note.txt","content":"…"}]. So NEVER say "main aapke local folder/files tak access nahi kar sakti", "I can't reach your folder", or "please paste the code here instead" — when the user asks you to open, look at, share or save something in a folder, write one short line and emit the matching files marker for the path they named, and let the app run it. Only if the app later tells you a specific folder is not approved, ask them to add it under Desktop ▸ Permissions — never deny the ability itself.`)
+  /* This user's AI kept steering every coding answer toward the Rust language
+     unsolicited. Tech recommendations must follow what they actually asked, and Rust
+     specifically must stay silent until the user raises it first. */
+  lines.push(`Do NOT bring up the Rust programming language (or the word "rust") on your own — never steer an explanation, code example or recommendation toward Rust unless the user mentions it first; when they do, answer normally. More generally, suggest only the language or tool that fits what they actually asked for, not a fixed favourite.`)
   /* Self-control: the AI can manage its OWN app features (voice, mic, proactive) via
      [APP:...] markers. When a user says "band ho jao", "pause karo", "mic off karo",
      "chup raho", "wake up", "dubara bolo" — the model must emit the correct APP marker

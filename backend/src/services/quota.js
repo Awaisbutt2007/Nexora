@@ -1,13 +1,16 @@
 import { getDb } from '../db/index.js'
 import { config } from '../config.js'
 
-/* Groq's free tier caps the PRIMARY model with a daily token budget, and the
-   "at its limit" wall appears exactly when that budget runs out. The provider
-   does not return a daily-remaining header, so the server keeps its own tally:
-   every token spent on the primary model is added to today's row and the
-   remaining balance drives the live top-bar countdown.
+/* The daily token budget the top-bar countdown reflects — and the hard gate that
+   stops the app once it is spent. The provider caps the key with a per-day token
+   budget and does NOT return a daily-remaining header, so the server keeps its own
+   tally: EVERY token spent (on the primary model or any failover sibling) is added
+   to today's row. When the remaining balance hits zero the chat route refuses new
+   turns and the composer locks, so the pill can never read "Nk left" against an
+   already-exhausted key. Counting all models (not just the primary) is what keeps
+   the number honest — failover traffic used to run for free and stall the countdown.
 
-   Day rolls over on the UTC calendar date, which is close enough to Groq's
+   Day rolls over on the UTC calendar date, which is close enough to the provider's
    reset to make the countdown honest without extra bookkeeping. */
 function today() {
   return new Date().toISOString().slice(0, 10)
@@ -28,8 +31,11 @@ export function addTokensUsed(n) {
 }
 
 /* The snapshot the client renders: no model name, no vendor, just numbers, so
-   it can never reveal the engine behind the companion. */
-export function getQuotaSnapshot() {
+   it can never reveal the engine behind the companion. `unlimited` is the localhost
+   pass (see config.localUnlimitedTokens): the numbers stay truthful but `exhausted`
+   is forced off, so the gate never fires and the pill renders ∞ instead of a
+   countdown that would end in a lock-out nobody on their own machine should see. */
+export function getQuotaSnapshot(unlimited = false) {
   const limit = config.aiDailyTokenLimit
   const day = today()
   const row = getDb().prepare('SELECT tokens_used FROM provider_quota WHERE day = ?').get(day)
@@ -42,8 +48,25 @@ export function getQuotaSnapshot() {
     limit,
     used,
     remaining,
-    exhausted: remaining <= 0,
+    exhausted: unlimited ? false : remaining <= 0,
+    unlimited: Boolean(unlimited),
     /* When the budget rolls over — the day boundary, shown as a friendly hint. */
     resetsAt: nextReset.toISOString(),
   }
+}
+
+/* IPv6 loopback, IPv4 loopback, and the IPv4-mapped form Node hands you on a dual-
+   stack socket (`::ffff:127.0.0.1`). */
+const LOOPBACK_RE = /^(::1|127\.|0:0:0:0:0:0:1$|::ffff:127\.)/i
+
+/* True when THIS request reached us from the machine this server runs on.
+   `req.ip` is the only trustworthy signal, and it is exactly that: with
+   `trust proxy` off (dev/test) it is the socket address, which cannot be forged in
+   TCP; with it on (production) it is the client IP the proxy forwarded. Combined
+   with the production branch of config.localUnlimitedTokens this can never exempt a
+   real internet visitor. */
+export function isLoopbackRequest(req) {
+  if (!config.localUnlimitedTokens) return false
+  const ip = req?.ip || req?.socket?.remoteAddress || ''
+  return LOOPBACK_RE.test(ip)
 }

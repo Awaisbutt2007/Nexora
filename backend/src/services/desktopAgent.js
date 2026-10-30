@@ -41,8 +41,16 @@ export async function callAgent(route, { method = 'GET', body, timeoutMs = confi
     })
     const json = await res.json().catch(() => ({}))
     if (!res.ok) {
+      /* An action that RAN and FAILED is data, not a transport fault. The agent
+       * answers a failed action with `{ ok:false, status, reason }`, and `reason` is
+       * the one sentence the user needs ("the automation browser was closed", "Path
+       * is outside the approved directories"). Flattening that to `Agent responded
+       * 403` made a recoverable browser death read like a permission denial — and it
+       * disagreed with the paired-browser client (agentExecute in src/api/agent.js),
+       * which already passes such a body through as a result. */
+      if (json && typeof json === 'object' && 'ok' in json && (json.status || json.reason)) return json
       // pass the agent's own structured error through, preserving its status
-      const err = new Error(json?.error?.message || `Agent responded ${res.status}`)
+      const err = new Error(json?.error?.message || json?.reason || `Agent responded ${res.status}`)
       err.status = res.status
       err.type = json?.error?.type || 'desktop_agent_error'
       err.agentPayload = json

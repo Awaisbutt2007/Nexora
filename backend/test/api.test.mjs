@@ -35,6 +35,12 @@ process.env.AUTH_OPEN_MODE = '0'
    leaks in via dotenv, the bridge thinks it is live, and every disabled
    assertion flips from 503 to 502 (ECONNREFUSED on 127.0.0.1:8799). */
 process.env.DESKTOP_AGENT_SECRET = ''
+/* Pin the localhost token-pass OFF for the suite. This server is listened on
+   127.0.0.1 and every request here arrives from 127.0.0.1, so with the dev default
+   (ON) the daily-budget gate would silently never fire and any quota assertion would
+   pass vacuously. The exemption is proven explicitly below by flipping
+   config.localUnlimitedTokens at runtime. */
+process.env.LOCAL_UNLIMITED_TOKENS = '0'
 /* One-process mode: point the hosted-client folder at a throwaway "build" so `GET /` can
    be asserted to serve the APP (not the API docs) from the same origin as /api. */
 const TEST_CLIENT = path.join(os.tmpdir(), `nexora-client-${process.pid}`)
@@ -445,6 +451,52 @@ test('credits: Pro account with 0 remaining is NOT refused (unlimited override)'
   assert.equal(r.status, 200, 'premium bypasses ensureCredits regardless of stored count')
 })
 
+/* The daily token budget is now the AUTHORITATIVE gate the top-bar pill reflects:
+   once the tally reaches the limit the server must refuse NEW chat turns (both
+   streaming and one-shot) rather than answer while the pill still reads "Nk left"
+   against a spent key. The quota row is keyed by UTC day and global, so the test
+   writes it directly and cleans it up so nothing else in the suite sees an
+   exhausted budget. This is the fix for "limit full hai magar tokens abhi dikh
+   rahe hain" — the counter and the enforcement are now the same number. */
+test('quota: an exhausted daily token budget blocks new chat turns (stream + non-stream)', async () => {
+  const { token } = await newUser()
+  const { config } = await import('../src/config.js')
+  const day = new Date().toISOString().slice(0, 10)
+  dbHandle.prepare(
+    `INSERT INTO provider_quota (day, tokens_used) VALUES (?, ?)
+     ON CONFLICT(day) DO UPDATE SET tokens_used = excluded.tokens_used`,
+  ).run(day, config.aiDailyTokenLimit)
+
+  try {
+    const once = await api('POST', '/api/chat/completions', { token, body: { message: 'hi', stream: false } })
+    assert.equal(once.status, 429, 'one-shot turn is refused once the budget is spent')
+    assert.equal(once.json?.error?.type, 'quota_exhausted')
+    assert.ok(/limit|reset/i.test(once.json?.error?.message || ''), 'message explains the limit + reset')
+
+    const stream = await api('POST', '/api/chat/completions', { token, body: { message: 'hi', stream: true } })
+    assert.equal(stream.status, 200, 'SSE still opens with 200 so the client can read the error frame')
+    assert.match(stream.headers.get('content-type'), /text\/event-stream/)
+    assert.ok(/quota_exhausted/.test(stream.text), 'stream emits a quota_exhausted error frame')
+    assert.ok(stream.text.includes('[DONE]'), 'and terminates cleanly')
+  } finally {
+    dbHandle.prepare('DELETE FROM provider_quota WHERE day = ?').run(day)
+  }
+})
+
+/* The gate must NOT strand the app: a fresh day (no quota row) leaves the budget
+   un-exhausted so chat keeps working, and the /quota snapshot the pill renders
+   reports the full 100k with exhausted=false. */
+test('quota: an untouched budget is not exhausted and chat still streams', async () => {
+  const { token } = await newUser()
+  const { getQuotaSnapshot } = await import('../src/services/quota.js')
+  const snap = getQuotaSnapshot()
+  assert.equal(snap.exhausted, false, 'no quota row means full budget')
+  assert.equal(snap.remaining, snap.limit)
+  const r = await api('POST', '/api/chat/completions', { token, body: { message: 'hi', stream: true } })
+  assert.equal(r.status, 200)
+  assert.ok(!/quota_exhausted/.test(r.text), 'a healthy budget never trips the gate')
+})
+
 /* Streaming responses now hand the client the new wallet count on the
    final chunk (right before [DONE]) so the top-bar pill updates without
    waiting for /me. Without this the number looked frozen between reloads
@@ -578,6 +630,60 @@ test('desktop bridge: the new screen/desktop scopes are valid (reach the agent, 
   }
   const bad = await api('POST', '/api/desktop/permissions/grant', { token, body: { scope: 'not-a-scope' } })
   assert.equal(bad.status, 400)
+})
+
+test('desktop bridge: a failed ACTION is passed through as data, not flattened into "Agent responded <status>"', async () => {
+  /* The exact user-visible defect: they said "open YouTube for me", the agent's
+     automation browser had died, and the reply on screen was `⚠ Agent responded 403`.
+     The agent had actually said why ("Target page, context or browser has been
+     closed") in `{ ok:false, status:'failed', reason }` — but `callAgent` only read
+     `json.error.message`, so the truth was discarded and a browser crash was
+     reported as a PERMISSION denial. An action that ran and failed is a RESULT, so
+     it must survive the hop; a genuine error body must still reject. */
+  const http = await import('node:http')
+  const { config } = await import('../src/config.js')
+  const { desktopAgent } = await import('../src/services/desktopAgent.js')
+  const reason = 'youtube.com did not resolve — this machine has no route to it (check the connection or a DNS block).'
+  const fake = http.createServer((req, res) => {
+    if (req.url === '/actions/execute') {
+      res.writeHead(502, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ ok: false, status: 'failed', planId: 'run_test', reason }))
+      return
+    }
+    res.writeHead(403, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ error: { message: 'Agent token rejected', type: 'invalid_token' } }))
+  })
+  await new Promise((r) => fake.listen(0, '127.0.0.1', r))
+  const wasUrl = config.desktopAgentUrl
+  const wasSecret = config.desktopAgentSecret
+  config.desktopAgentUrl = `http://127.0.0.1:${fake.address().port}`
+  config.desktopAgentSecret = 'test-agent-secret'
+  try {
+    const ran = await desktopAgent.execute({ planId: 'run_test' })
+    assert.equal(ran.ok, false, 'a failed action RESOLVES instead of throwing')
+    assert.equal(ran.status, 'failed')
+    assert.equal(ran.reason, reason, "the agent's own sentence survives the hop")
+
+    /* A non-action error body is still an error — and the agent's message wins over
+       the generic fallback, which is what made the failure unreadable. */
+    let refused
+    try { await desktopAgent.plan({ action: 'browser.open' }) } catch (err) { refused = err }
+    assert.ok(refused, 'a real agent error still rejects')
+    assert.equal(refused.message, 'Agent token rejected')
+    assert.equal(refused.status, 403)
+    assert.equal(refused.type, 'invalid_token')
+
+    /* Full chain: the route hands the result back as a 200 so the chat can render
+       `result.reason` (the frontend's `result.ok === false` branch). */
+    const { token } = await newUser()
+    const r = await api('POST', '/api/desktop/execute', { token, body: { planId: 'run_test' } })
+    assert.equal(r.status, 200, 'the proxy does not invent an HTTP error for a ran action')
+    assert.equal(r.json.reason, reason)
+  } finally {
+    config.desktopAgentUrl = wasUrl
+    config.desktopAgentSecret = wasSecret
+    await new Promise((r) => fake.close(r))
+  }
 })
 
 test('stream cancellation: a pre-aborted signal produces no deltas (mock mode)', async () => {
@@ -918,10 +1024,50 @@ test('tts: emotion detection enriches the style spec and nudges speed', () => {
      doesn't fall flat on the ask. */
   const ask = tts.buildTtsInstructions({ language: 'hinglish', gender: 'female', emotionHint: 'Aap kaise hain?' })
   assert.match(ask.text, /rise naturally at the question mark/i, 'trailing question marks get a rising pitch instruction')
+  /* The rising lilt must NOT come with a "hold the syllable" instruction any
+     more — that phrasing made the engine drag the closing word ("raa-hee…"),
+     which the user reported as words being "latkaa hua". */
+  assert.doesNotMatch(ask.text, /hold the very last syllable/i, 'the question line lifts pitch without stretching a syllable')
   /* Plain statement: no emotion line appended, speed unchanged. */
   const plain = tts.buildTtsInstructions({ language: 'hinglish', gender: 'female', emotionHint: 'Main theek hoon.' })
   assert.equal(plain.speedDelta, 0)
   assert.doesNotMatch(plain.text, /laughing|soft and sincere|rise naturally/, 'calm replies keep the neutral spec')
+})
+
+test('tts: instruction-only names stay natural; GPM names get respelled', () => {
+  /* "Awais" is an INSTRUCTION_ONLY name — the user wants it said in ENGLISH
+     phonetics, not Roman Urdu. The text keeps "Awais" as-is and the model
+     gets an explicit instruction to say it in English. Respelling to "Ahwice"
+     made it sound like broken Roman English. "Aira" (GPM-only) still respells. */
+  const en = tts.prepareTextForSpeech('Haan Awais, kya chal raha hai?', { language: 'en' })
+  assert.match(en, /Awais/, 'instruction-only name stays in natural spelling')
+  assert.doesNotMatch(en, /Ahwice/, 'no Roman-English respelling in the text')
+  const hinglish = tts.prepareTextForSpeech('Ji Awais, bilkul theek hai.', { language: 'hinglish' })
+  assert.match(hinglish, /Awais/, 'Hinglish path also keeps the name natural')
+  const aira = tts.prepareTextForSpeech('Hello Aira, welcome!', { language: 'en' })
+  assert.match(aira, /Aaira/, 'GPM-only names still get text respelling')
+  const notAName = tts.prepareTextForSpeech('A waze of talking is not a name.', { language: 'en' })
+  assert.match(notAName, /waze/, 'the table matches whole words only, never a split')
+  /* The pronunciation hint fires from the names array (logged-in user). */
+  const ins = tts.buildTtsInstructions({ language: 'en', gender: 'female', emotionHint: 'Ji Zubair, done.', names: ['Awais', 'Zubair'] })
+  assert.match(ins.text, /"Zubair"/, 'unknown names get one pronunciation line')
+  assert.match(ins.text, /uh-WICE/, 'hint anchors on the common English rhyme "nice"')
+  assert.match(ins.text, /unvoiced S/, 'hint explicitly forbids the /z/ of "wise"')
+  /* The hint ALSO fires from TEXT scanning (demo user, developer name). */
+  const insDemo = tts.buildTtsInstructions({ language: 'hinglish', gender: 'female', emotionHint: 'Mera developer Awais ne banaya.', names: ['Demo'] })
+  assert.match(insDemo.text, /uh-WICE/, 'text-scan fires hint when name appears in text')
+})
+
+test('tts: every style spec carries the anti-drag pacing line', () => {
+  /* "rahii word ko bohat latkaa kr bol rahi h": the hyphenated phonetic
+     respellings ("naa-hee", "kar-oon-ghee") double as breath marks, and on
+     short helper words that reads as one drawn-out drag. The guard rides on
+     EVERY spec — including a custom env override — because stretching is a
+     pacing bug, not a style choice. */
+  const spec = tts.buildTtsInstructions({ language: 'hinglish', gender: 'female', emotionHint: 'Main sun rahi hoon.' })
+  assert.match(spec.text, /never stretch, drag or hold/i, 'the crisp-pacing guard is attached')
+  const q = tts.buildTtsInstructions({ language: 'hinglish', gender: 'female', emotionHint: 'Kya chal raha hai?' })
+  assert.match(q.text, /without stretching or holding any syllable/i, 'even the question lilt forbids the hold')
 })
 
 test('tts: synth accepts a language and still 503s on mock key (no leak)', async () => {
@@ -933,6 +1079,289 @@ test('tts: synth accepts a language and still 503s on mock key (no leak)', async
   const r = await api('POST', '/api/voice/synth', { token, body: { text: 'Aap kaise hain', language: 'hinglish', gender: 'female' } })
   assert.equal(r.status, 503)
   assert.equal(r.json.error.type, 'tts_unavailable')
+})
+
+/* ── Server-side web reading (services/webfetch.js) ─────────────────────
+ * The user's complaint: pasting a link got "main live browser nahi khol
+ * sakti". These pin the offline, security-critical parts — the SSRF guard
+ * (the backend must never be pointed at itself / loopback / cloud metadata)
+ * and the HTML→text digest. No network, so they run in mock/offline CI. */
+const web = await import('../src/services/webfetch.js')
+
+test('webfetch: SSRF guard refuses loopback, private, link-local and non-http', () => {
+  assert.equal(web.isSafeUrl('http://127.0.0.1:8799/x'), false, 'loopback agent port blocked')
+  assert.equal(web.isSafeUrl('http://localhost:3000/'), false, 'localhost blocked')
+  assert.equal(web.isSafeUrl('http://10.1.2.3/'), false, 'RFC1918 10/8 blocked')
+  assert.equal(web.isSafeUrl('http://192.168.0.1/'), false, 'RFC1918 192.168 blocked')
+  assert.equal(web.isSafeUrl('http://172.16.5.5/'), false, 'RFC1918 172.16 blocked')
+  assert.equal(web.isSafeUrl('http://169.254.169.254/latest/meta-data/'), false, 'cloud metadata blocked')
+  assert.equal(web.isSafeUrl('http://[::1]/'), false, 'IPv6 loopback blocked')
+  assert.equal(web.isSafeUrl('file:///etc/passwd'), false, 'file:// blocked')
+  assert.equal(web.isSafeUrl('https://example.com/'), true, 'public https allowed')
+})
+
+test('webfetch: extractUrls finds, cleans and de-duplicates links', () => {
+  const found = web.extractUrls('dekho https://claude.ai/new or https://claude.ai/new, phir http://a.co/x) done.')
+  assert.deepEqual(found, ['https://claude.ai/new', 'http://a.co/x'], 'dedup + trailing punct/comma stripped')
+  assert.deepEqual(web.extractUrls('no links here'), [], 'plain text yields nothing')
+})
+
+test('webfetch: htmlToText strips scripts/styles/tags and decodes entities', () => {
+  const { title, text } = web.htmlToText('<html><head><title>A &amp; B</title><style>.x{color:red}</style></head><body><script>var secret=1</script><p>Hello&nbsp;<b>world</b></p>©</body></html>')
+  assert.equal(title, 'A & B', 'title decoded')
+  assert.ok(!/secret|color:red/.test(text), 'script/style content dropped')
+  assert.match(text, /Hello world/, 'tags removed, nbsp became space')
+  assert.match(text, /©/, 'entity decoded')
+})
+
+test('webfetch: buildWebContext returns empty for messages with no public link', async () => {
+  /* A no-URL turn must add zero latency and zero context. */
+  assert.equal(await web.buildWebContext('hello there, kaise ho?'), '')
+  /* A private/loopback link must be refused, not fetched. */
+  assert.equal(await web.buildWebContext('check http://127.0.0.1:8799/admin'), '')
+})
+
+/* ── desktop-agent entitlement (cloud web app + local agent pairing gate) ────
+   The local agent calls this OUTBOUND with the customer's JWT before it mints a
+   client token, so only a real signed-in PAID account can drive a browser. ── */
+const ENTITLE = '/api/desktop-agent/entitlement'
+
+test('desktop-agent entitlement: refuses an unsigned request (401)', async () => {
+  const r = await api('GET', ENTITLE)
+  assert.equal(r.status, 401)
+  assert.equal(r.json.error.type, 'auth_error')
+})
+
+test('desktop-agent entitlement: a fresh FREE account is not entitled', async () => {
+  const { token } = await newUser()
+  const r = await api('GET', ENTITLE, { token })
+  assert.equal(r.status, 200)
+  assert.equal(r.json.ok, true)
+  assert.equal(r.json.entitled, false)
+  assert.equal(r.json.plan, 'free')
+  assert.equal(r.json.isPremium, false)
+})
+
+test('desktop-agent entitlement: a PAID (premium) account IS entitled', async () => {
+  const { token, user } = await newUser()
+  // Flip the account to a paid plan the way the billing flow would, then re-check.
+  dbHandle.prepare('UPDATE users SET plan = ?, is_premium = 1 WHERE id = ?').run('monthly_pro', user.id)
+  const r = await api('GET', ENTITLE, { token })
+  assert.equal(r.status, 200)
+  assert.equal(r.json.entitled, true)
+  assert.equal(r.json.plan, 'monthly_pro')
+  assert.equal(r.json.isPremium, true)
+  assert.equal(r.json.userId, user.id)
+})
+
+/* ── the localhost token pass ───────────────────────────────────────────────
+   The daily provider budget is shared by ONE API key, so the person building this app
+   must not be locked out of their own laptop by their own testing. Every request in
+   this suite already arrives over loopback, so both halves are exercised by moving the
+   runtime flag: OFF (how the public internet is served) must 429, ON (a local device)
+   must keep answering and report `unlimited` so the pill shows ∞. */
+test('quota: an exhausted budget blocks the world but never a loopback device', async () => {
+  const { token } = await newUser()
+  const { config } = await import('../src/config.js')
+  const quota = await import('../src/services/quota.js')
+  const wasOn = config.localUnlimitedTokens
+  const day = new Date().toISOString().slice(0, 10)
+  const spentBefore = dbHandle.prepare('SELECT tokens_used FROM provider_quota WHERE day = ?').get(day)?.tokens_used || 0
+  quota.addTokensUsed(config.aiDailyTokenLimit + 1000)
+  try {
+    /* Half 1 — the gate is real for anyone who is not on this machine. */
+    config.localUnlimitedTokens = false
+    assert.equal(quota.getQuotaSnapshot().exhausted, true, 'the budget reads as spent')
+    assert.equal(quota.isLoopbackRequest({ ip: '127.0.0.1' }), false, 'flag off → nobody is exempt')
+    const blocked = await api('POST', '/api/chat/completions', { token, body: { message: 'hi', stream: false } })
+    assert.equal(blocked.status, 429, 'a non-local visitor is refused')
+    assert.equal(blocked.json.error.type, 'quota_exhausted')
+
+    /* Half 2 — the same exhausted budget must not stop a local device. */
+    config.localUnlimitedTokens = true
+    assert.equal(quota.isLoopbackRequest({ ip: '127.0.0.1' }), true, 'ipv4 loopback')
+    assert.equal(quota.isLoopbackRequest({ ip: '::1' }), true, 'ipv6 loopback')
+    assert.equal(quota.isLoopbackRequest({ ip: '::ffff:93.184.216.34' }), false, 'a public ip is never loopback')
+    const q = await api('GET', '/api/chat/quota', { token })
+    assert.equal(q.json.unlimited, true, 'the client is told this session is unmetered')
+    assert.equal(q.json.exhausted, false, 'so the composer never locks')
+    assert.equal(q.json.remaining, 0, 'but the honest number is still reported')
+    const ok = await api('POST', '/api/chat/completions', { token, body: { message: 'hi', stream: false } })
+    assert.equal(ok.status, 200, 'a local turn still answers')
+    assert.equal(ok.json.providerQuota?.unlimited, true, 'and the reply keeps the flag')
+  } finally {
+    config.localUnlimitedTokens = wasOn
+    dbHandle.prepare('UPDATE provider_quota SET tokens_used = ? WHERE day = ?').run(spentBefore, day)
+  }
+})
+
+/* ── what a turn costs ──────────────────────────────────────────────────────
+   One spoken sentence used to burn 7-8k tokens: every turn re-sent the ~4.5k-token
+   text prompt AND the whole thread. A `channel:'voice'` turn now answers from the
+   compact spoken sheet, and history is a window rather than a transcript. */
+test('voice channel: uses the compact spoken prompt, not the text-only rules', async () => {
+  const { buildMessages } = await import('../src/services/ai.js')
+  const ctx = { assistantName: 'Aira', userName: 'Awais', language: 'hinglish', gender: 'female' }
+  const msg = (channel) => buildMessages([{ role: 'user', content: 'hi' }], [], { ...ctx, channel })[0].content
+  const text = msg('text')
+  const voice = msg('voice')
+
+  assert.match(text, /\[DESKTOP:/, 'the text prompt keeps the desktop markers')
+  assert.ok(!voice.includes('[DESKTOP:') && !voice.includes('[APP:'),
+    'a spoken reply must never be told to emit markers the TTS would read aloud')
+  assert.ok(!/emoji/i.test(voice), 'no "use emojis generously" in a reply nobody reads visually')
+  assert.ok(voice.length < text.length / 3, `voice sheet must be a fraction of the text prompt (${voice.length} vs ${text.length})`)
+
+  /* The rules that must survive the trim: who built her, the pinned language, and
+     the feminine grammar the user hears in every Urdu sentence. */
+  assert.match(voice, /Awais/, 'the creator rule survives')
+  assert.match(voice, /Hinglish/, 'the pinned reply language survives')
+  assert.match(voice, /rakhoongi/, 'the gender grammar survives')
+  assert.match(voice, /1 to 3 short sentences/, 'the spoken length rule survives')
+
+  /* Memories ride inside the spoken sheet — appended once, not twice. */
+  const withMem = buildMessages([{ role: 'user', content: 'hi' }], [{ key: 'city', value: 'Lahore' }], { ...ctx, channel: 'voice' })[0].content
+  assert.equal(withMem.split('Lahore').length - 1, 1, 'a memory is listed exactly once')
+})
+
+test('trimHistory: keeps the newest turns inside the budget, never the last one', async () => {
+  const { trimHistory } = await import('../src/routes/chat.js')
+  const turns = Array.from({ length: 40 }, (_, i) => ({ role: i % 2 ? 'assistant' : 'user', content: `t${i} ${'x'.repeat(50)}` }))
+  const w = trimHistory(turns, { maxTurns: 8, maxChars: 200 })
+  assert.equal(w[w.length - 1].content, turns[turns.length - 1].content, 'the newest turn always survives')
+  assert.ok(w.length <= 8 && w.length > 1, `window is capped, got ${w.length}`)
+  assert.ok(w.every((t, i) => t.content === turns[turns.length - w.length + i].content), 'the window is contiguous and in order')
+  /* An oversized newest turn alone must not be trimmed away — that would send an
+     empty thread and answer nothing. */
+  assert.equal(trimHistory([{ role: 'user', content: 'y'.repeat(5000) }], { maxTurns: 8, maxChars: 200 }).length, 1)
+  /* A picture costs what it actually bills, not its caption length. */
+  const pic = [{ role: 'user', content: 'dekho', images: ['data:image/png;base64,AAA'] }, { role: 'user', content: 'latest' }]
+  assert.equal(trimHistory(pic, { maxTurns: 8, maxChars: 5000 }).length, 1, 'one image turn eats the budget')
+})
+
+/* ── pronunciation ──────────────────────────────────────────────────────────
+   "Awais" was spoken "awiys" and `comfortable` as "com-for-table" — the data to fix
+   both existed, but only inside tts.js, and the realtime (Talk) surface has no text
+   pass at all, so it never saw any of it. One table now feeds all three surfaces. */
+test('pronunciation: the realtime voice is told how to say a name and a hard word', async () => {
+  const { buildVoiceInstructions } = await import('../src/services/realtime.js')
+  const spoken = buildVoiceInstructions({ assistantName: 'Aira', userName: 'Awais', gender: 'female' })
+  assert.match(spoken, /Pronunciation/, 'the spoken sheet has its own pronunciation section')
+  assert.match(spoken, /uh-WICE/, 'the name anchor reaches the voice that used to guess')
+  assert.match(spoken, /unvoiced S/, 'and it still forbids the /z/ of "wise"')
+  assert.match(spoken, /"comfortable" = KUMF-ter-bul/, 'the classics are named even with no turn text')
+  assert.match(spoken, /never spell a word out letter by letter/i, 'diction rule, not just a word list')
+  /* A renamed companion must not be mispronounced either — the hint is generated
+     from the session's own names, not from a hard-coded string. */
+  const zara = buildVoiceInstructions({ assistantName: 'Aira', userName: 'Zubair' })
+  assert.ok(!/"Zubair"/.test(zara), 'a name outside the table is not invented into a phonetics line')
+})
+
+test('pronunciation: the server TTS gets per-turn words without mangling its text', async () => {
+  const { speechHintsText, respellWords, WORD_SPEAK } = await import('../src/services/pronunciation.js')
+  /* A word that is not one of the standing classics is only named when it appears. */
+  assert.match(speechHintsText('Do you take coffee?', []), /"coffee" = KAW-fee/, 'the turn text arms a specific word')
+  assert.ok(!speechHintsText('Kya chal raha hai?', []).includes('"coffee"'), 'a word not in play is not listed')
+  assert.match(speechHintsText('tell me about Awais', []), /uh-WICE/, 'a name inside the text is caught without a names array')
+  /* The text-level pass (browser engines) is case-preserving and idempotent — the
+     server normalises and the client may normalise again. */
+  const once = respellWords('Wednesday is comfortable, but the Vegetable market shuts.')
+  assert.match(once, /Wenz-day/, 'sentence-initial capital survives the swap')
+  assert.match(once, /kumf-ter-bul/, 'the word is respelled')
+  assert.match(once, /the Vet-er-bel/, 'mixed case keeps its leading capital only')
+  assert.equal(respellWords(once), once, 're-spelling an already-spelled line is a no-op')
+  /* The two forms are deliberately different: a grapheme table gets lowercase
+     syllable breaks (capitals there can read as an acronym), a neural voice gets a
+     capitalised stress it can actually interpret. */
+  for (const [word, { respell, say }] of Object.entries(WORD_SPEAK)) {
+    assert.equal(respell, respell.toLowerCase(), `${word}: the GPM form stays lowercase`)
+    assert.ok(/[A-Z]/.test(say), `${word}: the spoken anchor marks its stressed syllable`)
+  }
+  /* gpt-4o-mini-tts follows instructions and over-articulates a hyphenated respelling,
+     so the server must keep English words in the text exactly as written. */
+  const en = tts.prepareTextForSpeech('February is comfortable here.', { language: 'en' })
+  assert.equal(en, 'February is comfortable here.', 'the neural path is told, never re-spelled')
+  assert.ok(Object.keys(WORD_SPEAK).length >= 25, 'the table has to actually cover the class of words')
+})
+
+test('pronunciation: the chosen accent is clear Indian-English on every surface', async () => {
+  /* The user picked the Kanchan-style accent, so "American first" must not creep
+     back in through a locale chain or a style spec. */
+  const { TTS_LOCALE_CHAIN, TTS_NATURAL_LOCALE } = await import('../../src/voiceSelect.js')
+  assert.equal(TTS_LOCALE_CHAIN.en[0], 'en-IN', 'an English reply starts on an Indian-English voice')
+  assert.ok(TTS_LOCALE_CHAIN.en.includes('en-US'), 'the American voice stays as a rescue, not a preference')
+  assert.equal(TTS_NATURAL_LOCALE.en, 'en-IN', 'the pre-voice locale hint agrees with the chain')
+  assert.match(tts.buildTtsInstructions({ language: 'en', gender: 'female' }).text, /Indian-English/, 'the server TTS spec stays Indian-English')
+  const { buildVoiceInstructions } = await import('../src/services/realtime.js')
+  assert.match(buildVoiceInstructions({ assistantName: 'Aira' }), /Indian-English dictionary teacher/, 'and so does the Talk voice')
+})
+
+test('pronunciation: the browser mirror cannot drift from the backend table', async () => {
+  /* The frontend has its own copy because Vite and the Express server share no
+     module graph. That duplication is only safe while a test reads both. */
+  const { WORD_SPEAK, NAME_RESPELLINGS } = await import('../src/services/pronunciation.js')
+  const browser = await import('../../src/namePronunciation.js')
+  const back = Object.keys(WORD_SPEAK).sort()
+  const front = Object.keys(browser.WORD_RESPPELLINGS).sort()
+  assert.deepEqual(front, back, 'the two English-word tables must hold the same keys')
+  for (const [word, { respell }] of Object.entries(WORD_SPEAK)) {
+    assert.equal(browser.WORD_RESPPELLINGS[word], respell, `"${word}" must be said the same way on both paths`)
+  }
+  assert.deepEqual(Object.keys(browser.NAME_RESPPELLINGS).sort(), Object.keys(NAME_RESPELLINGS).sort(), 'same name table on both paths')
+  /* The browser has no instruction lever, so every name needs a spelled form there. */
+  for (const [name, form] of Object.entries(NAME_RESPELLINGS)) {
+    assert.equal(typeof form, 'string', `${name} needs a GPM form`)
+    assert.ok(form.length, `${name} must not have an empty respelling`)
+  }
+})
+
+/* ── the companion's own tastes ──────────────────────────────────────────────
+   "tumha kon sa song pasand ha?" got "main toh AI hoon, isliye music sunne ka maza
+   nahi aata" — the honesty rule read any preference as a human claim, so a companion
+   the product sells as a friend had no favourite song, fruit or colour. She now has a
+   seeded profile on every surface, and the rule says naming a taste is not a claim. */
+test('taste: every companion has a full set of favourites and it never drifts', async () => {
+  const { tasteFor, TASTE_FIELDS } = await import('../src/services/taste.js')
+  const aira = tasteFor({ assistantName: 'Aira', userName: 'Awais' })
+  for (const field of TASTE_FIELDS) {
+    assert.ok(typeof aira[field] === 'string' && aira[field].length > 1, `${field} must have a value, got "${aira[field]}"`)
+    assert.ok(!/\s{2,}/.test(aira[field]) && aira[field] === aira[field].trim(), `${field} is cleanly written`)
+  }
+  /* Stability is the whole point of seeding instead of picking randomly per turn. */
+  assert.deepEqual(tasteFor({ assistantName: 'aira ', userName: 'AWAIS' }), aira, 'the seed is case/space-insensitive, so a reply cannot lose its own favourite')
+  const other = tasteFor({ assistantName: 'Zara', userName: 'Sana' })
+  assert.notDeepEqual(other, aira, 'a different companion is not the same canned personality')
+})
+
+test('taste: the chat prompt carries her favourites and forbids the "I am an AI" dodge', async () => {
+  const { tasteFor } = await import('../src/services/taste.js')
+  const { systemPromptFor } = await import('../src/config.js')
+  const taste = tasteFor({ assistantName: 'Aira', userName: 'Awais' })
+  const prompt = systemPromptFor({ assistantName: 'Aira', userName: 'Awais', language: 'hinglish' })
+  assert.match(prompt, /YOUR OWN TASTES/, 'the profile is in the system prompt')
+  assert.ok(prompt.includes(taste.song), 'and the actual favourite song, not a placeholder')
+  assert.ok(prompt.includes(taste.fruit) && prompt.includes(taste.colour), 'fruit and colour ride along — the classes the user named')
+  assert.match(prompt, /isliye mujhe kuch pasand nahi/, 'the exact non-answer she gave is quoted and forbidden')
+  assert.match(prompt, /never recite this list unprompted/i, 'she must not read the profile out loud every turn')
+  assert.match(prompt, /memory wins/, 'a taste the user taught her beats the seeded one')
+})
+
+test('taste: the Talk voice agrees with the chat prompt, in budget', async () => {
+  const { buildVoiceInstructions } = await import('../src/services/realtime.js')
+  const { tasteFor } = await import('../src/services/taste.js')
+  const spoken = buildVoiceInstructions({ assistantName: 'Aira', userName: 'Awais', gender: 'female' })
+  const taste = tasteFor({ assistantName: 'Aira', userName: 'Awais' })
+  assert.ok(spoken.includes('YOUR OWN TASTES') && spoken.includes(taste.song), 'a call answers with the same favourite song a chat turn does')
+  /* The line that made her deflect, now explicitly carved out — the two rules sit
+     next to each other or the model obeys the stricter one and stays bland. */
+  assert.match(spoken, /FAVOURITE is a preference, not a claimed human experience/, 'honesty no longer forbids having a taste')
+  assert.match(spoken, /Never answer a "what do you like\?" question by saying you cannot like things/i)
+  /* Fields may be added; prose may not. This block is re-sent as context on every turn
+     of a call, so its own cost is the thing worth locking — the whole-sheet budget lives
+     in security.test.mjs. */
+  const block = (await import('../src/services/taste.js')).tastePromptBlock(taste, { spoken: true })
+  assert.ok(block.length < 780, `the spoken taste block is ${block.length} chars — add a field to SPOKEN_LABELS, do not add sentences`)
+  assert.ok(!block.includes('Pasand ka'), 'the spoken form uses the short labels, not the text-prompt ones')
 })
 
 

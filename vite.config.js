@@ -21,6 +21,25 @@ const apiProxy = Object.fromEntries(
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
-  server: { proxy: apiProxy },
+  server: {
+    proxy: apiProxy,
+    /* The dev server only needs to hot-reload src/, index.html and public/. It must NOT
+       recurse into browser-profile or runtime-state folders that live inside the repo:
+       their SQLite/journal files (Cookies, Cookies-journal, Sessions…, the .db-wal sidecars)
+       are held EXCLUSIVE-LOCKED by the running browser / sqlite, so watching them throws
+       `EBUSY: resource busy or locked` and floods the terminal. The desktop agent is a
+       separate app (started by dev:agent), so it is ignored wholesale too. */
+    watcher: {
+      ignored: [
+        '**/.tmp-*',              // stray browser temp profiles dropped in the repo root
+        '**/*-profile/**',        // .tmp-edge-profile, desktop-agent/browser-profile, …
+        '**/desktop-agent/**',    // the local agent has its own --watch process
+        '**/backend/data/**',     // node:sqlite db + -wal / -shm runtime files
+        '**/backend/uploads/**',  // user media
+        '**/audit/**',
+        '**/screenshots/**',
+      ],
+    },
+  },
   preview: { proxy: apiProxy },
 })

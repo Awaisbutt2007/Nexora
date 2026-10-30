@@ -457,11 +457,16 @@ export async function logVoiceTurn(token, { conversationId, userText, assistantT
  *  of credits, 429 = rate limit). `err.status` matches the HTTP code; `err.type`
  *  is the backend's error.type when one was sent. A 200 always resolves with a
  *  Blob (audio/mpeg) — an empty body is treated as a provider failure. */
-export async function synthesizeSpeech(token, { text, language, gender, voice }) {
+export async function synthesizeSpeech(token, { text, language, gender, voice, names }) {
+  /* `names` is the spoken-name hint list (see the synth schema server-side):
+     the engine misreads a South-Asian name through its English phoneme
+     table, and the text-respell + instruction fix needs to know the names. */
+  const payload = { text, language, gender, voice: voice || undefined }
+  if (names?.length) payload.names = names
   const res = await fetch(`${API_BASE}/api/voice/synth`, {
     method: 'POST',
     headers: authHeaders(token),
-    body: JSON.stringify({ text, language, gender, voice: voice || undefined }),
+    body: JSON.stringify(payload),
   })
   if (!res.ok) {
     const data = await res.json().catch(() => ({}))
@@ -496,6 +501,10 @@ export async function chatOnce(token, { message, conversationId = null, assistan
       message,
       conversationId,
       stream: false,
+      /* Tells the server this is a SPOKEN turn, so it answers from the compact voice
+         instruction sheet with a short look-back instead of the ~4.5k-token text
+         prompt — a call used to cost 7-8k tokens per sentence for that reason. */
+      channel: 'voice',
       assistantName: assistantName || undefined,
       persona: persona || undefined,
       gender: gender || undefined,

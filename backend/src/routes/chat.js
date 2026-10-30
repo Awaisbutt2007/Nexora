@@ -8,10 +8,12 @@ import { getDb, nowIso } from '../db/index.js'
 import { requireAuth, sanitizeUser } from '../middleware/auth.js'
 import { aiLimiter } from '../middleware/rateLimit.js'
 import { completeChat, estimateCredits, streamChatCompletion } from '../services/ai.js'
-import { detectImageRequest, imageProxyPath, isNsfwPrompt, isSelfUiRequest } from '../services/images.js'
+import { detectImageRequest, imageProxyPath, isNsfwPrompt, isSelfUiRequest, refineImagePromptWithLlm } from '../services/images.js'
+import { buildWebContext } from '../services/webfetch.js'
 import { safeProviderMessage } from '../services/providerErrors.js'
 import { deductCredits, ensureCredits } from '../services/credits.js'
-import { getQuotaSnapshot } from '../services/quota.js'
+import { getQuotaSnapshot, isLoopbackRequest } from '../services/quota.js'
+import { maybeReflectOnConversation } from '../services/selfReflect.js'
 import { titleFromPrompt } from './conversations.js'
 
 const router = Router()
@@ -20,8 +22,8 @@ router.use(requireAuth)
 /* The primary model's remaining daily token budget, so the top-bar pill can show
    a live countdown instead of a static "Unlimited". Numbers only — no model, no
    vendor — so it can never reveal the engine behind the companion. */
-router.get('/quota', (_req, res) => {
-  res.json(getQuotaSnapshot())
+router.get('/quota', (req, res) => {
+  res.json(getQuotaSnapshot(isLoopbackRequest(req)))
 })
 
 const chatSchema = z.object({
@@ -41,6 +43,10 @@ const chatSchema = z.object({
   persona: z.string().trim().max(400).optional(),
   gender: z.enum(['female', 'male']).optional(),
   language: z.enum(REPLY_LANGUAGES).optional().default('auto'),
+  /* Which surface sent the turn. `voice` (the browser-voice fallback in
+     VoiceCall.jsx) is answered from the compact spoken instruction sheet with a
+     short look-back instead of the ~4.5k-token text prompt — see buildMessages. */
+  channel: z.enum(['text', 'voice']).optional().default('text'),
   stream: z.boolean().optional().default(true),
   /* Paths returned by POST /images — a turn may carry up to 4 reference pics. */
   images: z.array(z.string().trim().regex(/^\/uploads\/img_[\w.-]+$/)).max(4).optional(),
@@ -145,6 +151,42 @@ Answer that reply — stay tied to the message they quoted.)\n\n${out[i].content
   return out
 }
 
+/* Web reading: append the fetched page digest to the newest user turn so it rides
+   into the model right after the message that named the link. Mutates the array
+   in place (it is a fresh copy built per request) and is model-only — the saved
+   transcript still holds exactly what the user typed. */
+function attachWebContext(history, webContext) {
+  if (!webContext) return history
+  for (let i = history.length - 1; i >= 0; i -= 1) {
+    if (history[i].role !== 'user') continue
+    history[i] = { ...history[i], content: `${history[i].content}\n\n${webContext}` }
+    break
+  }
+  return history
+}
+
+/* Sliding window over a thread. The history query used to hand the model the ENTIRE
+   conversation on every turn, so turn 15 cost several times what turn 1 did and one
+   spoken sentence burned 7-8k tokens. Keep the newest turns inside a character budget
+   instead: durable facts already live in the memory block, so an old turn is the
+   cheapest thing on the wire. The newest turn is always kept even if it alone breaks
+   the budget — dropping it would send an empty thread. Pictures are weighted rather
+   than measured by caption length, because a re-inlined base64 image costs ~1.5k
+   tokens of its own and a caption is a few characters. */
+const IMAGE_TURN_WEIGHT = 6000 /* char-equivalent of one attached picture */
+export function trimHistory(turns, { maxTurns, maxChars }) {
+  const out = []
+  let spent = 0
+  for (let i = turns.length - 1; i >= 0; i -= 1) {
+    const turn = turns[i]
+    const cost = (turn.content || '').length + (turn.images?.length || 0) * IMAGE_TURN_WEIGHT
+    if (out.length && (out.length >= maxTurns || spent + cost > maxChars)) break
+    spent += cost
+    out.unshift(turn)
+  }
+  return out
+}
+
 router.post('/completions', aiLimiter, async (req, res, next) => {
   try {
     const body = chatSchema.parse(req.body)
@@ -168,6 +210,36 @@ router.post('/completions', aiLimiter, async (req, res, next) => {
     }
 
     ensureCredits(req.user, 1)
+
+    /* The daily token budget is the single source of truth the top-bar pill shows,
+       so when it reaches zero the server must ACTUALLY stop answering — otherwise
+       the countdown reads "78k left" while the model is already dead (the exact
+       complaint). Refuse here, before any DB write or provider call, so a blocked
+       turn costs no credits and pollutes no thread. Self-capture / APP-control
+       turns never reach the model, so they are exempt from the gate.
+       A loopback visitor is exempt too (config.localUnlimitedTokens): the budget is
+       shared by one API key, so the person developing this app must not be locked out
+       of their own laptop by their own testing. The gate is skipped, the tokens are
+       still counted. */
+    if (!isSelfUiRequest(userMessage) && !isLoopbackRequest(req)) {
+      const quota = getQuotaSnapshot()
+      if (quota.exhausted) {
+        const limitK = Math.round(quota.limit / 1000)
+        const resetLabel = new Date(quota.resetsAt).toLocaleString('en-US',
+          { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+        const message = `🪫 Aaj ka daily token limit (${limitK}k) khatam ho chuka hai. Naye messages ${resetLabel} par reset ke baad hi jaayenge. Zaroori ho to plan upgrade karein.`
+        if (body.stream === false) {
+          return res.status(429).json({ error: { message, type: 'quota_exhausted', resetsAt: quota.resetsAt } })
+        }
+        res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+        res.setHeader('Cache-Control', 'no-cache, no-transform')
+        res.setHeader('Connection', 'keep-alive')
+        res.setHeader('X-Accel-Buffering', 'no')
+        writeSse(res, { error: { message, type: 'quota_exhausted', resetsAt: quota.resetsAt } })
+        writeSse(res, '[DONE]')
+        return res.end()
+      }
+    }
 
     if (conversationId) {
       const owned = db
@@ -201,20 +273,27 @@ router.post('/completions', aiLimiter, async (req, res, next) => {
     const factToRemember = detectRememberRequest(userMessage)
     if (factToRemember) saveMemory(db, req.user.id, factToRemember, stamp)
 
-    const history = db
-      .prepare(
-        `SELECT role, content, images_json FROM messages WHERE conversation_id = ? ORDER BY created_at ASC`,
-      )
-      .all(conversationId)
-      .map((m) => {
-        /* Only the USER's pictures go to the model. Her own self-screenshots are
+    /* A spoken turn needs far less look-back than a typed thread — it is 1-3
+       sentences answering what was just said — so a call keeps 8 turns inside ~2k
+       characters, while a text thread keeps 24 turns inside ~9k. Durable facts are
+       not lost either way: they live in the memory block above. */
+    const history = trimHistory(
+      db
+        .prepare(
+          `SELECT role, content, images_json FROM messages WHERE conversation_id = ? ORDER BY created_at ASC`,
+        )
+        .all(conversationId)
+        .map((m) => {
+          /* Only the USER's pictures go to the model. Her own self-screenshots are
            stored on assistant turns for the thread, but re-inlining them would both
            break the provider's role rules (see services/ai.js) and add tens of KB of
            base64 the reply does not need. */
-        if (m.role !== 'user') return { role: m.role, content: m.content }
-        const images = (m.images_json ? JSON.parse(m.images_json) : []).map(toImageDataUrl).filter(Boolean)
-        return images.length ? { role: m.role, content: m.content, images } : { role: m.role, content: m.content }
-      })
+          if (m.role !== 'user') return { role: m.role, content: m.content }
+          const images = (m.images_json ? JSON.parse(m.images_json) : []).map(toImageDataUrl).filter(Boolean)
+          return images.length ? { role: m.role, content: m.content, images } : { role: m.role, content: m.content }
+        }),
+      body.channel === 'voice' ? { maxTurns: 8, maxChars: 2000 } : { maxTurns: 24, maxChars: 9000 },
+    )
 
     const memories = db
       .prepare(`SELECT key, value FROM memories WHERE user_id = ? ORDER BY updated_at DESC LIMIT 20`)
@@ -224,6 +303,15 @@ router.post('/completions', aiLimiter, async (req, res, next) => {
        folded into the newest user turn so a pointed reply stays pointed. */
     const modelHistory = annotateReplyTo(history, body.replyToText, body.assistantName)
 
+    /* Web reading: if the user pasted a link, fetch and read it server-side and
+       fold the page text into the newest user turn (model-only, never saved), so
+       the AI can actually discuss the link instead of claiming it cannot open a
+       browser. No-URL messages skip this entirely (buildWebContext returns ''). */
+    if (!isSelfUiRequest(userMessage)) {
+      const webContext = await buildWebContext(userMessage)
+      if (webContext) attachWebContext(modelHistory, webContext)
+    }
+
     const completionId = `chatcmpl_${nanoid(20)}`
     const created = Math.floor(Date.now() / 1000)
     /* The engine is chosen from the server's own config — and a turn that carries a
@@ -232,7 +320,7 @@ router.post('/completions', aiLimiter, async (req, res, next) => {
     const model = history.some((m) => m.images) ? config.visionModel : config.openaiModel
 
     if (body.stream === false) {
-      const result = await completeChat({ history: modelHistory, memories, model, assistantName: body.assistantName, userName: req.user.name, persona: body.persona, gender: body.gender, language: body.language })
+      const result = await completeChat({ history: modelHistory, memories, model, assistantName: body.assistantName, userName: req.user.name, persona: body.persona, gender: body.gender, language: body.language, channel: body.channel })
       const assistantId = `msg_${nanoid(16)}`
       const doneAt = nowIso()
       db.prepare(
@@ -248,6 +336,11 @@ router.post('/completions', aiLimiter, async (req, res, next) => {
 
       const cost = estimateCredits(result.usage)
       const updated = deductCredits(req.user.id, cost)
+
+      // Self-improvement: distil durable learnings from the exchange just now and
+      // fold them into this user's memory, fire-and-forget so it never adds latency
+      // to the reply or can fail it (best-effort, throttled, privacy-guarded).
+      maybeReflectOnConversation({ db, userId: req.user.id, conversationId, assistantName: body.assistantName, userName: req.user.name, gender: body.gender }).catch(() => {})
 
       return res.json({
         id: completionId,
@@ -265,7 +358,7 @@ router.post('/completions', aiLimiter, async (req, res, next) => {
         ],
         usage: result.usage,
         creditsCharged: cost,
-        providerQuota: getQuotaSnapshot(),
+        providerQuota: getQuotaSnapshot(isLoopbackRequest(req)),
         user: sanitizeUser(updated),
       })
     }
@@ -333,7 +426,12 @@ router.post('/completions', aiLimiter, async (req, res, next) => {
         })
       } else if (imagePrompt) {
         usedModel = 'nexora-image'
-        fullText = `🖼️ Here's your image.\n\n![Generated image](${imageProxyPath(imagePrompt)})`
+        /* Refine the raw user message into a clean English prompt before it
+           reaches Pollinations. The Flux model can't parse Roman Urdu or
+           meta-language ("bana do", "caption", etc.) and defaults to a
+           portrait when confused. */
+        const cleanPrompt = await refineImagePromptWithLlm(imagePrompt)
+        fullText = `🖼️ Here's your image.\n\n![Generated image](${imageProxyPath(cleanPrompt)})`
         writeSse(res, {
           id: completionId,
           object: 'chat.completion.chunk',
@@ -343,7 +441,7 @@ router.post('/completions', aiLimiter, async (req, res, next) => {
           choices: [{ index: 0, delta: { content: fullText }, finish_reason: null }],
         })
       } else {
-        for await (const chunk of streamChatCompletion({ history: modelHistory, memories, model, assistantName: body.assistantName, userName: req.user.name, persona: body.persona, gender: body.gender, language: body.language, signal: abortController.signal })) {
+        for await (const chunk of streamChatCompletion({ history: modelHistory, memories, model, assistantName: body.assistantName, userName: req.user.name, persona: body.persona, gender: body.gender, language: body.language, channel: body.channel, signal: abortController.signal })) {
           if (clientGone) break
           if (chunk.usage) usage = chunk.usage
           if (chunk.model) usedModel = chunk.model
@@ -431,11 +529,13 @@ router.post('/completions', aiLimiter, async (req, res, next) => {
         choices: [],
         creditsCharged: cost,
         creditsRemaining: updated?.credits_remaining ?? null,
-        providerQuota: getQuotaSnapshot(),
+        providerQuota: getQuotaSnapshot(isLoopbackRequest(req)),
       })
 
       writeSse(res, '[DONE]')
       res.end()
+      // fire-and-forget the same post-reply reflection (see the non-stream branch)
+      maybeReflectOnConversation({ db, userId: req.user.id, conversationId, assistantName: body.assistantName, userName: req.user.name, gender: body.gender }).catch(() => {})
     } catch (streamErr) {
       /* Aborted because the client stopped/disconnected: save the partial answer
          the user already saw and charge only for it — never surface an error. */
@@ -537,7 +637,9 @@ router.post('/proactive', aiLimiter, async (req, res, next) => {
       .all(req.user.id)
 
     const result = await completeChat({
-      history: [...history, { role: 'user', content: proactiveDirective(body.language, body) }],
+      /* Same sliding-window rule as a chat turn — an idle nudge needs only the tail of
+         the thread to sound aware, and it is billed to the same daily budget. */
+      history: [...trimHistory(history, { maxTurns: 12, maxChars: 4000 }), { role: 'user', content: proactiveDirective(body.language, body) }],
       memories,
       assistantName: body.assistantName,
       userName: req.user.name,

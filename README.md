@@ -29,6 +29,20 @@ test build or showing the app to someone; edit `src/` and you are back in dev mo
 > the server behind that address is not running, never a CORS rule. `Failed to fetch` in
 > the browser used to look like a wrong password — that class is now structurally impossible.
 
+## Desktop control (optional local agent)
+
+Nexora's AI can open apps, browse and read/write files on your own PC through the
+opt-in **`desktop-agent/`** (see its README). Two ways to connect it:
+
+- **Local / self-hosted** — run the agent beside the backend (`npm run dev:agent`) with a
+  shared `AGENT_SECRET`; the backend proxies to it over loopback.
+- **Cloud web app** — a hosted backend can't reach your PC's loopback, so the browser
+  pairs with your **local** agent directly via a console **pairing code** + a
+  **paid-account check**, then drives it with a per-install client token. Set
+  `AGENT_ALLOWED_ORIGINS` and `NEXORA_BACKEND_URL` in `desktop-agent/.env`. The agent
+  stays loopback-only; the shared secret never reaches the browser. Details in
+  [`desktop-agent/README.md`](desktop-agent/README.md) §6b and [`SECURITY.md`](SECURITY.md).
+
 ## React + Vite template notes
 
 Currently, two official plugins are available:

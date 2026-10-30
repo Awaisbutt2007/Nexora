@@ -503,8 +503,13 @@ export default function VoiceCall({ authToken, user, prefs = {}, onClose }) {
     /* Shared with the chat's auto-spoken replies so "her" sounds the same in
        both places: same gender-first picker, same per-language accent chain
        (Hinglish on a Windows-only-English install lands on en-IN, not en-GB),
-       same 0.92 rate for mixed-script intelligibility. */
+       same mixed-script rate hold-down from voiceSelect.js's LANG_RATE (now
+       0.88 for Hinglish) for intelligibility. */
     configureUtterForSpeech(utter, window.speechSynthesis.getVoices(), { language: prefs.language, gender: prefs.gender })
+    /* Name respellings ride through normalizeForSpeech inside the shared
+       helper, so the call surface corrects "Awais" → "ahwice" for the
+       browser's GPM table. The server path keeps the name natural and uses
+       an explicit English-pronunciation instruction instead. */
     let settled = false
     const finish = () => { if (!settled) { settled = true; onDone() } }
     /* Both onend and onerror should complete the turn; double-fire is guarded

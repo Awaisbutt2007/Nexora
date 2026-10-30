@@ -12,6 +12,7 @@ import billingRoutes from './routes/billing.js'
 import chatRoutes from './routes/chat.js'
 import conversationRoutes from './routes/conversations.js'
 import desktopRoutes from './routes/desktop.js'
+import desktopAgentRoutes from './routes/desktopAgent.js'
 import imageRoutes from './routes/images.js'
 import memoryRoutes from './routes/memory.js'
 import realtimeRoutes from './routes/realtime.js'
@@ -146,6 +147,7 @@ app.get('/', (_req, res) => {
       tools: 'GET /api/tools  |  POST /api/tools/:toolId/run',
       images: 'GET /api/images/generate?prompt=…  (streams a generated image, or redirects straight to the provider when no token is set)',
       desktop: 'GET /api/desktop/health | POST /api/desktop/intent | POST /api/desktop/plan | POST /api/desktop/execute | POST /api/desktop/stop',
+      desktopAgent: 'GET /api/desktop-agent/entitlement  (local agent verifies a paid account before pairing)',
       user: 'GET /api/user/profile  |  POST /api/user/upgrade',
       billing: 'GET /api/billing/status | POST /api/billing/request  (manual Easypaisa/JazzCash) | GET /api/billing/requests | POST /api/billing/review  (admin)',
       voice: 'POST /api/voice/enroll  |  POST /api/voice/verify  |  GET|DELETE /api/voice/prints',
@@ -161,6 +163,7 @@ app.use('/api/conversations', conversationRoutes)
 app.use('/api/memory', memoryRoutes)
 app.use('/api/schedule', scheduleRoutes)
 app.use('/api/desktop', desktopRoutes)
+app.use('/api/desktop-agent', desktopAgentRoutes)
 app.use('/api/images', imageRoutes)
 app.use('/api/tools', toolsRoutes)
 app.use('/api/user', userRoutes)

@@ -1,6 +1,7 @@
 import OpenAI from 'openai'
 import { config, systemPromptFor, REPLY_LANGUAGE_SCRIPTS } from '../config.js'
 import { addTokensUsed } from './quota.js'
+import { buildVoiceInstructions } from './realtime.js'
 
 function createClient() {
   if (!config.openaiApiKey) return null
@@ -32,13 +33,34 @@ function modelChain(primary) {
   return out
 }
 
-function buildMessages(history, userMemories = [], ctx = {}, extraDirective = null) {
+/* Exported for tests: this is the single place that decides how big a turn is, so
+   the voice-vs-text prompt choice and the memory placement are asserted here rather
+   than inferred from a provider call. */
+export function buildMessages(history, userMemories = [], ctx = {}, extraDirective = null) {
   const memoryBlock = userMemories.length
     ? `\n\nKnown user context:\n${userMemories.map((m) => `- ${m.key}: ${m.value}`).join('\n')}`
     : ''
+  /* A spoken turn pays for its instruction sheet on EVERY sentence, and the text
+     prompt is ~4.5k tokens of rules a voice call cannot even use: the `[DESKTOP:…]`
+     and `[APP:…]` marker blocks would be READ ALOUD by the TTS, the image/screenshot
+     blocks are inert in a call, and "use emojis generously" is unspellable. So a
+     voice turn answers from the compact spoken sheet — the SAME one the realtime
+     session is configured with, which already carries the language override, the
+     gender grammar, the 1-3 sentence limit and the creator rules — and the memory
+     list rides inside it rather than being appended twice. */
+  const systemPrompt = ctx.channel === 'voice'
+    ? buildVoiceInstructions({
+        assistantName: ctx.assistantName,
+        userName: ctx.userName,
+        memories: userMemories,
+        persona: ctx.persona,
+        language: ctx.language,
+        gender: ctx.gender,
+      })
+    : systemPromptFor(ctx) + memoryBlock
 
   return [
-    { role: 'system', content: systemPromptFor(ctx) + memoryBlock },
+    { role: 'system', content: systemPrompt },
     /* A turn with attached images becomes OpenAI-style multimodal content — a
        text part plus one image_url part per picture (base64 data URLs, because
        the provider cannot reach our localhost /uploads). */
@@ -103,6 +125,10 @@ async function* mockStream(messages) {
    ------------------------------------------------------------------------- */
 const SAMPLE_CHARS = 160
 const MAX_SCRIPT_ATTEMPTS = 2
+/* Completion cap for a spoken turn — 220 tokens is ~160 words, already three times
+   the "1 to 3 short sentences" the voice instructions demand, so it constrains only
+   the model that was going to ramble. */
+const VOICE_MAX_TOKENS = 220
 const URDU_SCRIPT_RE = /[\u0600-\u06FF\uFB50-\uFDFF\uFE70-\uFEFF]/
 const SCRIPT_FIXUP = {
   urdu: '(Your previous attempt was written in Roman letters, which the user cannot read. Answer the SAME message again, this time with every word in the Urdu script — e.g. "وہ بالکل ٹھیک ہے، آپ بتائیں آگے کیا ہوا؟". Do not write a single Roman-lettered sentence.)',
@@ -169,8 +195,8 @@ export async function* guardedStream(params, open = providerStream) {
   }
 }
 
-async function* providerStream({ history, memories, model, assistantName, userName, persona, language, gender, signal, extraDirective }) {
-  const messages = buildMessages(history, memories, { assistantName, userName, persona, language, gender }, extraDirective)
+async function* providerStream({ history, memories, model, assistantName, userName, persona, language, gender, channel, signal, extraDirective }) {
+  const messages = buildMessages(history, memories, { assistantName, userName, persona, language, gender, channel }, extraDirective)
   const client = createClient()
   let usedModel = model || config.openaiModel
 
@@ -184,7 +210,10 @@ async function* providerStream({ history, memories, model, assistantName, userNa
 
   const streamReq = {
     messages,
-    max_tokens: 900,
+    /* A spoken reply is 1-3 short sentences by rule, so the 900-token text cap is
+       dead room on a voice turn that only invites a mini-essay the listener never
+       hears the end of. */
+    max_tokens: channel === 'voice' ? VOICE_MAX_TOKENS : 900,
     /* When the user pinned a specific language, cool the sampling down so the
        model sticks to the (mandatory) language rule instead of drifting back to
        English/Roman the way it can at the default temperature. */
@@ -220,9 +249,12 @@ async function* providerStream({ history, memories, model, assistantName, userNa
       yield { content: delta, model: usedModel, usage: null }
     }
     if (part.usage) {
-      /* Tally only the primary model's spend — a failover call runs on a sibling
-         with its own daily budget, so it must not drain this countdown. */
-      if (usedModel === config.openaiModel) addTokensUsed(part.usage.total_tokens)
+      /* Count every model's spend against the one budget the top-bar pill shows.
+         The user set that number as the hard daily cap that must reach zero and
+         lock the composer; counting only the primary model let failover traffic run
+         for free, so the countdown stalled and read "Nk left" while the key was
+         actually spent. Tally everything so the number is honest. */
+      addTokensUsed(part.usage.total_tokens)
       yield { content: '', model: usedModel, usage: part.usage, finish: true }
     }
   }
@@ -235,8 +267,8 @@ export function streamChatCompletion(params) {
   return guardedStream({ ...params, guard: Boolean(config.openaiApiKey) })
 }
 
-async function providerComplete({ history, memories, model, assistantName, userName, persona, language, gender, extraDirective }) {
-  const messages = buildMessages(history, memories, { assistantName, userName, persona, language, gender }, extraDirective)
+async function providerComplete({ history, memories, model, assistantName, userName, persona, language, gender, channel, extraDirective }) {
+  const messages = buildMessages(history, memories, { assistantName, userName, persona, language, gender, channel }, extraDirective)
   const client = createClient()
   let usedModel = model || config.openaiModel
 
@@ -252,7 +284,7 @@ async function providerComplete({ history, memories, model, assistantName, userN
 
   const completeReq = {
     messages,
-    max_tokens: 900,
+    max_tokens: channel === 'voice' ? VOICE_MAX_TOKENS : 900,
     ...(language && language !== 'auto' ? { temperature: 0.35 } : {}),
   }
   const chain = modelChain(usedModel)
@@ -271,7 +303,7 @@ async function providerComplete({ history, memories, model, assistantName, userN
   }
   if (!completion) throw capacityErr
 
-  if (usedModel === config.openaiModel) addTokensUsed(completion.usage?.total_tokens)
+  addTokensUsed(completion.usage?.total_tokens)
 
   return {
     content: completion.choices[0]?.message?.content || '',

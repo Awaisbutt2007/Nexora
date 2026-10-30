@@ -1,0 +1,24 @@
+/* Camera capture modal — live webcam preview + shutter, opened from the composer 📷.
+   Sits above the workspace (and the voice-call overlay) as a top-most dialog. */
+.camera-overlay { position: fixed; inset: 0; z-index: 130; display: grid; place-items: center; padding: 18px; background: rgba(4,6,14,.72); backdrop-filter: blur(10px); animation: cameraFade .18s ease; }
+.camera-card { width: min(92vw, 520px); display: flex; flex-direction: column; gap: 12px; padding: 16px; border: 1px solid rgba(149,162,215,.13); border-radius: 18px; background: rgba(10,14,28,.86); box-shadow: 0 24px 70px rgba(0,0,0,.55); }
+.camera-head { display: flex; align-items: center; }
+.camera-title { color: #f3f4ff; font-size: 14px; font-weight: 600; letter-spacing: .3px; }
+.camera-x { margin-left: auto; width: 32px; height: 32px; border-radius: 10px; border: 1px solid rgba(149,162,215,.13); background: transparent; color: #e7e8f4; font-size: 20px; line-height: 1; cursor: pointer; }
+.camera-x:hover { background: rgba(149,162,215,.12); }
+.camera-stage { position: relative; aspect-ratio: 4 / 3; border-radius: 14px; overflow: hidden; background: #05060f; display: grid; place-items: center; }
+.camera-video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.camera-stage.mirrored .camera-video { transform: scaleX(-1); }
+.camera-hint { position: absolute; inset: 0; display: grid; place-items: center; color: #8f96ae; font-size: 14px; padding: 0 18px; text-align: center; }
+.camera-error { position: absolute; inset: 12px; display: grid; place-items: center; text-align: center; color: #ffb4c0; font-size: 14px; line-height: 1.5; background: rgba(10,14,28,.66); border: 1px solid rgba(255,120,150,.2); border-radius: 12px; padding: 14px; }
+.camera-foot { display: flex; align-items: center; gap: 14px; }
+.camera-flip, .camera-cancel { padding: 10px 14px; border-radius: 12px; border: 1px solid rgba(149,162,215,.13); background: transparent; color: #e7e8f4; font-size: 14px; cursor: pointer; }
+.camera-flip { margin-right: auto; }
+.camera-cancel { margin-left: auto; }
+.camera-flip:hover:not(:disabled), .camera-cancel:hover { background: rgba(149,162,215,.12); }
+.camera-flip:disabled { opacity: .4; cursor: not-allowed; }
+.camera-shutter { width: 58px; height: 58px; border-radius: 50%; border: 3px solid #bd6cff; background: radial-gradient(circle at 50% 38%, #5fd0ff, #bd6cff); cursor: pointer; display: grid; place-items: center; padding: 0; }
+.camera-shutter:disabled { opacity: .4; cursor: not-allowed; }
+.camera-shutter-ring { width: 40px; height: 40px; border-radius: 50%; background: #fff; transition: transform .1s ease; }
+.camera-shutter:active .camera-shutter-ring { transform: scale(.86); }
+@keyframes cameraFade { from { opacity: 0; } to { opacity: 1; } }

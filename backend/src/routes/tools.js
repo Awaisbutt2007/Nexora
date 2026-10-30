@@ -6,7 +6,7 @@ import { getDb, nowIso } from '../db/index.js'
 import { requireAuth, sanitizeUser } from '../middleware/auth.js'
 import { aiLimiter } from '../middleware/rateLimit.js'
 import { deductCredits, ensureCredits } from '../services/credits.js'
-import { imageProxyPath, isNsfwPrompt } from '../services/images.js'
+import { enrichImagePrompt, imageProxyPath, isNsfwPrompt } from '../services/images.js'
 import { completeChat } from '../services/ai.js'
 
 const router = Router()
@@ -162,7 +162,10 @@ async function buildToolOutput(tool, payload, ctx) {
       : {
           type: 'image',
           prompt,
-          imageUrl: imageProxyPath(prompt),
+          /* Same portrait-default guard as the chat path: a thin one-word prompt
+             ("coding") makes Flux draw a person. Long prompts are the user's own
+             careful wording, so enrichImagePrompt passes them through untouched. */
+          imageUrl: imageProxyPath(enrichImagePrompt(prompt)),
           /* The answer to "how is this made?" stays off the wire — including in our own
              friendly captions. Which service renders a picture is operator information. */
           note: 'Rendered by Nexora’s built-in image engine. If a generator key is added on the server, limits and reliability go up.',

@@ -30,6 +30,14 @@ uploads/
 recordings/
 voiceprints/
 
+# Browser automation profiles + runtime state (locked SQLite files, personal data —
+# never commit, and never watched by the dev server; see vite.config.js server.watcher).
+.tmp-*/
+*-profile/
+**/browser-profile/
+audit/
+screenshots/
+
 node_modules
 dist
 dist-ssr

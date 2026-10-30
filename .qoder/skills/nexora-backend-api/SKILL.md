@@ -16,7 +16,7 @@ Express 5 + `node:sqlite`, ESM only, no TypeScript, no ORM. Start with
 | `src/index.js` | CORS, `express.json({ limit: '2mb' })`, `/health`, hosts `../dist` when a build exists, `app.use('/api/<area>', router)`, then `notFound` + `errorHandler` LAST |
 | `src/routes/*.js` | One `Router()` per area. Owns the zod schema, the SQL and the response shape. `router.use(requireAuth)` at the top of every authenticated area |
 | `src/middleware/auth.js` | `signToken`, `requireAuth`, `optionalAuth`, `sanitizeUser` — never re-implement token parsing in a route |
-| `src/services/` | `ai.js` (model calls, mock stream, reply-language script guard), `credits.js` (`ensureCredits`, `deductCredits`, `upgradePlan`) |
+| `src/services/` | `ai.js` (model calls, mock stream, reply-language script guard), `credits.js` (`ensureCredits`, `deductCredits`, `upgradePlan`), `pronunciation.js` (how every spoken surface says a name/word), `taste.js` (the companion's own seeded favourites) |
 | `src/db/index.js` | `getDb()` singleton + the full `CREATE TABLE` migration + `ALTER TABLE` column adds; `nowIso()` for every timestamp |
 | `src/config.js` | every env read happens here; routes import `config`, never `process.env`. Also owns `REPLY_LANGUAGES` / `REPLY_LANGUAGE_SCRIPTS` / `REPLY_LANGUAGE_NAMES` — the single list every language-aware schema and prompt must import |
 
@@ -96,6 +96,82 @@ Consequences to remember: `streamChatCompletion`/`completeChat` now take `langua
 the guard is **skipped in mock mode** (`!config.openaiApiKey`) because the canned reply is
 always English, and it stays inert for `routes/tools.js` / `services/desktopNl.js` since
 they never pass `language` — good, their output is structured JSON.
+
+## What a turn costs (voice vs text)
+
+The text `systemPromptFor()` is ~4.5k tokens and is re-sent on **every** turn, so a
+spoken call built on it cost 7-8k tokens per sentence (and the wallet charge is
+`ceil(total/100)` credits on top). Two rules keep that down:
+
+1. **`channel`** — `chatSchema` takes `channel: 'text' | 'voice'` (default `text`);
+   `chatOnce()` in the frontend sends `'voice'`. In `buildMessages()` that branch swaps
+   `systemPromptFor(ctx) + memoryBlock` for `buildVoiceInstructions(...)` (the same
+   ~870-token sheet the realtime session uses, memories included — so never append the
+   memory block again) and caps completion at `VOICE_MAX_TOKENS` (220) instead of 900.
+   A voice turn is now ~1.6k tokens instead of ~5.4k.
+2. **`trimHistory(turns, { maxTurns, maxChars })`** in `routes/chat.js` — history is a
+   sliding window from the newest turn, not the whole thread (voice 8/2000 chars, text
+   24/9000, proactive 12/4000). The newest turn is always kept even if oversized, and a
+   turn with pictures is weighted at `IMAGE_TURN_WEIGHT` because a re-inlined base64
+   image bills ~1.5k tokens on its own.
+
+Any new prompt surface for a spoken/short-reply channel must reuse those two, not copy
+the text prompt. The system message is still assembled in exactly ONE place
+(`buildMessages`) — `security.test.mjs` pins that, so a hand-written second prompt
+fails CI.
+
+## How a word is pronounced — `services/pronunciation.js`
+
+Three surfaces speak, and each can only obey a DIFFERENT kind of instruction, which is
+why "Awais" was said "awiys" and `comfortable` as "com-for-table": the data existed
+only inside `tts.js`, and realtime speech-to-speech has **no text pass at all**.
+
+| Surface | Lever | Reads |
+| --- | --- | --- |
+| Realtime Talk (`services/realtime.js`) | `instructions` only | `staticSpeechHints()` + `nameHintsFor([userName, assistantName])` |
+| Server TTS (`services/tts.js`, `gpt-4o-mini-tts`) | text + `instructions` | `speechHintsText(rawText, names)`; `respellKnownNames(t, { keepInstructionOnly: true })` |
+| Browser fallback (`src/voiceSelect.js` + `src/namePronunciation.js`) | text only (no `instructions` param) | the mirrored `WORD_RESPPELLINGS` / `NAME_RESPPELLINGS` |
+
+Rules that follow from that table:
+
+- **Neural voices are told, GPM voices are re-spelled.** `WORD_SPEAK[word]` carries both
+  `say` (`im-PROOV`, stress capitals a model interprets) and `respell` (`im-proov`,
+  always lowercase — a grapheme table reads capitals as an acronym). Do not merge them.
+- **Names with `instructionOnly: true` keep their real spelling in the text** and get a
+  hint line; handing `gpt-4o-mini-tts` "Ahwice" sounded like broken Roman English.
+- **A new spoken surface must import this file**, not write its own phonetics — and a new
+  English word goes into `WORD_SPEAK` AND the browser mirror. `api.test.mjs` asserts the
+  two tables hold identical keys/values, so a one-sided edit fails the suite.
+- The accent is **clear neutral Indian-English** (the user's choice, and the same diction
+  the Indic lane already targets): `TTS_LOCALE_CHAIN.en` leads with `en-IN`, not `en-US`.
+  The `REC_LOCALES` tables for *listening* stay `en-US` on purpose — that is transcription
+  coverage, not how the companion sounds.
+
+## The companion has its own favourites — `services/taste.js`
+
+Asked "tumha kon sa song pasand ha?" she answered **"Main toh AI hoon, isliye music sunne
+ka maza nahi aata mujhe!"** — and the same wall stopped fruit, colour, food, anything.
+Cause: the prompt introduces her as "a personal AI assistant" and the spoken sheet says
+"never claim personal experiences you have not had", so the model reads *any* preference
+as a claim it must not make. A companion with no tastes is not a companion, so:
+
+- `tasteFor({ assistantName, userName })` derives a 12-field profile (gaana, phal, rang,
+  peena, khana, jagah, waqt, shauq, kahani, janwar, **na-pasand**, sukoon) from an FNV-1a
+  seed + LCG. **Never `Math.random`** — a per-turn roll means she likes a different song
+  every message, which is worse than no tastes. The persona text is NOT in the seed (it is
+  editable in Settings; re-rolling favourites would look like forgetting them).
+- `tastePromptBlock(taste, { spoken })` feeds `systemPromptFor()` (so chat, `/proactive`,
+  the scheduler and text tools inherit it) AND `buildVoiceInstructions()`. Both must carry
+  it or a call and a chat turn disagree about her favourite.
+- The block **must** quote and forbid the dodge, and the realtime `Honesty:` line must keep
+  its carve-out ("having a FAVOURITE is a preference, not a claimed human experience") —
+  state the permission next to the rule that took it away, or the stricter line wins.
+- One mild `dislike` is deliberate: a character that loves everything reads as sales copy.
+- `selfReflect.js` extracts `assistant_taste_*` memories, because "a memory the user gave
+  you wins" is only true if a taste the user assigns to *her* is saved at all.
+- Budget: the spoken form uses `SPOKEN_LABELS` (`gaana: X • phal: Y`) instead of the text
+  labels, and `security.test.mjs` caps the whole voice sheet at `VOICE_SHEET_BUDGET`.
+  Grow the field list freely; do not add prose to the spoken copy.
 
 ## Model / tool "mock mode"
 

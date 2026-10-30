@@ -43,7 +43,25 @@ agent runs on the same PC as the backend.
    default-denies scopes, contains file paths by `realpath`, forces explicit
    confirmation for destructive actions, keeps an audit log, and the backend
    refuses any non-loopback agent URL (SSRF guard).
-10. **Image generation** enforces an NSFW blocklist before any provider call.
+10. **Cloud web app + local agent (pairing)**: when the app is hosted, the browser
+    drives the customer's own loopback agent **directly** (the cloud backend can never
+    reach a remote `127.0.0.1`). Access is granted only via a console-only **pairing
+    code** plus an **outbound paid-account check** (`GET /api/desktop-agent/entitlement`,
+    `requireAuth`) before a per-install **client token** is minted. The agent still binds
+    loopback-only and only makes *outbound* calls; a browser request must carry an
+    `Origin` in `AGENT_ALLOWED_ORIGINS` (others get `403`), the shared `AGENT_SECRET`
+    never reaches the browser, and only the token's SHA-256 hash is persisted. The
+    same plan→execute, default-deny-scope and always-confirm gates apply.
+11. **Image generation** enforces an NSFW blocklist before any provider call.
+12. **The localhost token pass can never exempt a remote caller**: the shared daily
+    provider-token budget may skip its gate for a request whose `req.ip` is loopback
+    (`config.localUnlimitedTokens`), so the developer is not locked out of their own
+    machine by their own testing. The address comes from the socket (or the proxy-
+    forwarded client IP when `TRUST_PROXY` is on) — never from a header a page can
+    forge — it is **forced off when `NODE_ENV=production`**, and tokens keep being
+    tallied so the honest number survives. `backend/test/api.test.mjs` pins
+    `LOCAL_UNLIMITED_TOKENS=0` and asserts both directions, so the gate can never be
+    silently disabled by a developer's own `.env`.
 
 ## Secret handling & scanning
 - A dependency-free, privacy-safe scanner runs locally and in CI:

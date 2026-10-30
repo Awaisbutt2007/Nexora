@@ -3,8 +3,13 @@ import { createPortal } from 'react-dom'
 import './Nexora.css'
 import './typography.css'
 import SignIn from './SignIn.jsx'
+import workspaceShot from './assets/workspace-shot.png'
+import workspaceSchedule from './assets/workspace-schedule.png'
+import workspaceTools from './assets/workspace-tools.png'
+import workspaceMemory from './assets/workspace-memory.png'
 import CursorTrail from './CursorTrail.jsx'
 import AnimeEffects from './AnimeEffects.jsx'
+import { useAnimatedNumber } from './useAnimatedNumber.js'
 import {
   clearSession,
   deleteConversation,
@@ -52,6 +57,25 @@ import {
   createConversation,
   synthesizeSpeech,
 } from './api/nexora.js'
+/* Direct transport to the customer's own local Nexora Agent (cloud web app mode) —
+   pairing, the client-token store and the agent-side action calls. The desktop*
+   client above stays as the self-hosted backend-proxy fallback. */
+import {
+  agentTransport,
+  agentPairStatus,
+  agentPair,
+  agentRevoke,
+  agentHealth,
+  agentPermissions,
+  agentApps,
+  agentGrant,
+  agentRevokePermission,
+  agentPlan,
+  agentExecute,
+  agentStop,
+  agentAudit,
+  hasPairedAgent,
+} from './api/agent.js'
 /* Her own eyes on the app: real screenshots of the live UI and of the particle face. */
 import { captureCurrentPage, captureNode, captureSelfFace } from './selfCapture.js'
 import { useWakeWord } from './useWakeWord.js'
@@ -61,6 +85,8 @@ import { streamFeed, streamFinal, cancelSpeakQueue, setSpeakMarkers } from './se
 const ThreeHero = lazy(() => import('./ThreeHero.jsx'))
 const Onboarding = lazy(() => import('./Onboarding.jsx'))
 const VoiceCall = lazy(() => import('./VoiceCall.jsx'))
+/* Live webcam capture — opened from the composer 📷, only loaded once per use. */
+const CameraCapture = lazy(() => import('./CameraCapture.jsx'))
 /* The chosen AI portrait, reused above the live conversation */
 const NanoParticles = lazy(() => import('./NanoParticles.jsx'))
 /* The memory vault: three.js brain + cables, only ever loaded when the door opens */
@@ -223,6 +249,18 @@ function isAiSpeakingLongEnough() {
 }
 function markAiSpeakingStart() { aiSpeakingSinceMs = Date.now() }
 function markAiSpeakingEnd() { aiSpeakingSinceMs = 0 }
+/* Mirror of the barge-in tracker for the OTHER side of the conversation: the
+   last time the always-on mic heard the USER talk. The idle check-in loop used
+   to watch only whether the AI was busy (`streamingRef`) and whether the user
+   had SENT anything (`lastActivityRef`) — never whether they were mid-sentence,
+   so a long spoken turn let her interrupt with a fresh bubble. The stamp is
+   taken in `onUserSpeaking` BEFORE its barge-in early-return, because the
+   "don't talk over me" rule matters most when the AI is already silent. */
+let userSpeakingSinceMs = 0
+function markUserSpeaking() { userSpeakingSinceMs = Date.now() }
+function hasUserSpokenRecently(windowMs = 6000) {
+  return userSpeakingSinceMs > 0 && Date.now() - userSpeakingSinceMs < windowMs
+}
 function cancelServerAudio() {
   /* Sentence streaming owns its own queue + audio, so route a cancel there
      FIRST — that clears `pending`, bumps the generation token so any fetch
@@ -247,7 +285,7 @@ function cancelServerAudio() {
  * `aiSpeakingSinceMs`, and Chrome's AEC-lock-in grace window would let the AI's
  * own first echo trigger a self-cancel. */
 setSpeakMarkers(markAiSpeakingStart, markAiSpeakingEnd)
-async function speakAssistantReply(text, { language, gender, authToken, voice, onEnd } = {}) {
+async function speakAssistantReply(text, { language, gender, authToken, voice, onEnd, names } = {}) {
   if (typeof window === 'undefined' || !text) { onEnd?.(); return }
   const plain = String(text)
     .replace(/```[\s\S]*?```/g, ' (code shown in chat) ')
@@ -279,7 +317,7 @@ async function speakAssistantReply(text, { language, gender, authToken, voice, o
      were a bug — the visual caption already shows the reply anyway. */
   if (authToken) {
     try {
-      const blob = await synthesizeSpeech(authToken, { text: plain, language, gender, voice })
+      const blob = await synthesizeSpeech(authToken, { text: plain, language, gender, voice, names })
       const url = URL.createObjectURL(blob)
       const audio = new window.Audio(url)
       audio.onended = () => { try { URL.revokeObjectURL(url) } catch { /* ignore */ }; if (currentServerAudio === audio) currentServerAudio = null; markAiSpeakingEnd(); onEnd?.() }
@@ -455,10 +493,39 @@ function AssistantArtwork() {
 
 const CURRENT_YEAR = new Date().getFullYear()
 
+/* Wallet pill's number slot. Wraps `useAnimatedNumber` so the value visually
+ * rolls down like an "ulta countdown" when a reply debits credits/tokens, and
+ * pops a small "-N" chip that fades up. Hooks can't live inside the pill's
+ * IIFE (conditional call), so we split the animated span into its own
+ * component and let the parent decide what number to feed. */
+function CreditsValue({ value, format = (n) => `${n}` }) {
+  const { display, delta } = useAnimatedNumber(value)
+  const shown = Number.isFinite(display) ? format(display) : display
+  return <>
+    <span className={`credits-value${delta ? ' is-ticking' : ''}`}>{shown}</span>
+    {delta ? <span className="credits-delta" aria-hidden="true">{delta > 0 ? `+${delta}` : delta}</span> : null}
+  </>
+}
+
+/* Real headless captures of the signed-in workspace pages — the showcase cycles
+   through them so visitors see every zone, not just the chat hero. */
+const SHOWCASE_SHOTS = [
+  { label: 'Chat', src: workspaceShot, alt: 'The Nexora workspace chat: companion greeting, starter prompts and the message composer.' },
+  { label: 'Schedule', src: workspaceSchedule, alt: 'The Schedule page: upcoming tasks with reminder chips and a live schedule nudge from Nexora.' },
+  { label: 'Memory', src: workspaceMemory, alt: 'The Memory vault: a particle brain with wires connecting saved memories and chats.' },
+  { label: 'Tools', src: workspaceTools, alt: 'The Tools page: Image Generator, Code Assistant, PDF Reader, YouTube Notes, Meeting Notes and Social Studio.' },
+]
+
 function Landing({ onLogin, onNavigate, isLoggedIn, userProfile, onUpgrade }) {
   const [openFaq, setOpenFaq] = useState(0)
   const [menuOpen, setMenuOpen] = useState(false)
   const [scrolled, setScrolled] = useState(false)
+  const [shotIdx, setShotIdx] = useState(0)
+  /* The showcase window cycles the real pages on its own; a chip click pins one. */
+  useEffect(() => {
+    const timer = setInterval(() => setShotIdx((i) => (i + 1) % SHOWCASE_SHOTS.length), 5500)
+    return () => clearInterval(timer)
+  }, [])
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 18)
     onScroll()
@@ -616,41 +683,18 @@ function Landing({ onLogin, onNavigate, isLoggedIn, userProfile, onUpgrade }) {
         <div className="section-heading centered-heading">
           <p className="eyebrow">NEXORA COMMAND CENTER</p>
           <h2>Your whole workspace,<br /><span>looks this good.</span></h2>
-          <p>Keep scrolling — the Nexora workspace re-skins your entire day. Three full zones, real interface. Pick yours inside the app.</p>
+          <p>Keep scrolling — the Nexora workspace re-skins your entire day. Four real pages, captured inside the app. Pick yours inside the app.</p>
         </div>
         <div className="showcase-mockup">
           <div className="mockup-window">
-            <div className="mockup-titlebar"><span /><span /><span /><em>Nexora — Workspace</em></div>
-            <div className="mockup-body">
-              <aside className="mockup-sidebar">
-                <div className="mockup-avatar N">N</div>
-                <div className="mockup-side-link active"><b>◌</b><span>Chat</span></div>
-                <div className="mockup-side-link"><b>⏰</b><span>Schedule</span></div>
-                <div className="mockup-side-link"><b>◈</b><span>Memory</span></div>
-                <div className="mockup-side-link"><b>▦</b><span>Tools</span></div>
-                <div className="mockup-side-link"><b>⌗</b><span>Desktop</span></div>
-                <div className="mockup-side-link"><b>⚙</b><span>Settings</span></div>
-              </aside>
-              <section className="mockup-content">
-                <div className="mockup-topbar">
-                  <span className="mockup-brand"><b>N</b>Nexora</span>
-                  <div className="mockup-nav"><em className="active">Chat</em><em>Memory</em><em>Tools</em><em>Desktop</em></div>
-                  <span className="mockup-talk">◉ Talk</span>
-                  <div className="mockup-profile"><b>A</b><em>Awai Butt</em></div>
-                </div>
-                <div className="mockup-hero">
-                  <div className="mockup-hero-orb" aria-hidden="true">
-                    <div className="mockup-core" />
-                    <div className="mockup-ring r1" /><div className="mockup-ring r2" />
-                  </div>
-                  <h3 className="mockup-hero-title">Hello Awai! 👋</h3>
-                  <p className="mockup-hero-sub">I’m Nexora — your AI companion.<br />Ask me anything, I’m here to help.</p>
-                  <div className="mockup-starters"><span>💡 Explain something in simple words</span><span>✏️ Help me with my work</span><span>🧠 Remember my preferences</span><span>✨ Just have a conversation</span></div>
-                </div>
-                <div className="mockup-prompt"><span>✦</span><em>Type your message…</em><button>➤</button></div>
-              </section>
+            <div className="mockup-titlebar"><span /><span /><span /><em>Nexora — {SHOWCASE_SHOTS[shotIdx].label}</em></div>
+            {/* Real headless captures of the signed-in pages (this very app), so the
+               showcase can never drift from the actual UI again. */}
+            <div className="mockup-stack" aria-live="off">
+              {SHOWCASE_SHOTS.map((shot, i) => <img key={shot.label} className={`mockup-shot${i === shotIdx ? ' is-active' : ''}`} src={shot.src} alt={shot.alt} width="1600" height="900" loading={i === 0 ? 'eager' : 'lazy'} />)}
             </div>
           </div>
+          <div className="mockup-chips" role="tablist" aria-label="Workspace pages">{SHOWCASE_SHOTS.map((shot, i) => <button role="tab" type="button" key={shot.label} aria-selected={i === shotIdx} className={`mockup-chip-btn${i === shotIdx ? ' active' : ''}`} onClick={() => setShotIdx(i)}>{shot.label}</button>)}</div>
         </div>
       </div>
     </section>
@@ -1210,6 +1254,10 @@ const desktopScopes = [['browser', '🌐', 'Drive the dedicated automation brows
    running we say so and block the controls — we never simulate a success. Every
    request follows plan → visible preview → (scope +, for high-risk, an explicit
    approve) → execute, exactly mirroring the agent's two-step gate. */
+/* The page's own origin, read once at import time (never during render — a `window`
+   read in render breaks React purity). Shown in the connect card so the user knows
+   exactly what to add to the agent's AGENT_ALLOWED_ORIGINS. */
+const AGENT_SELF_ORIGIN = typeof window !== 'undefined' ? window.location.origin : ''
 function DesktopView({ token, aiName, isLoggedIn, onLogin }) {
   const [tab, setTab] = useState('run')
   const [health, setHealth] = useState(null)
@@ -1230,28 +1278,80 @@ function DesktopView({ token, aiName, isLoggedIn, onLogin }) {
   const [audit, setAudit] = useState(null)
   const [screen, setScreen] = useState(null)   // ephemeral preview: { dataUrl, width, height, saved }
   const [report, setReport] = useState('')      // Aira's visual-inspection text
+  /* Cloud web app + local agent: `paired` mirrors whether this browser holds a client
+     token (read in an effect / after pair+revoke, never at render — a localStorage read
+     in render would break React purity). `pairStatus`/`pairErr` come from probing
+     /pair/status so the connect card can tell "start the agent" from "allowlist this Origin". */
+  const [paired, setPaired] = useState(() => hasPairedAgent())
+  const [pairStatus, setPairStatus] = useState(null)
+  const [pairErr, setPairErr] = useState('')
+  const [pairCode, setPairCode] = useState('')
 
-  const enabled = health?.enabled === true
-  const desktopArmed = Boolean(perms?.scopes?.desktop || perms?.scopes?.screen)
+  /* One dispatcher chosen by transport: a paired browser drives its OWN agent directly;
+     otherwise the call goes through the authenticated backend proxy (self-host /
+     local-first, where the backend and the agent share the machine). */
+  const api = {
+    grant: (p) => (paired ? agentGrant(p) : desktopGrant(token, p)),
+    revokePerm: (p) => (paired ? agentRevokePermission(p) : desktopRevoke(token, p)),
+    plan: (p) => (paired ? agentPlan(p) : desktopPlan(token, p)),
+    execute: (p) => (paired ? agentExecute(p) : desktopExecute(token, p)),
+    permissions: () => (paired ? agentPermissions() : desktopPermissions(token)),
+    apps: () => (paired ? agentApps() : desktopApps(token)),
+    audit: (l) => (paired ? agentAudit(l) : desktopAudit(token, l)),
+    stop: () => (paired ? agentStop() : desktopStop(token)),
+  }
+
+  // A direct-agent health probe is `{ ok, status:'ok' }`; the backend proxy is `{ enabled }`.
+  const proxyEnabled = health?.enabled === true
+  const directEnabled = Boolean(health && (health.status === 'ok' || health.ok))
+  const enabled = paired ? directEnabled : proxyEnabled
+  const desktopArmed = enabled && Boolean(perms?.scopes?.desktop || perms?.scopes?.screen)
 
   useEffect(() => {
     if (!isLoggedIn || !token) return
     let alive = true
-    desktopHealth(token).then((h) => { if (alive) setHealth(h) }).catch((err) => { if (alive) setHealth({ enabled: false, error: { message: err.message } }) })
+    const h = paired ? agentHealth() : desktopHealth(token)
+    h.then((r) => { if (alive) setHealth(r) }).catch((err) => { if (alive) setHealth(paired ? { status: 'down', ok: false, error: { message: err.message } } : { enabled: false, error: { message: err.message } }) })
     // Load the permission posture up front too, so the "control armed" banner is
     // accurate the moment the page opens, not only after visiting Permissions.
-    desktopPermissions(token).then((p) => { if (alive) setPerms(p) }).catch(() => {})
+    const p = paired ? agentPermissions() : desktopPermissions(token)
+    p.then((r) => { if (alive) setPerms(r) }).catch(() => {})
     return () => { alive = false }
-  }, [isLoggedIn, token])
+  }, [isLoggedIn, token, paired])
+
+  /* Nothing connected yet: probe the LOCAL agent so the connect card can offer a live
+     code field when it is reachable, or install/run steps when it is not. */
+  useEffect(() => {
+    if (paired || !isLoggedIn) return
+    let alive = true
+    agentPairStatus().then((s) => { if (alive) { setPairStatus(s); setPairErr('') } }).catch((err) => { if (alive) { setPairStatus(null); setPairErr(err.message) } })
+    return () => { alive = false }
+  }, [paired, isLoggedIn])
+
+  async function doPair() {
+    const code = pairCode.trim()
+    if (code.length !== 6) { setPairErr('Enter the 6-digit code shown in the Nexora Agent console.'); return }
+    setBusy('pairing'); setPairErr('')
+    try {
+      await agentPair(code, token)
+      setPaired(true); setPairCode(''); setPairStatus(null); setNotice(`🔗 Paired — ${aiName} can now drive this PC's browser.`)
+    } catch (err) { setPairErr(err.message) } finally { setBusy('') }
+  }
+
+  async function doRevokeThisPc() {
+    setBusy('revoking'); setError('')
+    try { await agentRevoke(); setPaired(false); setHealth(null); setPerms(null); setNotice('This browser is unpaired from your PC.') }
+    catch (err) { setError(err.message) } finally { setBusy('') }
+  }
 
   function refreshPermissions() {
     if (!isLoggedIn || !token) return
-    desktopPermissions(token).then(setPerms).catch((err) => setError(err.message))
-    desktopApps(token).then((r) => setApps(r.data || [])).catch(() => {})
+    api.permissions().then(setPerms).catch((err) => setError(err.message))
+    api.apps().then((r) => setApps(r.data || [])).catch(() => {})
   }
   function refreshAudit() {
     if (!isLoggedIn || !token) return
-    desktopAudit(token).then((r) => setAudit(r.data || [])).catch((err) => setError(err.message))
+    api.audit().then((r) => setAudit(r.data || [])).catch((err) => setError(err.message))
   }
   function goTab(next) {
     setTab(next); setError(''); setNotice('')
@@ -1283,7 +1383,7 @@ function DesktopView({ token, aiName, isLoggedIn, onLogin }) {
     try { args = argsText.trim() ? JSON.parse(argsText) : {} } catch { setError('Arguments must be valid JSON.'); return }
     setBusy('planning'); setError(''); setNotice(''); setResult(null); setClarify(''); setPlan(null)
     try {
-      const p = await desktopPlan(token, { action: actionId, args, context: { fromVoice: false } })
+      const p = await api.plan({ action: actionId, args, context: { fromVoice: false } })
       setPlan(p)
     } catch (err) { setError(err.message) } finally { setBusy('') }
   }
@@ -1293,7 +1393,7 @@ function DesktopView({ token, aiName, isLoggedIn, onLogin }) {
     if (!isLoggedIn || !token) { onLogin(); return }
     setBusy('running'); setError(''); setNotice('')
     try {
-      const r = await desktopExecute(token, { planId: plan.planId, approvedThisAction: true })
+      const r = await api.execute({ planId: plan.planId, approvedThisAction: true })
       setResult(r); setPlan(null)
       if (r.ok === false) setError(r.reason || `Blocked by the agent (${r.status}).`)
     } catch (err) { setError(err.message) } finally { setBusy('') }
@@ -1302,9 +1402,9 @@ function DesktopView({ token, aiName, isLoggedIn, onLogin }) {
   const doStop = useCallback(async () => {
     if (!isLoggedIn || !token) return
     setBusy('stopping'); setError('')
-    try { const r = await desktopStop(token); setNotice(`🛑 Stop sent — ${r.cancelled ?? 0} running action(s) cancelled.`) }
+    try { const r = paired ? await agentStop() : await desktopStop(token); setNotice(`🛑 Stop sent — ${r.cancelled ?? 0} running action(s) cancelled.`) }
     catch (err) { setError(err.message) } finally { setBusy('') }
-  }, [isLoggedIn, token])
+  }, [isLoggedIn, token, paired])
 
   async function mutatePerms(fn, label, after) {
     if (!isLoggedIn || !token) { onLogin(); return }
@@ -1360,19 +1460,40 @@ function DesktopView({ token, aiName, isLoggedIn, onLogin }) {
 
     <div className={`desktop-status${enabled ? ' is-ok' : ' is-off'}`}>
       {health == null && <span>Checking for the desktop agent on your PC…</span>}
-      {health && enabled && <span>● Connected — {health.agent?.bind || '127.0.0.1'} · loopback only. Automation browser, approved apps and folders only.</span>}
-      {health && !enabled && <span>○ Desktop bridge is OFF — {health.error?.message ? health.error.message + '. ' : 'no DESKTOP_AGENT_SECRET is set, or the agent is not running. '}Set the secret in backend/.env and start it with <code>npm run dev:agent</code>, then reload.</span>}
+      {paired && enabled && <span>🟢 Connected to your PC (local agent) — {health.bind || '127.0.0.1'} · loopback only, this browser only.</span>}
+      {!paired && health && enabled && <span>● Connected — {health.agent?.bind || '127.0.0.1'} · loopback only. Automation browser, approved apps and folders only.</span>}
+      {health && !enabled && <span>○ Not connected — {paired ? 'your paired agent is not reachable right now — make sure it is still running on this PC.' : (health.error?.message || 'no local Nexora Agent detected and the backend bridge is off')}.</span>}
+      {paired && <button type="button" className="desktop-link danger" onClick={doRevokeThisPc}>Revoke this PC</button>}
     </div>
 
     {desktopArmed && <div className="desktop-active" role="status"><span>🔵 Desktop control is ARMED — {aiName} can act on this PC, but only with your approval. Press <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>S</kbd> or Stop to halt what is running.</span>{busy && <strong className="desktop-running">{busy === 'running' ? 'An action is running…' : 'Working…'}</strong>}</div>}
 
+    {!enabled && <div className="desktop-card">
+      <div className="settings-icon">🔗</div>
+      <h3>Connect {aiName} to your PC</h3>
+      <p className="desktop-muted">{paired ? 'This browser is already paired, but your Nexora Agent is not reachable right now — make sure it is still running on this PC.' : 'Run the Nexora Agent on this computer, then paste the 6-digit pairing code it prints to its console. We confirm your paid Nexora account before the agent hands this browser a token.'}</p>
+      {pairStatus && <p className="desktop-notice" role="status">✅ Nexora Agent detected and awaiting pairing — enter the code shown in its window.</p>}
+      <ol className="desktop-steps">
+        <li>Start the agent: <code>cd desktop-agent</code> → <code>npm install</code> → <code>npm run dev:agent</code>.</li>
+        <li>Allow this site: set the agent's <code>AGENT_ALLOWED_ORIGINS</code> to <code>{AGENT_SELF_ORIGIN || 'this page origin'}</code> and its <code>NEXORA_BACKEND_URL</code> to your Nexora backend, then restart it.</li>
+        <li>Copy the pairing code from the agent console and paste it below.</li>
+      </ol>
+      <label className="desktop-label" htmlFor="desktop-pair">Pairing code</label>
+      <div className="desktop-inline">
+        <input id="desktop-pair" className="tool-runner-input desktop-field" type="text" inputMode="numeric" maxLength={6} autoComplete="off" placeholder="6-digit code" value={pairCode} onChange={(event) => setPairCode(event.target.value.replace(/\D/g, '').slice(0, 6))} disabled={busy === 'pairing'} />
+        <button type="button" className="tool-runner-run" onClick={doPair} disabled={busy === 'pairing' || pairCode.length !== 6}>{busy === 'pairing' ? 'Connecting…' : 'Connect'}</button>
+      </div>
+      {pairErr && <div className="tool-runner-error" role="alert">⚠️ {pairErr}</div>}
+    </div>}
+
+    {enabled && <>
     <div className="desktop-tabs">{[['run', 'Run'], ['permissions', 'Permissions'], ['audit', 'Audit log']].map(([id, label]) => <button type="button" key={id} className={`desktop-tab${tab === id ? ' selected' : ''}`} onClick={() => goTab(id)}>{label}</button>)}</div>
 
     {error && <div className="tool-runner-error" role="alert">⚠️ {error}</div>}
     {notice && <div className="desktop-notice" role="status">{notice}</div>}
 
     {tab === 'run' && <div className="desktop-run">
-      <div className="desktop-card desktop-screen-card">
+      {!paired && <div className="desktop-card desktop-screen-card">
         <div className="desktop-screen-actions">
           <button type="button" className="tool-runner-run" onClick={doCapture} disabled={busy !== '' || !enabled}>👁 Observe Screen</button>
           <button type="button" className="tool-runner-run" onClick={doInspect} disabled={busy !== '' || !enabled}>✨ Describe my screen</button>
@@ -1382,13 +1503,13 @@ function DesktopView({ token, aiName, isLoggedIn, onLogin }) {
         <p className="desktop-muted">Needs the “screen” permission (Permissions tab). The picture is shown to you and sent to {aiName} for this one look — never saved to disk unless you ask to.</p>
         {screen?.dataUrl && <figure className="desktop-shot"><img src={screen.dataUrl} alt={`A screenshot of your screen, ${screen.width} by ${screen.height}`} /><figcaption>{screen.width}×{screen.height}{screen.saved ? ` · saved to ${screen.saved}` : ' · in memory only'}</figcaption></figure>}
         {report && <div className="desktop-report" role="status"><strong>{aiName}’s visual inspection</strong><p>{report}</p></div>}
-      </div>
+      </div>}
 
-      <div className="desktop-card">
+      {!paired && <div className="desktop-card">
         <label className="desktop-label" htmlFor="desktop-cmd">Ask in plain words</label>
         <textarea id="desktop-cmd" className="tool-runner-input" rows={2} placeholder="e.g. open the automation browser and search for React docs" value={command} onChange={(event) => setCommand(event.target.value)} disabled={busy !== ''} />
         <div className="desktop-row"><button type="button" className="tool-runner-run" onClick={runIntent} disabled={busy !== '' || !command.trim()}>Plan this</button></div>
-      </div>
+      </div>}
 
       <div className="desktop-card">
         <label className="desktop-label" htmlFor="desktop-action">…or build the action directly</label>
@@ -1427,27 +1548,27 @@ function DesktopView({ token, aiName, isLoggedIn, onLogin }) {
         return <div className={`desktop-scope${granted ? ' is-on' : ''}`} key={scope}>
           <div className="desktop-scope-main"><span className="showcase-icon">{icon}</span><div><strong>{scope}</strong><small>{desc}</small></div></div>
           {granted
-            ? <button type="button" className="desktop-link danger" onClick={() => mutatePerms(() => desktopRevoke(token, { scope }), `Revoked ${scope}`)}>Revoke</button>
-            : <button type="button" className="desktop-link" onClick={() => mutatePerms(() => desktopGrant(token, { scope }), `Granted ${scope}`)}>Grant</button>}
+            ? <button type="button" className="desktop-link danger" onClick={() => mutatePerms(() => api.revokePerm({ scope }), `Revoked ${scope}`)}>Revoke</button>
+            : <button type="button" className="desktop-link" onClick={() => mutatePerms(() => api.grant({ scope }), `Granted ${scope}`)}>Grant</button>}
         </div>
       })}</div>
 
       <div className="desktop-card">
         <label className="desktop-label" htmlFor="desktop-dir">Approved folders — file actions are limited to these</label>
-        <ul className="desktop-list">{(perms?.allowedDirs || []).length ? perms.allowedDirs.map((d) => <li key={d}><code>{d}</code><button type="button" className="desktop-link danger" onClick={() => mutatePerms(() => desktopRevoke(token, { allowedDir: d }), 'Folder removed', refreshPermissions)}>Remove</button></li>) : <li className="desktop-none">None yet — files.* actions will be denied.</li>}</ul>
-        <div className="desktop-inline"><input id="desktop-dir" className="tool-runner-input desktop-field" type="text" placeholder="C:\\Path\\To\\Sandbox" value={dirDraft} onChange={(event) => setDirDraft(event.target.value)} /><button type="button" className="desktop-link" onClick={() => { const d = dirDraft.trim(); if (d) mutatePerms(() => desktopGrant(token, { allowedDir: d }), 'Folder approved', () => setDirDraft('')) }}>Add</button></div>
+        <ul className="desktop-list">{(perms?.allowedDirs || []).length ? perms.allowedDirs.map((d) => <li key={d}><code>{d}</code><button type="button" className="desktop-link danger" onClick={() => mutatePerms(() => api.revokePerm({ allowedDir: d }), 'Folder removed', refreshPermissions)}>Remove</button></li>) : <li className="desktop-none">None yet — files.* actions will be denied.</li>}</ul>
+        <div className="desktop-inline"><input id="desktop-dir" className="tool-runner-input desktop-field" type="text" placeholder="C:\\Path\\To\\Sandbox" value={dirDraft} onChange={(event) => setDirDraft(event.target.value)} /><button type="button" className="desktop-link" onClick={() => { const d = dirDraft.trim(); if (d) mutatePerms(() => api.grant({ allowedDir: d }), 'Folder approved', () => setDirDraft('')) }}>Add</button></div>
       </div>
 
       <div className="desktop-card">
         <label className="desktop-label">Approved apps</label>
         <ul className="desktop-list">{(apps || []).length ? (apps || []).map((a) => <li key={a.id}><code>{a.id}</code> <span className="desktop-muted">{a.label}{a.resolved ? '' : ' · not installed here'}</span></li>) : <li className="desktop-none">None reported by the agent.</li>}</ul>
-        <div className="desktop-inline"><input className="tool-runner-input desktop-field" type="text" placeholder="app id (e.g. chrome)" value={appDraft} onChange={(event) => setAppDraft(event.target.value)} /><button type="button" className="desktop-link" onClick={() => { const v = appDraft.trim(); if (v) mutatePerms(() => desktopGrant(token, { approvedAppId: v }), 'App approved', () => setAppDraft('')) }}>Add</button></div>
+        <div className="desktop-inline"><input className="tool-runner-input desktop-field" type="text" placeholder="app id (e.g. chrome)" value={appDraft} onChange={(event) => setAppDraft(event.target.value)} /><button type="button" className="desktop-link" onClick={() => { const v = appDraft.trim(); if (v) mutatePerms(() => api.grant({ approvedAppId: v }), 'App approved', () => setAppDraft('')) }}>Add</button></div>
       </div>
 
       <div className="desktop-card">
         <label className="desktop-label">Allowed browser hosts (empty = the agent's env default)</label>
         <ul className="desktop-list">{(perms?.allowedHosts || []).length ? perms.allowedHosts.map((h) => <li key={h}><code>{h}</code></li>) : <li className="desktop-none">No per-host allowlist set.</li>}</ul>
-        <div className="desktop-inline"><input className="tool-runner-input desktop-field" type="text" placeholder="example.com" value={hostDraft} onChange={(event) => setHostDraft(event.target.value)} /><button type="button" className="desktop-link" onClick={() => { const v = hostDraft.trim(); if (v) mutatePerms(() => desktopGrant(token, { allowedHost: v }), 'Host allowed', () => setHostDraft('')) }}>Add</button></div>
+        <div className="desktop-inline"><input className="tool-runner-input desktop-field" type="text" placeholder="example.com" value={hostDraft} onChange={(event) => setHostDraft(event.target.value)} /><button type="button" className="desktop-link" onClick={() => { const v = hostDraft.trim(); if (v) mutatePerms(() => api.grant({ allowedHost: v }), 'Host allowed', () => setHostDraft('')) }}>Add</button></div>
       </div>
     </div>}
 
@@ -1456,6 +1577,7 @@ function DesktopView({ token, aiName, isLoggedIn, onLogin }) {
       {(audit || []).length === 0 ? <p className="desktop-none">Nothing recorded yet.</p>
         : <ul className="desktop-audit-list">{audit.map((entry, n) => <li key={n}><span className="desktop-audit-time">{new Date(entry.ts).toLocaleTimeString()}</span><code className="desktop-audit-event">{entry.event || entry.action}</code>{entry.status ? <span className="desktop-scope-chip">{entry.status}</span> : null}{entry.reason ? <span className="desktop-muted"> — {entry.reason}</span> : null}</li>)}</ul>}
     </div>}
+    </>}
   </section>
 }
 
@@ -1848,6 +1970,10 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
      { id, dataUrl (preview), url (once uploaded), uploading } — max 4 per turn. */
   const [pendingImgs, setPendingImgs] = useState([])
   const attachInputRef = useRef(null)
+  /* Live webcam capture modal (📷). Its own getUserMedia lifecycle lives inside
+     CameraCapture; a captured frame is routed back through addImageFiles so the
+     upload + vision path stays identical to a pasted/picked image. */
+  const [cameraOpen, setCameraOpen] = useState(false)
   const promptInputRef = useRef(null)
   /* Set when the composer owes the user a caret: after a send, a stop or opening a
      thread — so no prompt ever has to be triggered a second time. */
@@ -1884,6 +2010,11 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
   const [confirmDeleteAll, setConfirmDeleteAll] = useState(false)
 
   const userName = userProfile?.name || 'Guest'
+  /* The names she speaks aloud, kept in a ref so the proactive setInterval
+     closure (created once, long-lived) reads the current profile instead of
+     the one it closed over — same discipline as every other ref here. */
+  const speakNamesRef = useRef([])
+  speakNamesRef.current = [voicePrefs.assistantName || 'Nexora', (userProfile?.name || '').trim().split(/\s+/)[0]].filter(Boolean)
   const userEmail = userProfile?.email || 'Sign in to sync'
   const userInitial = userName.charAt(0).toUpperCase()
   const userAvatar = userProfile?.avatar || null
@@ -1932,7 +2063,10 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
     if (!providerQuota) return
     if (providerQuota.exhausted && !quotaExhaustedRef.current) {
       quotaExhaustedRef.current = true
-      setNotice('🪫 Aaj ka primary model quota khatam — ab backup model se jawab aa rahe hain')
+      const resetLabel = providerQuota.resetsAt
+        ? new Date(providerQuota.resetsAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+        : 'reset'
+      setNotice(`🪫 Daily token limit (${Math.round((providerQuota.limit || 0) / 1000)}k) khatam — naye messages ${resetLabel} par reset ke baad hi jayenge`)
     } else if (!providerQuota.exhausted) {
       quotaExhaustedRef.current = false
     }
@@ -2031,6 +2165,14 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
          reaching out. The old build only muted the mic and kept nudging, which
          is exactly the "paused but still texting" bug reported. */
       if (voiceAsleepRef.current || !wakeEnabledRef.current) return
+      /* Two states the old gate never considered, both of which mean "she must
+         NOT open her mouth right now": the user is talking (detected only
+         within the last few seconds, so an in-flight utterance is honoured but
+         a conversation that genuinely went quiet still earns a check-in), or a
+         full voice call owns the mic — that loop does its own turn-taking and
+         an extra bubble mid-call is pure noise. */
+      if (hasUserSpokenRecently()) return
+      if (voiceOpenRef.current) return
       if (Date.now() - lastActivityRef.current < IDLE_PROACTIVE_MS) return
       /* Stop reaching out into a void: after a couple of unanswered check-ins, fall
          silent until the user writes again (their send resets the counter). */
@@ -2049,10 +2191,15 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
       proactiveChat({ token: authToken, conversationId, assistantName: aiName, persona: voicePrefsRef.current.persona, gender: voicePrefsRef.current.gender, language: voicePrefsRef.current.language, composing, withdrewDraft })
         .then((r) => {
           const content = (r?.content || '').trim()
-          /* Re-check quiet AFTER the round-trip: the user may have paused her
-             while this request was in flight, and a late nudge would look like
-             the pause did nothing. */
+          /* Re-check quiet AFTER the round-trip: the user may have paused her,
+             opened a voice call, or STARTED TALKING while this request was in
+             flight, and a late nudge would either look like the pause did
+             nothing or interrupt them mid-sentence. */
           if (voiceAsleepRef.current || !wakeEnabledRef.current) {
+            proactiveBusyRef.current = false
+            return
+          }
+          if (voiceOpenRef.current || hasUserSpokenRecently()) {
             proactiveBusyRef.current = false
             return
           }
@@ -2072,6 +2219,9 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
                   language: voicePrefsRef.current.language,
                   gender: voicePrefsRef.current.gender,
                   voice: voicePrefsRef.current.voice,
+                  /* Same spoken-name list as the streamed replies — an idle
+                     check-in addresses the user by name too. */
+                  names: speakNamesRef.current,
                   authToken,
                   onEnd: () => { armNowRef.current?.(15000); setVoiceTurn(true) }
                 })
@@ -2588,6 +2738,20 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
       return
     }
 
+    /* Daily token limit reached: the top-bar countdown is now the authoritative
+       gate, so once it hits zero the composer stops sending NEW messages until the
+       budget resets. The server enforces this too (a blocked turn never reaches the
+       model); this keeps the UI honest and shows a friendly notice instead of a red
+       error card. Self-control / sleep-wake phrases above already returned, so this
+       only gates real AI turns. */
+    if (providerQuota?.exhausted) {
+      const resetLabel = providerQuota.resetsAt
+        ? new Date(providerQuota.resetsAt).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+        : 'reset'
+      setNotice(`🪫 Daily token limit khatam — naya message ${resetLabel} ke baad hi jayega.`)
+      return
+    }
+
     /* Demo accounts get a taste, then the upsell: once the free allowance is spent
        the composer stops sending and the pricing modal opens. A paid plan clears it. */
     if (userProfile?.isDemo && !userProfile?.isPremium) {
@@ -2653,7 +2817,13 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
      * to the speak queue. The final `streamFinal` flush mops up any
      * trailing partial sentence the model ended without punctuation. */
     let spokeIdx = 0
-    const speakOpts = { language: voicePrefs.language, gender: voicePrefs.gender, voice: voicePrefs.voice, authToken }
+    /* Names this reply will speak aloud (the user's own name + the assistant's).
+       Known ones are respelled client-side before the mic; this list lets the
+       SERVER respell its provider audio and add a pronunciation line for names
+       outside the small table. Ref-read because the proactive interval closure
+       needs it too; first token only — that is what she actually says. */
+    const speakNames = [aiName, (userProfile?.name || '').trim().split(/\s+/)[0]].filter(Boolean)
+    const speakOpts = { language: voicePrefs.language, gender: voicePrefs.gender, voice: voicePrefs.voice, names: speakNames, authToken }
     const shouldStreamSpeak = Boolean(speakReplies && !voiceOpen)
 
     try {
@@ -2781,6 +2951,22 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
           ),
         )
         setNotice(`💳 ${aiName}: Credits khatam — upgrade panel se recharge karwao`)
+        return
+      }
+      /* Daily token limit reached server-side: the client's copy was stale (the
+         budget flipped to zero between the last reply and this send). Not an alarm
+         — render a warm assistant line, lock the composer by marking the quota
+         exhausted so the next send is blocked up-front, and keep the pill honest. */
+      if (err?.type === 'quota_exhausted') {
+        setProviderQuota((q) => ({ ...(q || {}), remaining: 0, exhausted: true }))
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === tempAsstId
+              ? { ...m, content: err.message || `🪫 Aaj ka token limit khatam — reset ke baad baat karte hain.`, streaming: false, error: false }
+              : m,
+          ),
+        )
+        setNotice(`🪫 ${aiName}: Daily token limit khatam — reset par wapis milte hain`)
         return
       }
       setMessages((prev) =>
@@ -2943,12 +3129,16 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
   async function fulfilDesktopActions({ tempId, text }) {
     const markers = [...String(text || '').matchAll(/\[DESKTOP:([a-z._]+)\|(.+?)\]/gi)]
     if (!markers.length) return
+    /* Transport: a paired browser drives its OWN local agent directly (the cloud
+       backend can't reach a remote loopback); with no client token we fall back to
+       the authenticated backend proxy for self-host / local-first installs. */
+    const direct = agentTransport()
     /* Auto-grant all scopes once per session — the agent refuses to execute
        actions whose scope is not granted, so the first marker would fail if we
        skip this. */
     if (!desktopAutoGranted.current) {
       try {
-        await Promise.all(['browser', 'files', 'apps', 'system', 'screen', 'desktop'].map((scope) => desktopGrant(authToken, { scope })))
+        await Promise.all(['browser', 'files', 'apps', 'system', 'screen', 'desktop'].map((scope) => (direct ? direct.grant({ scope }) : desktopGrant(authToken, { scope }))))
         desktopAutoGranted.current = true
       } catch { /* agent might be offline; the per-action plan below surfaces a clearer error */ }
     }
@@ -2959,9 +3149,9 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
       let args
       try { args = JSON.parse(m[2]) } catch { updatedText = updatedText.replace(full, `\u26a0\ufe0f Invalid desktop args: ${m[2]}`); continue }
       try {
-        const plan = await desktopPlan(authToken, { action, args, context: { fromVoice: false } })
+        const plan = direct ? await direct.plan({ action, args, context: { fromVoice: false } }) : await desktopPlan(authToken, { action, args, context: { fromVoice: false } })
         if (!plan.planId) { updatedText = updatedText.replace(full, `\u26a0\ufe0f ${plan.reason || 'Agent refused: ' + (plan.status || 'unknown')}`); continue }
-        const result = await desktopExecute(authToken, { planId: plan.planId, approvedThisAction: true })
+        const result = direct ? await direct.execute({ planId: plan.planId, approvedThisAction: true }) : await desktopExecute(authToken, { planId: plan.planId, approvedThisAction: true })
         if (result.ok === false) {
           updatedText = updatedText.replace(full, `\u26a0\ufe0f ${result.reason || result.error || 'Action failed.'}`)
         } else {
@@ -3084,6 +3274,14 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
        through the mic and cancelling herself. `voiceTurn` is cleared so the
        pill flips from "your turn" back to "listening" for the user's input. */
     onUserSpeaking: () => {
+      /* Unconditional: record that the human is talking, whatever happens
+         below. The idle check-in loop reads this to avoid interrupting a spoken
+         turn; the barge-in work underneath only matters while she is audible.
+         The 400 ms re-fire while speech continues ALSO restarts the idle clock,
+         so a long spoken turn buys a full quiet window AFTER it ends instead of
+         a stale 30 s count that expired mid-sentence. */
+      markUserSpeaking()
+      lastActivityRef.current = Date.now()
       if (!isAiSpeakingLongEnough()) return
       cancelServerAudio()
       if (window.speechSynthesis) { try { window.speechSynthesis.cancel() } catch { /* ignore */ } }
@@ -3171,7 +3369,9 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
               number, so instead of a static "Unlimited" the pill now shows the
               PRIMARY model's remaining daily token budget — a live countdown that
               ticks after every reply, goes amber near the wall and throb-red at 0
-              (when failover takes over). Clicking a free pill opens the upgrade panel. */}
+              (when failover takes over). Both numbers roll down smoothly through
+              `CreditsValue` ("ulta countdown") and pop a -N chip when they change.
+              Clicking the pill on a free account opens the upgrade panel. */}
           {isLoggedIn && (() => {
             const fmtTokens = (n) => (n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : `${n}`)
             if (isPremium) {
@@ -3181,6 +3381,20 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
                     <span className="credits-icon" aria-hidden="true">∞</span>
                     <span className="credits-value">Unlimited</span>
                     <span className="credits-label">Plan</span>
+                  </button>
+                )
+              }
+              /* Local-device pass (backend config.localUnlimitedTokens): this session
+                 reached the API over loopback, so the server already refused to gate
+                 it — the pill says ∞ instead of counting down to a lock-out that can
+                 never arrive. Checked BEFORE the ratio maths, otherwise a spent budget
+                 would still colour the pill red. */
+              if (providerQuota.unlimited) {
+                return (
+                  <button className="header-credits-pill credits-unlimited" type="button" title="Local device — daily token limit bypassed">
+                    <span className="credits-icon" aria-hidden="true">∞</span>
+                    <span className="credits-value">Unlimited</span>
+                    <span className="credits-label">Local</span>
                   </button>
                 )
               }
@@ -3194,7 +3408,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
                   title={remaining <= 0 ? 'Aaj ka primary model quota khatam — backup model chal raha hai' : `Aaj ${fmtTokens(remaining)} tokens bache hain (limit ${fmtTokens(limit)}) — ${new Date(providerQuota.resetsAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} ko reset`}
                 >
                   <span className="credits-icon" aria-hidden="true">{remaining <= 0 ? '⚠️' : '✦'}</span>
-                  <span className="credits-value">{fmtTokens(remaining)}</span>
+                  <CreditsValue value={remaining} format={fmtTokens} />
                   <span className="credits-label">tokens left</span>
                 </button>
               )
@@ -3207,12 +3421,16 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
                 title={`Aap ke paas ${creditsRemaining} credits bache hain${creditsRemaining === 0 ? ' — recharge karne ke liye click karein' : ''}`}
               >
                 <span className="credits-icon" aria-hidden="true">{creditsRemaining === 0 ? '⚠️' : '✦'}</span>
-                <span className="credits-value">{creditsRemaining}</span>
+                <CreditsValue value={creditsRemaining} />
                 <span className="credits-label">credits</span>
               </button>
             )
           })()}
-          {!isPremium && (
+          {/* The upgrade button only rides next to the pill for signed-out
+              visitors — a logged-in free user already opens the upgrade panel
+              by clicking the wallet pill itself, so the second "✦ Upgrade"
+              CTA was just clutter on top of the number. */}
+          {!isLoggedIn && (
             <button
               className="header-upgrade-btn"
               type="button"
@@ -3398,11 +3616,12 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
               <span className="prompt-box-spark" aria-hidden="true">✦</span>
               <button type="button" className="prompt-attach" aria-label="Attach image" title="Attach a reference image — or just Ctrl+V a copied one" onClick={() => attachInputRef.current?.click()}>📎</button>
               <input ref={attachInputRef} className="prompt-file" type="file" accept="image/*" multiple onChange={(event) => { addImageFiles(event.target.files); event.target.value = '' }} />
+              <button type="button" className="prompt-attach" aria-label="Take a photo" title="Take a photo with your camera" onClick={() => setCameraOpen(true)}>📷</button>
               <label className="sr-only" htmlFor="chat-prompt">Type your message</label>
               {/* Never disabled: a greyed-out field blurs itself, which used to force the
                   user to click back into the composer before typing the next prompt. The
                   send button and sendPrompt's own guard block a second turn instead. */}
-              <input id="chat-prompt" ref={promptInputRef} type="text" value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape' && replyTarget) setReplyTarget(null) }} placeholder={replyTarget ? `Replying to ${aiName}…` : streaming ? `${aiName} is typing…` : pendingImgs.length ? 'Ask about the image…' : 'Type your message...'} autoComplete="off" />
+              <input id="chat-prompt" ref={promptInputRef} type="text" value={prompt} onChange={(event) => setPrompt(event.target.value)} onKeyDown={(event) => { if (event.key === 'Escape' && replyTarget) setReplyTarget(null) }} placeholder={providerQuota?.exhausted ? '🪫 Daily limit khatam — reset ka intezar…' : replyTarget ? `Replying to ${aiName}…` : streaming ? `${aiName} is typing…` : pendingImgs.length ? 'Ask about the image…' : 'Type your message...'} autoComplete="off" />
               {/* Auto-voice cluster: the always-listening mic pill (a single click
                   pauses the mic, another resumes it) + Speak-replies toggle. Lives
                   inside the chat composer so the whole voice surface sits exactly
@@ -3446,7 +3665,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
                   }}
                 ><span aria-hidden="true">{speakReplies ? '🔊' : '🔇'}</span></button>
               </div>
-              <button type="submit" aria-label="Send message" disabled={streaming || pendingImgs.some((p) => p.uploading) || (!prompt.trim() && !pendingImgs.length)}>➤</button>
+              <button type="submit" aria-label="Send message" disabled={streaming || pendingImgs.some((p) => p.uploading) || providerQuota?.exhausted || (!prompt.trim() && !pendingImgs.length)}>➤</button>
               {streaming && <button type="button" className="chat-stop-btn" aria-label="Stop generating" onClick={stopGeneration}>■ Stop</button>}
             </div>
           </form>
@@ -3509,6 +3728,13 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
     {voiceOpen && (
       <Suspense fallback={null}>
         <VoiceCall authToken={authToken} user={userProfile} prefs={voicePrefs} onClose={() => setVoiceOpen(false)} />
+      </Suspense>
+    )}
+    {/* Camera capture — the 📷 shot returns a File and rides the exact same
+        attach → upload → vision pipeline as a pasted/picked image, then closes. */}
+    {cameraOpen && (
+      <Suspense fallback={null}>
+        <CameraCapture onCapture={(file) => { addImageFiles([file]); setCameraOpen(false) }} onClose={() => setCameraOpen(false)} />
       </Suspense>
     )}
   </main>

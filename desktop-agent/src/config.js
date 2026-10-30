@@ -42,6 +42,20 @@ export const config = {
   auditDir: resolvePath(process.env.AGENT_AUDIT_DIR, path.join(root, 'audit')),
   dataDir: resolvePath(process.env.AGENT_DATA_DIR, path.join(root, 'data')),
   rootDir: root,
+  /* Cloud web app + local agent: the browser talks to this agent DIRECTLY (it is on
+     the same machine, so the loopback bind still holds). Two extra knobs make that
+     safe — `allowedOrigins` is the CORS allowlist of web origins allowed to drive the
+     agent (empty = only server-to-server calls with no Origin, i.e. the classic
+     backend proxy), and `backendUrl` is the cloud API the agent calls OUTBOUND to
+     verify a pairing browser really owns a paid account before it mints a token. */
+  allowedOrigins: listFrom(process.env.AGENT_ALLOWED_ORIGINS).map((o) => o.replace(/\/+$/, '')),
+  backendUrl: (process.env.NEXORA_BACKEND_URL || '').trim().replace(/\/+$/, ''),
+  /* Pairing: a short numeric code shown only on the agent's own console (never
+     served over HTTP, so a remote site cannot read it) plus a client token valid
+     for a bounded window. The code rotates so a stale glance can't be reused. */
+  pairCodeTtlMs: Math.min(600000, Math.max(10000, Number(process.env.AGENT_PAIR_CODE_TTL_MS || 60000))),
+  pairWindowMs: Math.min(3600000, Math.max(60000, Number(process.env.AGENT_PAIR_WINDOW_MS || 600000))),
+  clientTokenTtlDays: Math.min(365, Math.max(1, Number(process.env.AGENT_CLIENT_TOKEN_TTL_DAYS || 30))),
 }
 
 /* Fail fast — before binding a socket — on the two mistakes that would silently

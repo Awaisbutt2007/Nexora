@@ -43,6 +43,12 @@
  *     MP3 bytes back. Same contract as the image proxy and the realtime token
  *     mint. */
 import { config } from '../config.js'
+/* One pronunciation source for every spoken surface. The tables used to live down
+ * below inside this file, which meant the realtime (Talk) voice never saw them —
+ * speech-to-speech has no text pass, only `instructions`. They are now in
+ * `pronunciation.js` and BOTH levers are read from there: `respellKnownNames` for
+ * this engine's text, `speechHintsText` for its `instructions`. */
+import { KNOWN_NAMES, speechHintsText, respellKnownNames } from './pronunciation.js'
 
 /* OpenAI's TTS voice catalogue (docs-verified). We split by perceived gender so
  * the companion's onboarding choice ("female" / "male") maps cleanly, AND we
@@ -190,15 +196,24 @@ const EMOTION_MARKERS = [
 /* Question markers on their own (a sentence ending with ?) fire a softer
  * rising-intonation prompt so the model doesn't fall flat on the ask. */
 const QUESTION_RE = /\?\s*(?:[^\w\s]\s*)*$/
+/* Attached to every style spec. The phonetic respellings above deliberately
+ * hyphenate syllables ("naa-hee", "kar-oon-ghee") and the Indic core treats
+ * those as breath marks — good for consonant clusters, but on short helper
+ * words ("rahi", "hai") it reads as one drawn-out drag. This line keeps the
+ * corrections crisp without removing them. */
+const NAME_PACE_LINE = 'Never stretch, drag or hold a syllable beyond its natural length; hyphenated spellings are pronunciation hints only, say each word crisp and even, the way a fast-talking native speaker does.'
 
 /**
  * Combine the base per-language spec with any detected emotional colouring.
  * Returns { spec, speedDelta } where speedDelta is added to the language
  * profile (negative = slower, positive = faster) and clamped later.
  */
-export function buildTtsInstructions({ language, gender, emotionHint } = {}) {
+export function buildTtsInstructions({ language, gender, emotionHint, pronunciationText, names = [] } = {}) {
   const env = String(process.env.VOICE_SYNTH_INSTRUCTIONS || '').trim()
-  const base = env || TTS_INSTRUCTIONS[language] || TTS_INSTRUCTIONS.auto
+  /* The anti-drag guard rides on EVERY spec, including a custom env override:
+     syllable-stretching is a pacing problem, not a style choice, and it is
+     the one thing the hyphenated respellings above can trigger. */
+  const base = [env || TTS_INSTRUCTIONS[language] || TTS_INSTRUCTIONS.auto, NAME_PACE_LINE].join(' ')
   const genderLine = gender === 'male'
     ? 'Voice: natural adult male, chest register, medium warmth.'
     : 'Voice: natural adult female, medium-low pitch, warm and grounded (NOT cartoon-cutesy).'
@@ -217,16 +232,33 @@ export function buildTtsInstructions({ language, gender, emotionHint } = {}) {
     }
   }
   if (!emotionSpec && QUESTION_RE.test(text)) {
-    emotionSpec = 'This reply is a question — hold the very last syllable for a beat and let the pitch rise naturally at the question mark, the way a real friend does when they wait for an answer.'
+    /* Rising pitch WITHOUT the old "hold the very last syllable for a beat" —
+       that instruction made the engine literally drag the closing word
+       ("raa-hee…") instead of lifting its pitch, which users read as the
+       voice lagging. A question mark alone still gets the upward lilt. */
+    emotionSpec = 'This reply is a question — let the pitch rise naturally at the question mark the way a real friend does when they wait for an answer, WITHOUT stretching or holding any syllable.'
   }
-  return { text: [base, genderLine, emotionSpec].filter(Boolean).join(' '), speedDelta }
+  /* Names the shared table does not know still get one line each — a native
+     Urdu/Hindi reading beats the engine guessing from the letters. Known names are
+     handled inside `speechHintsText`, which also carries the diction rule and the
+     per-turn difficult words. Scan the RAW text: `emotionHint` arrives already
+     rewritten by `prepareTextForSpeech`, and a key like "kyun" is gone by then. */
+  const unknownNameLines = (Array.isArray(names) ? names : [])
+    .map((n) => String(n || '').trim())
+    .filter((n) => n && n.length <= 40 && !KNOWN_NAMES.has(n.toLowerCase()))
+    .slice(0, 3)
+    .map((n) => `If you say the name "${n}", pronounce it the way a native Urdu/Hindi speaker says it, as one smooth word with no pause inside it.`)
+  return { text: [base, genderLine, emotionSpec, ...speechHintsText(pronunciationText || text, names).split('\n'), ...unknownNameLines].filter(Boolean).join(' '), speedDelta }
 }
 
-/* Per-language pacing. The engine rushes consonant clusters on Indic speech at
- * 1.0; dropping a hair under natural makes retroflex stops land without
- * sounding drunk. English stays at 1.0 because the voice is already trained
- * for it. */
-const TTS_SPEED = { en: 1.0, hinglish: 0.94, ur: 0.92, auto: 0.96 }
+/* Per-language pacing, raised one notch across the board (~+0.1) because the
+ * user asked for a livelier delivery — the old 0.94/0.92 read as dragging.
+ * The ordering is kept on purpose: Indic still sits under English, because the
+ * engine rushes consonant clusters the higher it goes, and the phonetic
+ * rewrite pass above needs its hyphenated breath marks to have room to land.
+ * English can safely overshoot 1.0 — the voice is trained for it, and a
+ * moderate 1.1 stays clean. Emotion beats still nudge ±0.06 on top. */
+const TTS_SPEED = { en: 1.1, hinglish: 1.02, ur: 1.0, auto: 1.04 }
 
 /* ── Roman-Hindi/Urdu text pass ─────────────────────────────────────────────
  * A Gpt-4o-mini-tts reading Latin-script Hindi through its English phoneme
@@ -365,6 +397,14 @@ const INDIC_REWRITES = [
   [/\bhoonga\b/gi, 'hoo-oon-gaa'],
   [/\bhoongi\b/gi, 'hoo-oon-ghee'],
 ]
+/* ── Personal names ─────────────────────────────────────────────────────────
+ * The table lives in `pronunciation.js` now, together with the realtime and browser
+ * copies, so a name can never be correct on one spoken surface and wrong on another.
+ * Two strategies, both driven by the data: INSTRUCTION_ONLY names ("Awais") keep
+ * their real spelling in the text and get an explicit English-phonetics line, because
+ * handing this model "Ahwice" read as broken Roman English; GPM names ("aira") are
+ * respelled. Verified against HowToSay IPA /æwæɪs/, PronounceNames "a · wai · s" and
+ * the name-holder's own pronunciation video. */
 /* The engine reads "Bilkul" at the head of a sentence as its own word and
  * capitalises the phoneme table accordingly — so a rewrite that flattens
  * "Bilkul" → "bil-kul" loses the sentence-initial capital and the reply
@@ -384,7 +424,9 @@ function casePreservingSwap(match, replacement) {
  *   3. Dash → comma so the engine takes a breath instead of running through.
  *   4. Full-caps → Title Case so the engine reads the word, not the letters.
  *   5. Per-language phonetic rewrites (Roman-Hindi/Urdu only; English path
- *      is left completely alone because it can't be improved safely).
+ *      is left completely alone because it can't be improved safely) — then
+ *      the personal-name pass, which runs for EVERY language because an
+ *      English reply can address an Urdu name too.
  *   6. Collapse repeated punctuation and squeeze whitespace.
  * Text > 1200 chars is truncated with "…" (the schema caps at 1200 anyway,
  * but keep the invariant here so a future schema bump doesn't accidentally
@@ -430,6 +472,12 @@ export function prepareTextForSpeech(raw, { language = 'auto' } = {}) {
         : (m) => casePreservingSwap(m, rep))
     }
   }
+  /* Personal names — every language, because an English reply can address an
+     Urdu name too. Runs AFTER the Indic pass so a respelling can never be
+     re-matched by a word rewrite. `keepInstructionOnly` leaves "Awais" in natural
+     spelling for this neural voice; it is told, not re-spelled (see the hint line
+     in pronunciation.js). Other known names (e.g. "aira") get GPM respelling. */
+  t = respellKnownNames(t, { keepInstructionOnly: true })
   /* Whitespace squeeze and cap. Keep the trailing sentence terminator so the
    * engine uses falling intonation instead of trailing off. */
   t = t.replace(/[ \t]+/g, ' ').replace(/\s*\n\s*/g, '. ').trim()
@@ -445,7 +493,7 @@ export function prepareTextForSpeech(raw, { language = 'auto' } = {}) {
  *
  * @returns {Promise<Buffer>} the MP3 bytes
  */
-export async function synthesizeSpeech({ text, voice, language = 'auto', gender, speed } = {}) {
+export async function synthesizeSpeech({ text, voice, language = 'auto', gender, speed, names } = {}) {
   /* Pre-normalise so the engine sees text it can actually speak, then charge
    * credits based on the ORIGINAL length (in the route) — a Hinglish reply
    * that expands from 400 to 480 chars via rewrites must not cost more. The
@@ -471,7 +519,7 @@ export async function synthesizeSpeech({ text, voice, language = 'auto', gender,
   }
   let emotionSpeedDelta = 0
   if (MODEL_SUPPORTS_INSTRUCTIONS) {
-    const ins = buildTtsInstructions({ language, gender, emotionHint: finalText })
+    const ins = buildTtsInstructions({ language, gender, emotionHint: finalText, pronunciationText: text, names })
     body.instructions = ins.text
     emotionSpeedDelta = ins.speedDelta
     /* Re-clamp the speed after the emotion delta so a sorry beat never dips

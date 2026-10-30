@@ -205,6 +205,12 @@ const synthSchema = z.object({
      absent or unknown we pick by gender. Never trusted as-is: filtered via
      pickTtsVoice's allow-list below. */
   voice: z.string().trim().max(20).optional(),
+  /* Names spoken in this reply (assistant + user). The engine reads a
+     South-Asian name through its English phoneme table ("Awais" → "AY-waze"
+     → "a-waze"); known names are respelled in the text pass and anything
+     outside that small table rides along here so the style spec can tell the
+     voice how to say it. Capped hard — this is a hint list, not a payload. */
+  names: z.array(z.string().trim().min(1).max(40)).max(4).optional(),
 })
 
 router.post('/synth', async (req, res, next) => {
@@ -230,7 +236,17 @@ router.post('/synth', async (req, res, next) => {
        rewrites (`kyun` → `kayun`) that slightly expand the string can't be
        gamed into a lower cost-per-character. The provider still sees the
        prepared text inside `synthesizeSpeech`. */
-    const buffer = await synthesizeSpeech({ text: body.text, voice, language: body.language, gender: body.gender })
+    /* Names the companion is about to say out loud: the account's own name
+       ("Haan Awais, …") plus the assistant name from the stored prefs, so a
+       Settings rename is pronounced correctly without a deploy. Instruction-only
+       names (e.g. "Awais") stay in natural spelling and get an explicit
+       English-pronunciation instruction; other known names get GPM respelling.
+       The hint also fires from TEXT scanning inside buildTtsInstructions, so
+       ALL mentions are covered (developer name, addressing user, etc.). */
+    const names = [req.user.name, req.user.prefs?.assistantName]
+      .filter((n) => typeof n === 'string' && n.trim())
+      .map((n) => n.trim().split(/\s+/)[0].slice(0, 40))
+    const buffer = await synthesizeSpeech({ text: body.text, voice, language: body.language, gender: body.gender, names })
     deductCredits(req.user.id, cost)
     /* Stream the MP3 back same-origin. No Cache-Control: public because replay
        of an identical reply is rare and each credit-charged call should be

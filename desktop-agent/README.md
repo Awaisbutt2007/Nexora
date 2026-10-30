@@ -133,6 +133,58 @@ The frontend needs no secret — it authenticates to the backend with your norma
 
 ---
 
+## 6b. Cloud web app + local agent (pairing)
+
+The flow above (§6) is **local-first / self-hosted**: the backend and the agent run on
+the *same* machine, so the backend can proxy to `http://127.0.0.1:8799`. That stops
+working the moment the app is hosted in the cloud — a remote server opening
+`127.0.0.1:8799` reaches *its own* loopback, never your PC.
+
+So for a **hosted** Nexora the browser talks to this agent **directly** (it is on the
+same machine as you, so loopback still holds), and access is granted through a
+**pairing code** plus a **paid-account check**:
+
+```
+Browser (cloud origin) ──pair code + your JWT──►  local Agent :8799
+        ▲                                             │ verifies JWT/entitlement
+        │  Bearer <client token>  (all action calls)  ▼
+        └──────────────────────────  cloud backend  GET /api/desktop-agent/entitlement
+```
+
+1. **Start the agent** (§7). It prints a 6-digit **pairing code** to its console and
+   rotates it periodically. The code is *never* served over HTTP — the console is the
+   out-of-band anchor, so a random website cannot read it.
+2. In the app's **Desktop** view, click **Connect your PC**, type that code, and
+   confirm. The app sends the code + your login JWT straight to the local agent.
+3. The agent calls the cloud backend **outbound** to check the JWT owns a **paid**
+   (premium / non-free) account. Entitled → it mints a per-install **client token**
+   (returned once, stored in the browser); not entitled → the pair is refused.
+4. Every action the AI proposes then goes **browser → agent** with that Bearer token,
+   through the exact same `plan → execute`, default-deny-scope and always-confirm
+   gates as before. **Revoke this PC** (in the app, or `POST /pair/revoke`) deletes
+   the token immediately; tokens also expire after `AGENT_CLIENT_TOKEN_TTL_DAYS`.
+
+**What makes this safe** (the guarantees above still hold, plus):
+
+- **Loopback bind is unchanged** — the agent still listens only on `127.0.0.1`; the
+  browser reaches it because the browser is on the same PC. The agent only ever makes
+  *outbound* calls to the backend, never inbound listeners on a public interface.
+- **Origin allowlist + CORS** — a browser request must carry an `Origin` listed in
+  `AGENT_ALLOWED_ORIGINS`; any other site the user visits gets a `403`. A client token
+  is honoured *only* from an allowlisted Origin. (A no-Origin server-to-server call —
+  the classic backend proxy — is still accepted, gated by `AGENT_SECRET`.)
+- **The shared `AGENT_SECRET` never reaches the browser** — the browser only ever
+  holds its own revocable client token, and only its SHA-256 hash is stored on disk.
+- **Paid gate at pair time** — a signed-out, expired or downgraded-to-free session
+  cannot obtain a token. (MVP checks once when pairing + honours the token TTL; it
+  does not re-verify entitlement on every action.)
+
+To enable it, set `AGENT_ALLOWED_ORIGINS` (your hosted app origin **and** the local
+dev origin) and `NEXORA_BACKEND_URL` in `desktop-agent/.env` — both empty keeps
+browser pairing off and leaves only the §6 backend-proxy path. See `.env.example`.
+
+---
+
 ## 7. Start / Stop
 
 ### Start

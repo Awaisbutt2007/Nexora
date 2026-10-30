@@ -9,7 +9,8 @@ import { redact } from '../src/audit.js'
 import { PermissionManager } from '../src/permissions.js'
 import { resolveWithinAllowed, PathEscapeError, organize } from '../src/fsops.js'
 import { runWithTimeout, stopAll } from '../src/runner.js'
-import { createApp } from '../src/index.js'
+import { makeContextCache, isDead } from '../src/browser.js'
+import { createApp, httpStatusFor } from '../src/index.js'
 
 /* ── pure unit tests (no sockets, no browser) ─────────────────────────────── */
 
@@ -246,6 +247,9 @@ test('file read OUTSIDE the sandbox fails safely (containment)', async () => {
   const e = await api('POST', '/actions/execute', { body: { planId: p.json.planId } })
   assert.equal(e.json.ok, false)
   assert.match(e.json.reason, /outside the approved directories/)
+  /* A handler that threw is an upstream failure, not a refusal: 403 here used to
+     reach the chat as "Agent responded 403" with the reason discarded. */
+  assert.equal(e.status, 502)
 })
 
 test('alwaysConfirm action needs explicit approval, then succeeds', async () => {
@@ -266,6 +270,7 @@ test('a consumed plan cannot be replayed', async () => {
   await api('POST', '/actions/execute', { body: { planId: p.json.planId } })
   const again = await api('POST', '/actions/execute', { body: { planId: p.json.planId } })
   assert.equal(again.json.status, 'unknown_plan')
+  assert.equal(again.status, 404, 'a stale plan id is not a permission denial')
 })
 
 test('voice context may never arm a power action', async () => {
@@ -292,4 +297,85 @@ test('audit endpoint returns redacted entries — no file bodies or secrets', as
   assert.ok(!blob.includes('top-secret'), 'leaked a file body')
   assert.ok(!blob.includes('created by aira'), 'leaked file content')
   assert.ok(!blob.includes(secret), 'leaked the agent secret')
+})
+
+/* ── the browser launch cache ───────────────────────────────────────────────
+   A real session's audit log showed the bug this guards: one failed navigation,
+   then five browser actions that all died in ~25ms with "Target page, context or
+   browser has been closed". The cached persistent context had no liveness check,
+   so closing the automation window poisoned every later action until a restart. */
+
+function fakeContext() {
+  const ctx = {
+    dead: false,
+    __allowedHosts: [],
+    onClose: null,
+    on(event, fn) { if (event === 'close') this.onClose = fn },
+    closed() { return this.dead },
+    browser() { return { isConnected: () => !this.dead } },
+    async newPage() {
+      if (this.dead) throw new Error('browserContext.newPage: Target page, context or browser has been closed')
+      return { url: () => 'https://example.com/' }
+    },
+    /* the user closing the window is how a headed browser really dies */
+    kill() { this.dead = true; this.onClose?.() },
+  }
+  return ctx
+}
+
+test('browser cache: launches once while alive, and relaunches after the browser dies', async () => {
+  let launches = 0
+  const cache = makeContextCache({ launch: async () => { launches += 1; return fakeContext() } })
+
+  const first = await cache.get({ allowedHosts: ['example.com'] })
+  assert.equal(launches, 1)
+  assert.equal(await cache.get({}), first, 'a live context is reused, not relaunched')
+  assert.equal(launches, 1)
+  assert.equal(cache.isAlive(), true)
+
+  first.kill()
+  assert.equal(cache.isAlive(), false, 'the close event must invalidate the cache')
+  const second = await cache.get({})
+  assert.notEqual(second, first, 'a dead context must never be handed out again')
+  assert.equal(launches, 2, 'the next action gets a fresh browser instead of a 25ms failure')
+})
+
+test('browser cache: a context that dies silently (no close event) is still replaced', async () => {
+  const cache = makeContextCache({ launch: async () => fakeContext() })
+  const ctx = await cache.get({})
+  ctx.dead = true // the process was killed; Playwright never told us
+  assert.equal(isDead(ctx), true)
+  const next = await cache.get({})
+  assert.notEqual(next, ctx)
+  await assert.rejects(next.newPage.call(ctx), /has been closed/, 'the old object really is dead')
+})
+
+test('browser cache: concurrent actions share one launch, and a host grant applies at once', async () => {
+  let launches = 0
+  const cache = makeContextCache({ launch: async () => { launches += 1; await new Promise((r) => setTimeout(r, 5)); return fakeContext() } })
+  const [a, b] = await Promise.all([cache.get({}), cache.get({})])
+  assert.equal(a, b)
+  assert.equal(launches, 1, 'two actions at once must not open two browsers')
+
+  await cache.get({ allowedHosts: ['youtube.com'] })
+  assert.deepEqual(a.__allowedHosts, ['youtube.com'], 'a host granted after the launch must apply to the open browser')
+})
+
+test('browser cache: a failed launch is not cached as a permanent answer', async () => {
+  let attempts = 0
+  const cache = makeContextCache({ launch: async () => { attempts += 1; if (attempts === 1) throw new Error('chromium binary missing'); return fakeContext() } })
+  await assert.rejects(cache.get({}), /binary missing/)
+  assert.equal(cache.isAlive(), false)
+  assert.ok(await cache.get({}), 'the second action retries the launch instead of reusing the rejection')
+})
+
+test('execute statuses map to honest HTTP codes', () => {
+  assert.equal(httpStatusFor({ ok: true }), 200)
+  assert.equal(httpStatusFor({ ok: false, status: 'permission_denied' }), 403)
+  assert.equal(httpStatusFor({ ok: false, status: 'needs_confirmation' }), 403)
+  assert.equal(httpStatusFor({ ok: false, status: 'invalid' }), 400)
+  assert.equal(httpStatusFor({ ok: false, status: 'unknown_plan' }), 404)
+  assert.equal(httpStatusFor({ ok: false, status: 'expired' }), 409)
+  assert.equal(httpStatusFor({ ok: false, status: 'failed' }), 502)
+  assert.equal(httpStatusFor({ ok: false, status: 'cancelled' }), 502)
 })

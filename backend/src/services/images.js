@@ -8,10 +8,110 @@
  * later without touching routes or the UI.
  */
 
+import OpenAI from 'openai'
 import { config } from '../config.js'
 
 const POLLINATIONS_BASE = 'https://image.pollinations.ai/prompt/'
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+/* Filler words that are meta-language about the REQUEST, not the SUBJECT.
+ * Stripped before the text reaches the image model. Covers English, Roman
+ * Urdu, and common abbreviations. */
+const FILLER = new Set([
+  'ka', 'ki', 'ke', 'kiya', 'kiya', 'muja', 'mujhe', 'mujy', 'mera', 'meri', 'mere',
+  'pir', 'par', 'pr', 'or', 'aur', 'b', 'bh', 'bhi', 'kar', 'karo', 'kara',
+  'sakte', 'sakti', 'sakta', 'can', 'could', 'please', 'pls', 'kindly',
+  'to', 'for', 'me', 'my', 'do', 'de', 'dijiye', 'dena', 'dena', 'banwa',
+  'related', 'relate', 'se', 'say', 'from', 'with', 'without', 'about',
+  'something', 'kuch', 'kuchh', 'jaisa', 'jaise', 'aisa', 'waisa',
+  'caption', 'captions', 'text', 'heading', 'title',
+  'generate', 'create', 'make', 'draw', 'design', 'render', 'paint', 'sketch',
+  'bana', 'bna', 'banao', 'banado', 'ban', 'de', 'do', 'dikha', 'dekhao',
+  'image', 'img', 'picture', 'pic', 'pics', 'photo', 'photograph', 'tasveer', 'tasvir',
+  'poster', 'logo', 'wallpaper', 'illustration', 'artwork', 'drawing',
+  'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+])
+
+/**
+ * Heuristic prompt refinement — strips action verbs, image nouns, and filler
+ * words from the user's raw message, leaving the SUBJECT. If the result is
+ * too short, falls back to the original text.
+ *
+ * Example: "coding ka related pir muja image bana do or us ka caption b"
+ *       → "coding" (the subject the image model should draw)
+ */
+export function refineImagePrompt(rawText) {
+  if (!rawText || typeof rawText !== 'string') return rawText
+  const t = rawText.trim().toLowerCase()
+  /* Split on "or" / "aur" (and) to isolate the image request from extra asks
+     like "caption b" (caption too). Take the first segment. */
+  const firstSegment = t.split(/\s+(?:or|aur)\s+/)[0] || t
+  /* Tokenize on whitespace and punctuation, keep only meaningful words. */
+  const tokens = firstSegment.split(/[^\p{L}\p{N}]+/u).filter(Boolean)
+  const subject = tokens.filter((w) => w.length > 1 && !FILLER.has(w))
+  const result = subject.join(' ').trim()
+  /* If the heuristic stripped everything (user said just "make image"), use
+     the original text — the image model can still try to interpret it. */
+  return result.length >= 3 ? result : rawText.trim()
+}
+
+/**
+ * Expand a thin extracted subject into a rich illustration prompt. A one- or
+ * two-word prompt like "coding" is ambiguous — Flux reads short abstract nouns
+ * as portrait subjects and defaults to a person (the "coding → girl photo"
+ * bug). Describing the SUBJECT MATTER (screens, code, icons) plus an explicit
+ * "no people" clause steers the model away from portraits. Long, already-
+ * descriptive prompts pass through untouched.
+ */
+export function enrichImagePrompt(subject) {
+  const s = String(subject || '').trim()
+  if (!s) return s
+  /* Already detailed (a real scene description) — trust it. */
+  if (s.split(/\s+/).length > 6) return s
+  /* Tech/programming topics: depict the artifacts (editors, terminals, UIs),
+     never a person at a keyboard — Flux loves "developer girl" portraits. The
+     quality tail (sharp focus, high detail, cinematic lighting, 4k) is what
+     pushes Flux past the soft, flat look the user complained about; the old
+     "dark background" made everything muddy, so it is gone. */
+  if (/\b(coding|code|program|programming|developer|software|app|website|web|tech|technology|computer|python|java|js|javascript|html|css|react|api|database|ai|artificial\s+intelligence|robot|cyber|game|gaming)\b/i.test(s)) {
+    return `${s} concept illustration, a glowing code editor window with colorful syntax-highlighted source code lines and a terminal window with running commands, software developer tools, keyboard and monitor, crisp sharp focus, intricate detail, professional digital art, vibrant colors, cinematic lighting, clean softly-lit background, 4k, high resolution, no people, no faces, no watermark`
+  }
+  return `beautiful highly detailed illustration of ${s}, crisp sharp focus, vibrant colors, professional quality, cinematic lighting, clean background, 4k, high resolution, no people, no faces, no text, no watermark`
+}
+
+/**
+ * LLM-based prompt refinement — for complex or ambiguous requests where the
+ * heuristic can't extract a clean English subject. Sends the raw text to the
+ * chat model with a system prompt asking for a concise English image prompt.
+ * Falls back to the heuristic (and then the raw text) on any error.
+ */
+export async function refineImagePromptWithLlm(rawText) {
+  const heuristic = refineImagePrompt(rawText)
+  /* If the heuristic produced a clean English result, trust it — no LLM cost. */
+  if (heuristic && heuristic.length >= 4 && /^[\u0020-\u007E]+$/.test(heuristic)) {
+    return enrichImagePrompt(heuristic)
+  }
+  /* Otherwise ask the LLM to produce a clean English prompt. */
+  if (!config.openaiApiKey) return enrichImagePrompt(heuristic) || rawText
+  try {
+    const client = new OpenAI({ apiKey: config.openaiApiKey, baseURL: config.openaiBaseUrl })
+    const completion = await client.chat.completions.create({
+      model: config.openaiModel,
+      messages: [
+        { role: 'system', content: 'You convert a user\'s image request (which may be in English, Roman Urdu, Hindi, or mixed) into a single concise English prompt that describes ONLY what the image should visually show. Strip all meta-language about the request itself ("make", "generate", "image", "bana do", "caption", etc.). Output ONLY the English description, no preamble, no quotes, max 25 words.' },
+        { role: 'user', content: rawText },
+      ],
+      max_tokens: 80,
+      temperature: 0.2,
+    }, { maxRetries: 0 })
+    const refined = completion.choices[0]?.message?.content?.trim()
+    return refined ? enrichImagePrompt(refined) : (enrichImagePrompt(heuristic) || rawText)
+  } catch {
+    /* Rate limit, network error, etc. — fall back to the heuristic result. */
+    return enrichImagePrompt(heuristic) || rawText
+  }
+}
+
 
 /* Requests that clearly want a picture. We require BOTH an action verb and an
    image noun so ordinary chat ("I have a picture in mind") is not hijacked.
@@ -55,14 +155,16 @@ export function detectImageRequest(text) {
 }
 
 /**
- * Build the real, loadable Pollinations URL from a text prompt. Uses the Flux
- * model at 768² (1024² came out slow on the free tier) with `nologo`. When a
+ * Build the real, loadable Pollinations URL from a text prompt. Renders at
+ * 1024² — Flux is TRAINED at 1024, so the old 768² came out soft and low-detail
+ * (the "image quality is poor" complaint). `enhance=true` lets the model
+ * enrich the prompt for extra detail, and `nologo` drops the watermark. When a
  * `POLLINATIONS_TOKEN` is configured it is appended here — so this function must
  * ONLY ever be called server-side (the proxy), never handed to the browser.
  */
-export function buildImageUrl(prompt, { width = 768, height = 768 } = {}) {
+export function buildImageUrl(prompt, { width = 1024, height = 1024 } = {}) {
   const clean = String(prompt || '').trim().slice(0, 900) || 'a beautiful scene'
-  const params = new URLSearchParams({ width: String(width), height: String(height), nologo: 'true', model: 'flux' })
+  const params = new URLSearchParams({ width: String(width), height: String(height), nologo: 'true', model: 'flux', enhance: 'true' })
   if (config.pollinationsToken) params.set('token', config.pollinationsToken)
   return `${POLLINATIONS_BASE}${encodeURIComponent(clean)}?${params.toString()}`
 }
@@ -73,7 +175,7 @@ export function buildImageUrl(prompt, { width = 768, height = 768 } = {}) {
  * server and a rate-limited generation surfaces as an honest error rather than
  * Pollinations' "at its limit" card being rendered as a fake success.
  */
-export function imageProxyPath(prompt, { width = 768, height = 768 } = {}) {
+export function imageProxyPath(prompt, { width = 1024, height = 1024 } = {}) {
   const clean = String(prompt || '').trim().slice(0, 900) || 'a beautiful scene'
   return `/api/images/generate?prompt=${encodeURIComponent(clean)}&width=${width}&height=${height}`
 }
@@ -84,7 +186,7 @@ export function imageProxyPath(prompt, { width = 768, height = 768 } = {}) {
  * `{ buffer, contentType }` on a real image, or throws an Error carrying
  * `.status` so the route can report an honest failure (never a placeholder).
  */
-export async function fetchGeneratedImage(prompt, { width = 768, height = 768, attempts = 4 } = {}) {
+export async function fetchGeneratedImage(prompt, { width = 1024, height = 1024, attempts = 4 } = {}) {
   const url = buildImageUrl(prompt, { width, height })
   let lastStatus = 502
   for (let i = 1; i <= attempts; i++) {

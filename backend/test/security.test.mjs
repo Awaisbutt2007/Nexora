@@ -287,9 +287,13 @@ test('security: every prompt surface pins the creator and the build secrecy', as
   assert.match(planner, /single JSON object/, 'refusing must not break the planner contract')
   /* Every other prose surface (chat, proactive, reminders, tools, planner) is built
      by one function in services/ai.js, so it inherits systemPromptFor — and with it
-     the creator rule. That single injection point is what this pins. */
+     the creator rule. That single injection point is what this pins. A voice turn now
+     swaps in the shared spoken sheet at that SAME point, so the rule to enforce is
+     "one assembly, both branches from a shared builder", never a hand-written copy. */
   const aiSrc = fs.readFileSync(path.join(BACKEND_ROOT, 'src', 'services', 'ai.js'), 'utf8')
-  assert.match(aiSrc, /role: 'system', content: systemPromptFor\(ctx\)/)
+  assert.match(aiSrc, /role: 'system', content: systemPrompt\b/, 'the system message is assembled in exactly one place')
+  assert.match(aiSrc, /systemPromptFor\(ctx\)/, 'the text branch still inherits systemPromptFor')
+  assert.match(aiSrc, /buildVoiceInstructions\(\{/, 'the voice branch reuses the shared spoken sheet, not a third prompt')
   assert.doesNotMatch(aiSrc, /role: ['"]system['"], content: ['"`]/, 'ai.js must not hand-write a second system prompt')
 })
 
@@ -402,7 +406,14 @@ test('honesty: the prompt carries a live clock and forbids inventing live facts'
   assert.ok(candidates.some((d) => spoken.includes(d)), 'a voice call must know today too')
   assert.match(spoken, /never invent a date/i)
   assert.match(spoken, /stale training data/i, 'the spoken form must carry the incumbent trap too')
-  assert.ok(spoken.length < clockLine().length + 4000, 'the spoken form stays short')
+  /* A real budget, not a rubber stamp: this sheet is re-sent as context on every turn of
+     a call, so length is money. It has been raised twice on purpose since it was first
+     written — the Pronunciation section (a name said wrong reads as a stranger) and the
+     taste profile (a companion with no favourites is not a companion) — each measured
+     before the number moved. Grow the sheet past this by justifying it the same way,
+     never by editing this line. */
+  const VOICE_SHEET_BUDGET = 5800
+  assert.ok(spoken.length < VOICE_SHEET_BUDGET, `the voice sheet is ${spoken.length} chars, over its ${VOICE_SHEET_BUDGET} budget`)
 
   /* Nothing may freeze this prompt at import time any more: the old module-level
      SYSTEM_PROMPT snapshot would have served the boot date forever. */

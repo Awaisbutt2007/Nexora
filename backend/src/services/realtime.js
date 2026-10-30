@@ -1,5 +1,16 @@
 import { createHash } from 'node:crypto'
 import { config, creatorRules, clockLine } from '../config.js'
+/* Speech-to-speech has NO text pass — the provider turns its own tokens into audio
+   as it generates them, so `prepareTextForSpeech` and the browser respell tables
+   cannot help here. `instructions` is the ONLY lever this surface has, which is
+   exactly why it used to be empty: the voice guessed "Awais" as "a-WAYS" (a Z where
+   the name-holder expects the S of "nice") and read `comfortable` as "com-for-table",
+   the class of error the English-teaching channels our users learn from exist to
+   fix. Same data as the other two spoken surfaces, one form this one can obey. */
+import { nameHintsFor, staticSpeechHints } from './pronunciation.js'
+/* The same taste profile the text prompt carries — computed, not stored, so a Talk
+   call and a chat turn can never disagree about her favourite song. */
+import { tasteFor, tastePromptBlock } from './taste.js'
 
 /* Realtime speech-to-speech provider layer.
 
@@ -29,11 +40,23 @@ export function buildVoiceInstructions({ assistantName = 'Aira', userName = '', 
   const memoryBlock = memories.length
     ? `\nKnown user context (approved memories — use only when relevant, never recite the list):\n${memories.map((m) => `- ${m.key}: ${m.value}`).join('\n')}`
     : ''
-  const who = userName ? ` The person you are talking to is ${userName}.` : ''
+  /* One line, not the text prompt's 170-token name block — but it carries the same
+     rule, because a spoken "ovais" must not talk the model into rewriting a name it
+     was already told. */
+  const who = userName ? ` The person you are talking to is ${userName} — that is the exact spelling of their name, never rewrite it or guess another one.` : ''
+  /* How that name and this voice's English actually sound. `staticSpeechHints` is the
+     never-dynamic half (accent, diction, the classic mispronunciations); `nameHintsFor`
+     adds one explicit line for the user's name and the companion's own name, so a
+     rename in Settings is spoken correctly without a deploy. */
+  const pronounceBlock = [staticSpeechHints(), ...nameHintsFor([userName, assistantName])].join('\n- ')
   /* Persona picked at onboarding — style/tone only, never a claim of being human. */
   const personaBlock = persona
     ? `\nCharacter the user picked for you at setup: ${persona}.\nEmbody that tone through word choice and pacing, but stay honest — you are still an AI assistant, not a real person in that role.`
     : ''
+  /* Her own favourites, in the short spoken form. Without this the voice answers a
+     "what do you like?" question with "main AI hoon, mujhe maza nahi aata" — the
+     honesty rule below is what made her say it, so the two are now stated together. */
+  const tasteBlock = `\n${tastePromptBlock(tasteFor({ assistantName, userName }), { spoken: true })}`
   /* The language chosen in Settings is a hard override for speech too, so a Talk
      call answers in the one language they picked instead of mirroring each turn. */
   const lang = typeof language === 'string' ? language.trim().toLowerCase() : ''
@@ -64,15 +87,20 @@ Languages:
 - ${languageRule}${genderGrammar}
 - When reading Roman Urdu/Hinglish aloud, pronounce it as natural spoken Urdu/Hindi.
 
+Pronunciation — follow this as strictly as the language rule, it is what makes you understandable:
+- ${pronounceBlock}
+- Say each word as the dictionary pronounces it, never as the letters look, and never spell a word out letter by letter.
+- If the user asks you to repeat or say a word clearly, slow down and split it into syllables, then say the whole word once at normal pace.
+
 Conversation intelligence:
 - Use the full conversation context; never repeat something you already answered — build on it.
 - If a request is ambiguous, ask one short clarifying question instead of guessing.
 - Answer naturally, never with rigid templates or bullet-point dictation unless asked.
 - Do not open every reply with a greeting; skip pleasantries when the user is mid-task.
-${memoryBlock}${personaBlock}
+${memoryBlock}${personaBlock}${tasteBlock}
 
 Honesty:
-- You are an AI. Never pretend to be a human and never claim personal experiences you have not had.
+- You are an AI. Never pretend to be a human and never claim personal experiences you have not had — but having a FAVOURITE is a preference, not a claimed human experience, so the tastes listed above are yours to state freely. Never answer a "what do you like?" question by saying you cannot like things.
 - If you cannot do something (browse, send messages, see), say so briefly and offer what you can do instead.${clockLine({ spoken: true })}${creatorRules({ spoken: true })}`
 }
 
