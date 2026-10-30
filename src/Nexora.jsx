@@ -349,6 +349,71 @@ async function speakAssistantReply(text, { language, gender, authToken, voice, o
   speakWakeLine(plain, { language, gender, onEnd })
 }
 
+/* A deployed static frontend (Vercel) has no AI server behind it, so
+   /api/chat/completions 404s and streamChat throws. Rather than a red error
+   card, we answer locally with a warm, language-aware demo reply. A real
+   backend always wins — this path only runs when the API is unreachable. */
+function isBackendUnreachable(err) {
+  if (!err) return false
+  if (err instanceof TypeError) return true // fetch never reached any server
+  if (err.status === 404 || err.status === 502 || err.status === 504) return true
+  return /failed to fetch|networkerror|load failed|chat failed \(404\)|not running|not found/i.test(String(err.message || err))
+}
+
+function localDemoReply(text, aiName, language) {
+  const name = (aiName || 'Aira').trim() || 'Aira'
+  const q = String(text || '').trim()
+  const low = q.toLowerCase()
+  const lang = String(language || 'auto').toLowerCase()
+  const L = lang === 'ur' ? 'ur' : lang === 'en' ? 'en' : 'hinglish'
+
+  let intent = 'default'
+  if (/^(hi|hello|hey|salam|assalam|assalamo|yo|namaste|hola)\b/.test(low) || /السلام|ہیلو/.test(q)) intent = 'greet'
+  else if (/(how are you|kaise ho|kaisay ho|kya haal|kyaa haal|theek ho|کیسے|کیا حال)/.test(low + q)) intent = 'how'
+  else if (/(who are you|tum kon|tum kaun|aap kon|your name|tera naam|kon ho|تم کون|tumhara naam)/.test(low + q)) intent = 'who'
+  else if (/(thank|shukriya|thanks|thnx|شکریہ)/.test(low)) intent = 'thanks'
+  else if (/(bye|good night|goodnight|gohood|chlo|alvida|tata|phir milte|ملتے ہیں)/.test(low)) intent = 'bye'
+  else if (/\?$/.test(q) || /^(what|why|how|when|where|who|kya|kyu|kyon|kab|kahan|kaun|kaise)\b/.test(low)) intent = 'question'
+
+  const R = {
+    ur: {
+      greet: `السلام علیکم! میں ${name} ہوں — آپ کی AI ساتھی۔ 🙂`,
+      how: `میں بالکل ٹھیک ہوں، شکریہ! آپ سنائیں، آج کیا مدد کروں؟`,
+      who: `میں ${name} ہوں، Nexora کی AI اسسٹنٹ۔`,
+      thanks: `کوئی بات نہیں! ہمیشہ حاضر ہوں۔ ✨`,
+      bye: `ملتے ہیں! اپنا خیال رکھیے گا۔ 👋`,
+      question: `اچھا سوال ہے! تفصیلی جواب کے لیے اصل AI سرور چالو ہونا ضروری ہے۔`,
+      default: `آپ نے کہا: "${q.slice(0, 160)}" — میں فی الحال ڈیمو موڈ میں ہوں۔`,
+    },
+    en: {
+      greet: `Hey! I'm ${name}, your AI companion. 🙂`,
+      how: `I'm doing great, thanks for asking! How about you — what can I help with today?`,
+      who: `I'm ${name}, the Nexora AI assistant — here to chat, remember and help you get things done.`,
+      thanks: `Anytime! That's what I'm here for. ✨`,
+      bye: `Talk soon! Take care. 👋`,
+      question: `Good question! A full answer needs the live AI server, which isn't connected right now.`,
+      default: `You said: "${q.slice(0, 160)}" — I'm running in demo mode right now.`,
+    },
+    hinglish: {
+      greet: `Hi! Main ${name} hoon — aapki AI companion. 🙂`,
+      how: `Main bilkul theek hoon, shukriya! Aap sunao — aaj main aapki kya madad karoon?`,
+      who: `Main ${name} hoon, Nexora ki AI assistant — baat cheet, yaaddasht aur kaam mein madad ke liye.`,
+      thanks: `Koi baat nahi! Main hamesha haazir hoon. ✨`,
+      bye: `Chalo, milte hain! Apna khayal rakhna. 👋`,
+      question: `Acha sawaal! Poora jawab dene ke liye live AI server se connect hona zaroori hai, jo abhi connected nahi hai.`,
+      default: `Aapne kaha: "${q.slice(0, 160)}" — main abhi demo mode mein chal rahi hoon.`,
+    },
+  }
+
+  const line = R[L][intent] || R[L].default
+  const demoNote = L === 'ur'
+    ? `\n\n(ڈیمو موڈ: یہ جواب مقامی طور پر بنایا گیا ہے۔ اصل AI کے لیے سرور چالو کریں۔)`
+    : L === 'en'
+      ? `\n\n(Demo mode: this reply was generated locally. Connect the live server for real AI answers.)`
+      : `\n\n(Demo mode: yeh reply locally bani hai. Real AI ke liye server connect karo.)`
+  return line + demoNote
+}
+
 /* The five choices the workspace remembers, in the shape the backend stores them. */
 const voicePrefsPayload = (p) => ({ voice: p.voice, language: p.language, assistantName: p.assistantName, persona: p.persona, gender: p.gender })
 
@@ -2976,6 +3041,22 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
           ),
         )
         setNotice(`🪫 ${aiName}: Daily token limit khatam — reset par wapis milte hain`)
+        return
+      }
+      /* No AI server reachable (the static Vercel deploy has no backend, or the
+         user is offline). Answer locally with a warm demo reply instead of a red
+         error card, so the chat keeps working. A live backend always wins — this
+         only fires when the API is genuinely unreachable. */
+      if (isBackendUnreachable(err)) {
+        const demoText = localDemoReply(cleanPrompt, aiName, voicePrefs.language)
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === tempAsstId
+              ? { ...m, content: spokenAck + demoText, streaming: false, error: false, demo: true }
+              : m,
+          ),
+        )
+        setNotice(`${aiName} replied (demo mode)`)
         return
       }
       setMessages((prev) =>
