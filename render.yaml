@@ -1,25 +1,20 @@
 # Render blueprint — deploy the whole app (frontend + API) as ONE web service
-# from this repo. Render reads the root Dockerfile and mounts a persistent disk
-# at /data so the SQLite DB and uploads survive restarts.
+# from this repo. Render reads the root Dockerfile and runs Express, which ALSO
+# hosts the built React client, so a deployed page calls relative /api URLs.
 #
-# Two caveats to read before using the free tier:
-#   • Render free web services have NO persistent disk and sleep when idle, so
-#     accounts/conversations reset on redeploy. Keep the `starter` (or higher)
-#     plan below for real persistence.
-#   • CORS_ORIGIN must equal this service's public URL. It cannot be known
-#     before the first deploy, so set it in the dashboard afterwards (see note).
+# FREE-TIER note: this is configured for the $0 plan so it deploys without a
+# card. The free tier has NO persistent disk and sleeps when idle, so accounts
+# and conversations reset on a redeploy/restart and the first request after a
+# nap takes ~50s to wake. To keep data permanently, change `plan` to `starter`
+# below and add back the `disk` block.
 services:
   - type: web
     name: nexora
     runtime: docker
-    plan: starter            # paid instance required for the disk to persist
+    plan: free               # $0 tier; no persistent disk (data resets on restart)
     region: oregon
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
-    disk:
-      name: nexora-data
-      mountPath: /data
-      sizeGB: 1
     envVars:
       - key: NODE_ENV
         value: production
@@ -41,5 +36,5 @@ services:
       # Secrets / late-bound values you fill in from the Render dashboard:
       - key: OPENAI_API_KEY
         sync: false          # paste your Groq key here (never committed)
-      - key: CORS_ORIGIN
-        sync: false          # set to https://<this-service>.onrender.com
+      # CORS_ORIGIN is left unset on purpose: the client is served by THIS same
+      # service (single origin), so no cross-origin request is ever made.
