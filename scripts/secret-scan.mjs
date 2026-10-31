@@ -18,6 +18,14 @@ const AS_JSON = process.argv.includes('--json')
 // Directories we never scan (deps / build noise / binary-heavy).
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build', '.next', '.cache'])
 
+// Ephemeral, gitignored working-tree dirs: browser-automation profiles (.tmp-*,
+// *-profile, browser-profile), Vercel linkage, and local audit/screenshot drops.
+// They hold third-party code whose strings can trip the credential regexes (e.g. a
+// stray `AKIA…` inside a vendored Edge extension) yet are NEVER tracked or shipped
+// (the tracked-file guard still proves that). Mirroring .gitignore here keeps the
+// gate actionable instead of crying wolf on artifacts that can't reach production.
+const SKIP_DIR_RE = /^\.tmp-|-profile$|^browser-profile$|^\.vercel$|^audit$|^screenshots$/
+
 // Binary / media extensions to skip in the working-tree walk.
 const SKIP_EXT = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.ico', '.svg', '.wav', '.mp3', '.mp4', '.woff', '.woff2', '.ttf', '.map', '.db', '.db-shm', '.db-wal', '.sqlite'])
 
@@ -59,7 +67,7 @@ function* walk(dir) {
     let st
     try { st = statSync(full) } catch { continue }
     if (st.isDirectory()) {
-      if (SKIP_DIRS.has(name)) continue
+      if (SKIP_DIRS.has(name) || SKIP_DIR_RE.test(name)) continue
       yield* walk(full)
     } else if (st.isFile()) {
       const ext = name.slice(name.lastIndexOf('.'))
@@ -128,7 +136,8 @@ if (SCAN_HISTORY) {
       if (space === -1) continue
       const sha = line.slice(0, space)
       const path = line.slice(space + 1)
-      if (SKIP_DIRS.has(path.split('/')[0])) continue
+      const seg = path.split('/')[0]
+      if (SKIP_DIRS.has(seg) || SKIP_DIR_RE.test(seg)) continue
       const ext = path.slice(path.lastIndexOf('.'))
       if (SKIP_EXT.has(ext)) continue
       let content
