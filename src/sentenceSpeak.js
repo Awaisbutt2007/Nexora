@@ -67,6 +67,13 @@ let engineOutstanding = 0
  * silently cut off long utterances, never hit their limit. */
 const held = [] /* { text, opts } */
 const MERGE_MAX_CHARS = 220
+/* The FIRST sentence of a reply also waits briefly for the rest, because sending
+ * it alone guarantees one ~1 s hand-off right after it on an online voice. Replies
+ * are 2-3 lines and stream in well under a second, so in the common case the whole
+ * answer leaves as ONE utterance with no hand-off at all. The wait ends early the
+ * moment the stream finishes (`flushSpeech`) or enough text for a full chunk is in. */
+const FIRST_HOLD_MS = 600
+let firstHoldTimer = 0
 /* Set as soon as the server refuses a synth for THIS burst. 503 ("no speech key
  * configured", a Groq-only install) is the expected one, but an expired token, an
  * empty wallet or a timeout is just as final — and every attempt we still made was
@@ -74,6 +81,10 @@ const MERGE_MAX_CHARS = 220
  * exact thing this file exists to remove. Re-probed on each new burst so a server
  * that recovers is used again without a reload. */
 let serverTtsDown = false
+/* The synth route does not exist at all on this deploy (404 — the static Vercel
+ * site has no backend). Unlike `serverTtsDown` this lasts for the page session:
+ * re-probing a route that is not there cost a round trip before every reply. */
+let serverTtsMissing = false
 
 /* Markers the barge-in tracker uses so the wake-word hook's `isAiSpeakingLongEnough`
  * knows the pipeline is active. We mirror the same contract `speakAssistantReply`
@@ -152,6 +163,8 @@ export function cancelSpeakQueue() {
   generation += 1
   pending.length = 0
   held.length = 0
+  clearTimeout(firstHoldTimer)
+  firstHoldTimer = 0
   playing = false
   /* Every utterance still in the engine's queue dies with the cancel() below, so
      their `onend`/`onerror` handlers must not try to close the burst afterwards. */
@@ -229,7 +242,7 @@ export function queueSentence(text, opts) {
   /* A quiet pipeline means this is the first sentence of a new reply: let it probe
      the server again instead of inheriting the last burst's verdict forever. */
   if (!playing && !pending.length && !engineOutstanding) serverTtsDown = false
-  if (!opts?.authToken || serverTtsDown) {
+  if (!opts?.authToken || serverTtsDown || serverTtsMissing) {
     speakOnEngine(plain, opts)
     return
   }
@@ -293,7 +306,7 @@ function plainForSpeech(text) {
  */
 async function prepareServerAudio(item, myGen) {
   const { language, gender, voice, authToken, names } = item.opts || {}
-  if (!authToken || serverTtsDown) return null
+  if (!authToken || serverTtsDown || serverTtsMissing) return null
   try {
     const blob = await synthesizeSpeech(authToken, { text: item.text, language, gender, voice, names })
     serverTtsDown = false
@@ -307,6 +320,7 @@ async function prepareServerAudio(item, myGen) {
        401/402/timeout will fail again on sentence 3, and each doomed attempt is a
        round trip of silence inserted between two sentences. */
     serverTtsDown = true
+    if (err?.status === 404) serverTtsMissing = true
     if (err?.status !== 503) console.warn('[tts-stream] server synth failed, using browser voice:', err?.message)
     return null
   }
@@ -343,11 +357,22 @@ function speakOnEngine(plain, opts) {
   /* Already talking: hold this sentence and merge it with any others that land
      before the current utterance ends (see `held`). The first sentence of a
      reply never waits — it starts the moment it is known. */
-  if (engineOutstanding > 0) {
-    held.push({ text: plain, opts })
-    return
-  }
-  utterOnEngine(plain, opts)
+  held.push({ text: plain, opts })
+  if (engineOutstanding > 0) return
+  const heldChars = held.reduce((n, h) => n + h.text.length + 1, 0)
+  if (heldChars >= MERGE_MAX_CHARS) { flushSpeech(); return }
+  if (!firstHoldTimer) firstHoldTimer = setTimeout(flushSpeech, FIRST_HOLD_MS)
+}
+
+/**
+ * Speak whatever is held right now (the reply is complete, or the first-sentence
+ * wait ran out). A no-op while an utterance is still playing — the held text then
+ * goes out as soon as that one ends.
+ */
+export function flushSpeech() {
+  clearTimeout(firstHoldTimer)
+  firstHoldTimer = 0
+  if (!engineOutstanding) flushHeld()
 }
 
 /* Merge held sentences into one utterance of at most MERGE_MAX_CHARS (always at
@@ -405,6 +430,7 @@ export function streamSpeakReply(fullText, opts) {
   }
   for (const s of spoken) queueSentence(s, opts)
   if (remainder.trim()) queueSentence(remainder, opts)
+  flushSpeech()
 }
 
 /**
@@ -431,5 +457,7 @@ export function streamFeed(fullText, spokeIdx, opts) {
 export function streamFinal(fullText, spokeIdx, opts) {
   const tail = (fullText || '').slice(spokeIdx).trim()
   if (tail) queueSentence(tail, opts)
+  /* The stream is complete: nothing more is coming, so stop waiting. */
+  flushSpeech()
   return spokeIdx + tail.length
 }
