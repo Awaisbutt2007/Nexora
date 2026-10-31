@@ -1186,3 +1186,13 @@ textarea.settings-input { min-height: 84px; padding: 12px 14px; line-height: 1.5
   .header-wake-btn .wake-label { display: none; }
 }
 
+/* Owner voice lock — enrollment card + Settings controls */
+.settings-save.ghost { color: #c9cde6; background: transparent; border: 1px solid rgba(149,162,215,.28); box-shadow: none; }
+.settings-save.ghost:hover { border-color: rgba(189,108,255,.6); box-shadow: none; }
+.settings-save .lucide { vertical-align: -2px; margin-right: 4px; }
+.owner-voice-line { margin: 4px 0 8px; padding: 12px 14px; border-radius: 12px; border: 1px solid rgba(189,108,255,.35); background: rgba(189,108,255,.08); color: #f3f4ff; font: 500 15px/1.45 'Space Grotesk',sans-serif; }
+.owner-voice-bar { height: 6px; border-radius: 999px; background: rgba(149,162,215,.15); overflow: hidden; }
+.owner-voice-bar span { display: block; height: 100%; background: linear-gradient(90deg,#bd42ef,#5267ff); transition: width .1s linear; }
+.owner-voice-card { position: fixed; right: 20px; bottom: 96px; z-index: 60; width: min(380px, calc(100vw - 40px)); padding: 16px 18px; border-radius: 16px; border: 1px solid rgba(149,162,215,.2); background: rgba(10,14,28,.94); backdrop-filter: blur(12px); box-shadow: 0 18px 50px rgba(0,0,0,.45); }
+.owner-voice-card h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font: 600 15px 'Space Grotesk',sans-serif; color: #f3f4ff; }
+.owner-voice-card .settings-row { margin: 0; }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { chatOnce, logVoiceTurn, requestVoiceToken } from './api/nexora.js'
 import { configureUtterForSpeech } from './voiceSelect.js'
 import { Icon } from './icons.jsx'
+import { acquireVoiceTap, loadOwnerVoice, strangerReply, verifyRecentSpeech } from './ownerVoice.js'
 import './VoiceCall.css'
 
 /* Aira — live speech-to-speech over the OpenAI Realtime API (WebRTC), with an
@@ -78,6 +79,9 @@ export default function VoiceCall({ authToken, user, prefs = {}, onClose }) {
      pipeline-only code path (recognition callbacks, mute, teardown) so a shared
      UI can flip cleanly between the two engines without branch-heavy logic. */
   const modeRef = useRef('realtime')
+  /* Owner voice lock: the release handle of the shared voiceprint mic tap,
+     held for the length of a pipeline call (see ownerVoice.js). */
+  const ownerTapRef = useRef(null)
   const recognitionRef = useRef(null)
   const mutedRef = useRef(false)
   useEffect(() => { mutedRef.current = muted }, [muted])
@@ -108,6 +112,8 @@ export default function VoiceCall({ authToken, user, prefs = {}, onClose }) {
       recognitionRef.current = null
     }
     if (typeof window !== 'undefined' && window.speechSynthesis) window.speechSynthesis.cancel()
+    ownerTapRef.current?.()
+    ownerTapRef.current = null
   }, [])
 
   useEffect(() => () => teardown(), [teardown])
@@ -391,6 +397,13 @@ export default function VoiceCall({ authToken, user, prefs = {}, onClose }) {
        closes cleanly. It is a wall-clock timer, not a provider quota. */
     setSecondsLeft(1800)
     timerRef.current = setInterval(() => setSecondsLeft((left) => Math.max(0, left - 1)), 1000)
+    const owner = loadOwnerVoice(user?.id || user?.email)
+    if (owner && owner.enabled !== false) {
+      acquireVoiceTap().then((release) => {
+        if (phaseRef.current === 'live') ownerTapRef.current = release
+        else release()
+      }).catch(() => { /* no tap → every turn reads 'unsure' and is refused below */ })
+    }
     startListeningTurn()
   }
 
@@ -453,6 +466,26 @@ export default function VoiceCall({ authToken, user, prefs = {}, onClose }) {
   }
 
   async function handlePipelineTurn(userText) {
+    /* Owner voice lock: a turn spoken by anyone but the registered owner is
+       answered with the refusal line and never reaches the model. */
+    const owner = loadOwnerVoice(user?.id || user?.email)
+    const { verdict } = verifyRecentSpeech(owner)
+    if (verdict === 'stranger' || verdict === 'unsure') {
+      const line = verdict === 'stranger'
+        ? strangerReply(owner.ownerName || user?.name, prefs.gender)
+        : 'Awaaz saaf nahi aayi — main sirf apne owner ki baat maanti hoon. Dobara boliye.'
+      setMicState('thinking')
+      liveRef.current.aira = line
+      setAiraLive(line)
+      speakText(line, () => {
+        if (phaseRef.current !== 'live' || modeRef.current !== 'pipeline') return
+        liveRef.current = { ...liveRef.current, user: '', aira: '' }
+        setUserLive('')
+        setAiraLive('')
+        startListeningTurn()
+      })
+      return
+    }
     setMicState('thinking')
     liveRef.current.user = userText
     liveRef.current.aira = ''

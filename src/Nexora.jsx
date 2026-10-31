@@ -86,6 +86,8 @@ import { streamFeed, streamFinal, cancelSpeakQueue, setSpeakMarkers } from './se
    the server without adding it here fails the "language mirror cannot drift"
    test in api.test.mjs, so the two lists cannot silently disagree. */
 import { LANGUAGE_OPTIONS, LANGUAGE_GROUPS_UI } from './worldLanguages.js'
+import { acquireVoiceTap, loadOwnerVoice, strangerReply, verifyRecentSpeech } from './ownerVoice.js'
+import OwnerVoiceSetup from './OwnerVoiceSetup.jsx'
 
 const ThreeHero = lazy(() => import('./ThreeHero.jsx'))
 const Onboarding = lazy(() => import('./Onboarding.jsx'))
@@ -1886,6 +1888,11 @@ function SettingsView({ isLoggedIn, userProfile, authToken, onProfileUpdate, onT
           </div>
         </div>
 
+        {isLoggedIn && <div className="settings-group">
+          <h3><Icon name="lock" size={16} /> Owner voice lock</h3>
+          <OwnerVoiceSetup userKey={userProfile?.id || userProfile?.email} ownerName={userProfile?.name} aiName={aiName} />
+        </div>}
+
         {isLoggedIn && <AdminBillingPanel authToken={authToken} />}
 
         <div className="settings-group">
@@ -3361,6 +3368,47 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
      whenever the user paused her — a paused assistant must not send messages. */
   const wakeEnabledRef = useRef(wakeEnabled)
   wakeEnabledRef.current = wakeEnabled
+  /* Owner voice lock (see ownerVoice.js): once the owner has registered a
+     voiceprint, spoken commands from any other voice get a polite refusal
+     instead of being obeyed. Typed chat is unaffected — the account itself is
+     the owner's. The record is re-read whenever Settings/enrollment saves. */
+  const ownerKey = userProfile?.id || userProfile?.email
+  const [ownerVoiceRev, setOwnerVoiceRev] = useState(0)
+  const ownerVoice = useMemo(() => loadOwnerVoice(ownerKey), [ownerKey, ownerVoiceRev])
+  const ownerVoiceRef = useRef(ownerVoice)
+  ownerVoiceRef.current = ownerVoice
+  useEffect(() => {
+    const sync = () => setOwnerVoiceRev((n) => n + 1)
+    window.addEventListener('nexora-owner-voice', sync)
+    return () => window.removeEventListener('nexora-owner-voice', sync)
+  }, [])
+  const [ownerPromptDismissed, setOwnerPromptDismissed] = useState(() => {
+    try { return sessionStorage.getItem('nexora_owner_voice_prompt') === '0' } catch { return false }
+  })
+  const ownerLockOn = Boolean(ownerVoice && ownerVoice.enabled !== false)
+  /* The voiceprint needs its own feature tap on the mic alongside the wake-word
+     recogniser; it runs exactly while the always-on mic does. */
+  useEffect(() => {
+    if (!ownerLockOn || !wakeEnabled || voiceOpen || !isLoggedIn || !authToken) return undefined
+    let release = null
+    let cancelled = false
+    acquireVoiceTap().then((r) => { if (cancelled) r(); else release = r }).catch(() => { /* mic blocked — the wake hook surfaces that */ })
+    return () => { cancelled = true; release?.() }
+  }, [ownerLockOn, wakeEnabled, voiceOpen, isLoggedIn, authToken])
+  /* Returns true when the speech just heard may be obeyed. A stranger gets the
+     refusal line spoken + shown, and nothing else happens. `short` marks a bare
+     wake word: too little audio to judge, so only a confident 'stranger' blocks. */
+  function ownerVoiceAllows({ short = false } = {}) {
+    const rec = ownerVoiceRef.current
+    if (!rec || rec.enabled === false) return true
+    const { verdict } = verifyRecentSpeech(rec)
+    if (verdict === 'owner' || verdict === 'off') return true
+    if (verdict === 'unsure' && short) return true
+    const line = strangerReply(rec.ownerName || userProfile?.name, voicePrefs.gender)
+    setNotice(verdict === 'unsure' ? `🔒 Awaaz saaf nahi suni — ${aiName} sirf owner ki baat maanti hai. Dobara thora lamba boliye.` : `🔒 ${aiName}: "${line}"`)
+    if (verdict === 'stranger') speakWakeLine(line, { language: voicePrefs.language, gender: voicePrefs.gender })
+    return false
+  }
   /* "Your turn" indicator: true between the AI finishing a spoken reply and
      the user starting their next utterance (or the 15 s window expiring). The
      mic pill reads it to show "your turn" instead of "listening" so the user
@@ -3426,6 +3474,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
          the flag. `fireWake` already opened the command window, so the very next
          utterance is picked up as a command — the "Ji, boliye" ack below doubles
          as the "I'm awake again" confirmation. */
+      if (!ownerVoiceAllows({ short: true })) return
       if (voiceAsleepRef.current) { voiceAsleepRef.current = false; setVoiceAsleep(false) }
       const heard = (raw || aiName).trim()
       const ack = WAKE_ACK_LINES[voicePrefs.language]?.wake || WAKE_ACK_LINES.auto.wake
@@ -3433,6 +3482,9 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
       speakWakeLine(ack, { language: voicePrefs.language, gender: voicePrefs.gender })
     },
     onCommand: (cmd) => {
+      /* Owner voice lock first: a stranger's command is refused before it can
+         wake her, stop her, or reach the model. */
+      if (!ownerVoiceAllows()) return
       /* Name + command while asleep: wake silently (no extra ack — the real
          reply that follows is confirmation enough) and run the command. */
       if (voiceAsleepRef.current) { voiceAsleepRef.current = false; setVoiceAsleep(false) }
@@ -3843,6 +3895,16 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
           chats={{ items: conversations, visible: visibleConversations, loading: convLoading, query: historyQuery, setQuery: setHistoryQuery, confirming: confirmDeleteAll, setConfirming: setConfirmDeleteAll, removeAll: removeAllConversations, open: openConversation, remove: removeConversation }}
         /></Suspense>}
         {view === 'Settings' && <SettingsView isLoggedIn={isLoggedIn} userProfile={userProfile} authToken={authToken} onProfileUpdate={onProfileUpdate} onTokenChange={onTokenChange} onLogin={onLogin} onUpgrade={onUpgrade} voicePrefs={voicePrefs} persistVoicePrefs={persistVoicePrefs} />}
+        {/* First-run prompt: until the owner registers a voiceprint, anyone's
+            voice can drive the assistant — offer the 20-second setup once per
+            session (Settings → Owner voice lock keeps it reachable after "Later"). */}
+        {isLoggedIn && !ownerVoice && !ownerPromptDismissed && view !== 'Settings' && <div className="owner-voice-card" role="dialog" aria-label="Register owner voice">
+          <h3><Icon name="lock" size={16} /> Sirf aap ki awaaz</h3>
+          <OwnerVoiceSetup compact userKey={ownerKey} ownerName={userProfile?.name} aiName={aiName} onDone={() => {
+            setOwnerPromptDismissed(true)
+            try { sessionStorage.setItem('nexora_owner_voice_prompt', '0') } catch { /* private mode */ }
+          }} />
+        </div>}
         {/* Live transcript: shows the interim STT text so the user can watch
             their own voice being traced before they finish the sentence.
             aria-live="polite" but not "assertive" — Chrome refines the text
