@@ -2957,6 +2957,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
         images: imgUrls.length ? imgUrls : undefined,
         replyTo: reply && String(reply.id).startsWith('msg_') ? reply.id : undefined,
         replyToText: reply?.content,
+        desktop: hasPairedAgent(),
         conversationId,
         signal: controller.signal,
         onDelta: (_chunk, fullText) => {

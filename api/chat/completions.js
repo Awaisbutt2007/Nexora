@@ -43,7 +43,19 @@ const LANG = {
   te: ['Telugu', 'the Telugu script'],
 }
 
-function systemPrompt({ assistantName, persona, gender, language, userName }) {
+/* PC control. The web app cannot touch a computer by itself; the opt-in Nexora
+   Desktop Agent on the user's own PC does, and the BROWSER relays the model's
+   [DESKTOP:…] markers to it (Nexora.jsx → fulfilDesktopActions). So the model is
+   told it can act only when this browser is actually paired with an agent, and
+   otherwise explains how to connect one instead of flatly refusing. Mirrors the
+   desktop lines of the backend prompt (backend/src/config.js). */
+const DESKTOP_ON = [
+  'You can operate the user\'s computer through the Nexora Desktop Agent they installed and paired: open apps (VS Code, Chrome, Edge, Notepad, Explorer), type into the focused window, press shortcuts, click, scroll, open URLs, take screenshots, read system info, and list/read/write files in folders they approved.',
+  'When they ask you to DO something on their computer, write ONE short friendly sentence and put the action marker alone on the next line, EXACTLY as [DESKTOP:<action>|<JSON>], e.g. [DESKTOP:apps.launch|{"appId":"vscode"}] · [DESKTOP:desktop.type|{"text":"hello"}] · [DESKTOP:desktop.key|{"combo":"ctrl+a"}] · [DESKTOP:browser.open|{"url":"https://github.com"}] · [DESKTOP:screen.capture|{}] · [DESKTOP:system.info|{}] · [DESKTOP:files.list|{"path":"C:\\\\Users\\\\you\\\\Documents"}] · [DESKTOP:files.read|{"path":"C:\\\\Users\\\\you\\\\notes.txt"}]. Chain several markers for a multi-step request. Do not claim you cannot reach their computer — the app runs your marker. If the app later reports a folder is not approved, ask them to add it under Desktop ▸ Permissions.',
+].join('\n')
+const DESKTOP_OFF = 'If the user asks you to do something on their computer (open apps or folders, read files, type, screenshots), do NOT just say you cannot. Explain that you can once the free Nexora Desktop Agent is running on their PC and paired: open the Desktop tab in Nexora and follow the steps there. Keep it to 2 short lines.'
+
+function systemPrompt({ assistantName, persona, gender, language, userName, desktop }) {
   const n = (typeof assistantName === 'string' && assistantName.trim() ? assistantName : 'Aira').trim().slice(0, 40)
   const who = typeof userName === 'string' && userName.trim() ? userName.trim().slice(0, 60) : ''
   const code = String(language || 'auto').trim().toLowerCase()
@@ -75,6 +87,7 @@ function systemPrompt({ assistantName, persona, gender, language, userName }) {
     'STRICT LENGTH: every reply is at most 2 to 3 short lines (about 40 words). No bullet lists, no headings, no essays. Use a few emojis naturally (✨ 💡 😊).',
     'Answer the NEWEST message fresh — never say you already answered or point them back to an old reply.',
     'Nexora is all-ages: never produce sexually explicit content; politely decline and offer a safe alternative.',
+    desktop ? DESKTOP_ON : DESKTOP_OFF,
   ].filter(Boolean).join('\n')
 }
 
@@ -110,7 +123,7 @@ export default async function handler(req) {
     : []
 
   const messages = [
-    { role: 'system', content: systemPrompt({ assistantName: body.assistantName, persona: body.persona, gender: body.gender, language: body.language }) },
+    { role: 'system', content: systemPrompt({ assistantName: body.assistantName, persona: body.persona, gender: body.gender, language: body.language, desktop: body.desktop === true }) },
     ...history,
     { role: 'user', content: userText },
   ]

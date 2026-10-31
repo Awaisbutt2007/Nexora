@@ -305,7 +305,7 @@ export async function runTool(token, toolId, { prompt, input, assistantName, per
  * Stream chat like ChatGPT (SSE). Calls onDelta(textChunk) for each piece.
  * Returns { conversationId, fullText }.
  */
-export async function streamChat({ token, message, conversationId = null, assistantName, persona, gender, language, images, replyTo, replyToText, history, onDelta, onMeta, signal }) {
+export async function streamChat({ token, message, conversationId = null, assistantName, persona, gender, language, images, replyTo, replyToText, history, desktop, onDelta, onMeta, signal }) {
   const res = await fetch(`${API_BASE}/api/chat/completions`, {
     method: 'POST',
     headers: authHeaders(token),
@@ -313,7 +313,9 @@ export async function streamChat({ token, message, conversationId = null, assist
        (which has no database of its own) still answers with context. The hosted
        Express backend ignores it and rebuilds history from SQLite, so localhost
        behaviour is unchanged. */
-    body: JSON.stringify({ message, conversationId, assistantName, persona, gender, language, images, replyTo, replyToText, ...(history?.length ? { messages: history } : {}), stream: true }),
+    /* `desktop` tells the serverless endpoint this browser is paired with the
+       user's local Desktop Agent, so the model may emit [DESKTOP:…] markers. */
+    body: JSON.stringify({ message, conversationId, assistantName, persona, gender, language, images, replyTo, replyToText, ...(history?.length ? { messages: history } : {}), ...(desktop ? { desktop: true } : {}), stream: true }),
     signal,
   })
 
