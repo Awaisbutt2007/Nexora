@@ -98,11 +98,15 @@ export default async function handler(req) {
   ).trim().slice(0, 20000)
   if (!userText) return json({ error: { message: 'Provide a message', type: 'invalid_request_error' } }, 400)
 
+  /* Keep the per-request input small so Groq's free-tier tokens-per-minute budget
+     lasts across many turns, not just the first few. The companion answers in 2–3
+     short lines, so 8 recent turns of ≤800 chars each is plenty of context; the
+     client may send more, but the oversized tail is what gets you throttled. */
   const history = Array.isArray(body.messages)
     ? body.messages
         .filter((m) => (m.role === 'user' || m.role === 'assistant') && typeof m.content === 'string' && m.content.trim())
-        .slice(-12)
-        .map((m) => ({ role: m.role, content: m.content }))
+        .slice(-8)
+        .map((m) => ({ role: m.role, content: m.content.slice(0, 800) }))
     : []
 
   const messages = [
@@ -129,7 +133,7 @@ export default async function handler(req) {
           messages,
           stream: true,
           stream_options: { include_usage: true },
-          max_tokens: 900,
+          max_tokens: 400, // replies are 2–3 short lines; caps output-token burn per turn
           ...(body.language && body.language !== 'auto' ? { temperature: 0.35 } : {}),
         }),
       })
