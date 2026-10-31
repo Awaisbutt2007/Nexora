@@ -246,6 +246,11 @@ a { color: inherit; text-decoration: none; }
    there to clear the fixed mobile nav, which is hidden on desktop — so on the
    Settings view it left a dead band under the (flex:1) panel. Let it fill. */
 .workspace-content:has(.settings-panel) { padding-bottom: 32px; }
+/* Desktop view too: it is a tall content page (connect card, steps, code field) that
+   was overflowing the (flex:1) panel into the hidden-scrollbar region because of the
+   same 142px dead band. Reclaim it so the panel fills the theme height and the whole
+   card shows without scrolling. */
+.workspace-content:has(.desktop-panel) { padding-bottom: 32px; }
 @media (max-height: 660px) { .chat-hero-corner, .chat-hero-online { display: none; } .chat-hero-sub { margin: 6px 0 12px; } .chat-hero-starters { gap: 6px; } .chat-hero-bond { display: none; } }
 
 /* Modal */
