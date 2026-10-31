@@ -24,7 +24,7 @@
  * AFTER sentence 1 finished playing. Now the browser engine is handed each
  * utterance as it becomes known (it runs its own FIFO), and server audio is
  * prefetched one sentence ahead so playback is back to back. Target: the next
- * sentence is underway within ~500ms of the previous one ending.
+ * sentence is underway within ~100ms of the previous one ending.
  *
  * A barge-in or a Stop press aborts the whole queue and every outstanding fetch.
  *
@@ -57,6 +57,16 @@ let playing = false
  * its own FIFO, so a sentence is handed to it the moment it is known instead of
  * waiting for the previous `onend` — see the note on speakOnEngine. */
 let engineOutstanding = 0
+/* Sentences that arrived while the engine was already talking. They are spoken
+ * as ONE merged utterance when the current one ends, instead of one utterance
+ * each. Measured on the live site: an online voice ("Google हिन्दी") pays a
+ * ~0.8–1.1 s network hand-off between every two utterances (a local Microsoft
+ * voice ~0.1 s); four sentences took 10.3 s spoken separately vs 7.0 s merged.
+ * Inside one utterance the voice only takes its natural ~300 ms full-stop pause,
+ * which is the "next sentence right after" feel. Capped so Google voices, which
+ * silently cut off long utterances, never hit their limit. */
+const held = [] /* { text, opts } */
+const MERGE_MAX_CHARS = 220
 /* Set as soon as the server refuses a synth for THIS burst. 503 ("no speech key
  * configured", a Groq-only install) is the expected one, but an expired token, an
  * empty wallet or a timeout is just as final — and every attempt we still made was
@@ -95,9 +105,15 @@ function endBurst() {
  * fires for the sentence that just finished, `speaking` stays true and the next
  * utterance waits seconds — or the rest of the reply — before starting. Our
  * pipeline cannot cause it and cannot see it, so while the engine owes us an
- * utterance we poke `resume()` every 5s. It is a no-op on a healthy or idle
+ * utterance we poke `resume()` continuously. It is a no-op on a healthy or idle
  * engine, produces no sound of its own and never touches the microphone.
- * The interval is cleared when the burst closes, so an idle tab holds nothing. */
+ *
+ * The interval IS the inter-sentence gap the listener hears on a stall: a 5s poke
+ * meant a stalled hand-off could hang for up to five seconds after every full
+ * stop. Poking every ~100ms keeps the worst-case gap to about that long, which is
+ * the "start the next sentence 100ms after this one" feel the user asked for. The
+ * timer is cleared when the burst closes, so an idle tab holds nothing. */
+const HANDOFF_PEEK_MS = 100
 let stallPoke = null
 function armStallPoke() {
   if (stallPoke || typeof window === 'undefined') return
@@ -110,7 +126,7 @@ function armStallPoke() {
       const eng = window.speechSynthesis
       if (eng && eng.speaking && !eng.paused) eng.resume()
     } catch { /* ignore */ }
-  }, 5000)
+  }, HANDOFF_PEEK_MS)
 }
 function clearStallPoke() {
   if (!stallPoke) return
@@ -135,6 +151,7 @@ export function setSpeakMarkers(onStart, onEnd) {
 export function cancelSpeakQueue() {
   generation += 1
   pending.length = 0
+  held.length = 0
   playing = false
   /* Every utterance still in the engine's queue dies with the cancel() below, so
      their `onend`/`onerror` handlers must not try to close the burst afterwards. */
@@ -323,17 +340,50 @@ function playServerAudio(prepared) {
  */
 function speakOnEngine(plain, opts) {
   if (typeof window === 'undefined' || !window.speechSynthesis) return
+  /* Already talking: hold this sentence and merge it with any others that land
+     before the current utterance ends (see `held`). The first sentence of a
+     reply never waits — it starts the moment it is known. */
+  if (engineOutstanding > 0) {
+    held.push({ text: plain, opts })
+    return
+  }
+  utterOnEngine(plain, opts)
+}
+
+/* Merge held sentences into one utterance of at most MERGE_MAX_CHARS (always at
+   least one sentence); anything left over goes out after this chunk ends. */
+function flushHeld() {
+  if (!held.length) return
+  let { text: chunk, opts } = held.shift()
+  while (held.length && chunk.length + 1 + held[0].text.length <= MERGE_MAX_CHARS) {
+    const next = held.shift()
+    chunk += ` ${next.text}`
+    /* The chunk carries the LAST sentence's options, so the reply's final
+       `onEnd` (re-arm the mic) fires only when its last words are spoken. */
+    opts = next.opts
+  }
+  utterOnEngine(chunk, opts)
+}
+
+function utterOnEngine(plain, opts) {
   const myGen = generation
   engineOutstanding += 1
   beginBurst()
   armStallPoke()
   const utter = new SpeechSynthesisUtterance(plain)
   configureUtterForSpeech(utter, getCachedVoices(), { language: opts?.language, gender: opts?.gender })
+  let settled = false
   const done = () => {
+    /* Some engines fire end-after-error; count each utterance once. */
+    if (settled) return
+    settled = true
     engineOutstanding = Math.max(0, engineOutstanding - 1)
+    /* Queue the merged follow-up BEFORE notifying, so the burst never reads as
+       finished between two chunks of the same reply. A cancel bumps the
+       generation and empties `held`, so nothing stale is spoken. */
+    if (myGen === generation && !engineOutstanding) flushHeld()
     opts?.onEnd?.()
-    /* Some engines fire end-after-error, and a cancel resets the counter itself. */
-    if (myGen === generation && !engineOutstanding && !pending.length && !playing) endBurst()
+    if (myGen === generation && !engineOutstanding && !held.length && !pending.length && !playing) endBurst()
   }
   utter.onend = done
   utter.onerror = done

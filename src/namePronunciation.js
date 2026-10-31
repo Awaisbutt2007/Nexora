@@ -84,6 +84,25 @@ export const WORD_RESPPELLINGS = {
 const sortedWords = Object.keys(WORD_RESPPELLINGS).sort((a, b) => b.length - a.length)
 const wordRe = new RegExp(`\\b(${sortedWords.map((k) => k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`, 'gi')
 
+/**
+ * Per-VOICE respellings for names, applied once the actual voice is known.
+ *
+ * Why: the Latin respelling above is tuned for an English letter table. On a
+ * machine with no Indian-English voice the 'auto' chain lands on "Google हिन्दी",
+ * and a Hindi engine reading the Latin "Ahwice" produced garble ("Awaji") — the
+ * name sounded wrong no matter how the Latin was spelled. Writing the name in
+ * the voice's OWN script is unambiguous for that engine:
+ *  - hi voices: अवैस  (a-wais, the native /əˈwɛːs/)
+ *  - ur voices: اویس
+ *  - English voices: "Awace" — reads like "awake" with an S: uh-WAYS.
+ * Names missing here fall back to NAME_RESPPELLINGS.
+ */
+export const NAME_BY_VOICE = {
+  hi: { awais: 'अवैस', awaiz: 'अवैज़', awaiss: 'अवैस', uwais: 'उवैस', uwaiss: 'उवैस', owais: 'ओवैस', aira: 'आइरा' },
+  ur: { awais: 'اویس', awaiz: 'اویز', awaiss: 'اویس', uwais: 'اویس', uwaiss: 'اویس', owais: 'اویس', aira: 'آئرہ' },
+  en: { awais: 'awace', awaiz: 'awaze', awaiss: 'awace', uwais: 'oowace', uwaiss: 'oowace', owais: 'owace' },
+}
+
 /* Longest-first so a longer name wins when one is a prefix of another, and
  * the regex source is built once per table instead of per spoken sentence. */
 const sortedEntries = Object.entries(NAME_RESPPELLINGS).sort((a, b) => b[0].length - a[0].length)
@@ -94,15 +113,19 @@ const nameRe = new RegExp(`\\b(${sortedEntries.map(([k]) => k).join('|')})\\b`, 
  * keeping the original leading capital (the same `casePreservingSwap`
  * discipline the phonetic word-lists follow).
  */
-export function respellKnownNames(text) {
+export function respellKnownNames(text, voiceLang) {
   const t = String(text || '')
   if (!t) return ''
   nameRe.lastIndex = 0
   if (!nameRe.test(t)) return t
   nameRe.lastIndex = 0
+  const byVoice = NAME_BY_VOICE[String(voiceLang || '').toLowerCase().slice(0, 2)] || {}
   return t.replace(nameRe, (m) => {
-    const out = NAME_RESPPELLINGS[m.toLowerCase()]
+    const key = m.toLowerCase()
+    const out = byVoice[key] || NAME_RESPPELLINGS[key]
     if (!out) return m
+    /* Non-Latin scripts have no case. */
+    if (out[0] === out[0].toUpperCase()) return out
     return m[0] === m[0].toUpperCase() ? out[0].toUpperCase() + out.slice(1) : out
   })
 }

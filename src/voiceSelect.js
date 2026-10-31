@@ -286,12 +286,13 @@ function casePreservingSwap(match, replacement) {
  * The Roman-Hindi/Urdu rewrite list then runs on the mixed scripts only, so a plain
  * English reply is still never re-ordered or re-vowelled by a rule meant for Hindi.
  */
-export function normalizeForSpeech(text, language) {
+export function normalizeForSpeech(text, language, voiceLang) {
   const t = String(text || '')
   if (!t) return ''
   /* Names first, then the English words: the two tables do not overlap, and doing
-     both before the Indic pass means a rewrite can never mask a word key. */
-  const withNames = respellCommonWords(respellKnownNames(t))
+     both before the Indic pass means a rewrite can never mask a word key. Names are
+     spelled for the voice that will actually read them (see NAME_BY_VOICE). */
+  const withNames = respellCommonWords(respellKnownNames(t, voiceLang))
   if (language !== 'hinglish' && language !== 'ur' && language !== 'auto') return withNames
   let out = withNames
   for (const [re, rep] of INDIC_REWRITES) {
@@ -316,7 +317,6 @@ export function configureUtterForSpeech(utter, voices, { language, gender } = {}
      reply, VoiceCall browser fallback) picks up the Hinglish corrections
      without needing to remember to invoke `normalizeForSpeech`. No-op on
      plain English and on any text that doesn't hit the three patterns. */
-  try { utter.text = normalizeForSpeech(utter.text, language) } catch { /* engine refused reassignment — the raw text still speaks */ }
   utter.lang = TTS_NATURAL_LOCALE[language] || 'en-US'
   const chain = TTS_LOCALE_CHAIN[language] || [utter.lang]
   /* Prefer the module-level warm cache over whatever the caller passed in —
@@ -334,6 +334,9 @@ export function configureUtterForSpeech(utter, voices, { language, gender } = {}
        which is what turned Latin Hindi into garble. */
     if (chosen.lang) utter.lang = chosen.lang
   }
+  /* The text pass runs AFTER the pick so names are spelled for this voice's
+     script — a Hindi voice gets अवैस, never the Latin respelling it garbles. */
+  try { utter.text = normalizeForSpeech(utter.text, language, utter.lang) } catch { /* engine refused reassignment — the raw text still speaks */ }
   /* Rate profile per language — see LANG_RATE above for the reasoning. The
      1.1 fallback matches `en`, the most likely locale when the caller hands us
      an unknown or missing language key. */
