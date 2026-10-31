@@ -74,6 +74,15 @@ const MERGE_MAX_CHARS = 220
  * moment the stream finishes (`flushSpeech`) or enough text for a full chunk is in. */
 const FIRST_HOLD_MS = 600
 let firstHoldTimer = 0
+/* Strong references to utterances the engine still owes us. Chrome can garbage-
+ * collect an utterance nothing in JS points to, and then its `onend` never fires;
+ * with held text waiting on that `onend`, the voice would go silent for good. */
+const liveUtterances = new Set()
+/* Self-heal for a lost `onend`: Chrome reports `speaking` from the moment an
+ * utterance is queued (even while an online voice is still loading), so "we owe
+ * an utterance but the engine is idle" for a few polls means the count is stale. */
+const STALE_IDLE_POLLS = 4
+let idlePolls = 0
 /* Set as soon as the server refuses a synth for THIS burst. 503 ("no speech key
  * configured", a Groq-only install) is the expected one, but an expired token, an
  * empty wallet or a timeout is just as final — and every attempt we still made was
@@ -130,14 +139,24 @@ function armStallPoke() {
   if (stallPoke || typeof window === 'undefined') return
   stallPoke = setInterval(() => {
     if (!engineOutstanding) {
+      idlePolls = 0
       clearStallPoke()
       return
     }
     try {
       const eng = window.speechSynthesis
       if (eng && eng.speaking && !eng.paused) eng.resume()
+      idlePolls = eng && !eng.speaking && !eng.pending ? idlePolls + 1 : 0
+      if (idlePolls >= STALE_IDLE_POLLS) recoverLostEnd()
     } catch { /* ignore */ }
   }, HANDOFF_PEEK_MS)
+}
+function recoverLostEnd() {
+  idlePolls = 0
+  engineOutstanding = 0
+  liveUtterances.clear()
+  if (held.length) flushHeld()
+  else if (!pending.length && !playing) endBurst()
 }
 function clearStallPoke() {
   if (!stallPoke) return
@@ -163,6 +182,8 @@ export function cancelSpeakQueue() {
   generation += 1
   pending.length = 0
   held.length = 0
+  liveUtterances.clear()
+  idlePolls = 0
   clearTimeout(firstHoldTimer)
   firstHoldTimer = 0
   playing = false
@@ -358,6 +379,11 @@ function speakOnEngine(plain, opts) {
      before the current utterance ends (see `held`). The first sentence of a
      reply never waits — it starts the moment it is known. */
   held.push({ text: plain, opts })
+  /* A stale count (lost `onend`) must never hold a new reply hostage. */
+  if (engineOutstanding > 0 && !window.speechSynthesis.speaking && !window.speechSynthesis.pending) {
+    engineOutstanding = 0
+    liveUtterances.clear()
+  }
   if (engineOutstanding > 0) return
   const heldChars = held.reduce((n, h) => n + h.text.length + 1, 0)
   if (heldChars >= MERGE_MAX_CHARS) { flushSpeech(); return }
@@ -398,10 +424,13 @@ function utterOnEngine(plain, opts) {
   const utter = new SpeechSynthesisUtterance(plain)
   configureUtterForSpeech(utter, getCachedVoices(), { language: opts?.language, gender: opts?.gender })
   let settled = false
+  liveUtterances.add(utter)
   const done = () => {
-    /* Some engines fire end-after-error; count each utterance once. */
+    /* Some engines fire end-after-error; count each utterance once. A count the
+       self-heal already reset (utterance no longer tracked) is not decremented. */
     if (settled) return
     settled = true
+    if (!liveUtterances.delete(utter)) return
     engineOutstanding = Math.max(0, engineOutstanding - 1)
     /* Queue the merged follow-up BEFORE notifying, so the burst never reads as
        finished between two chunks of the same reply. A cancel bumps the
