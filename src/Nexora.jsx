@@ -361,6 +361,16 @@ function isBackendUnreachable(err) {
   return /failed to fetch|networkerror|load failed|chat failed \(404\)|not running|not found/i.test(String(err.message || err))
 }
 
+/* The live engine can also refuse without being down: Groq's free-tier token
+   budget throttles with a 429 once a few messages land inside one minute. To the
+   person chatting, a 429 and an unreachable API feel identical — silence — so
+   both route to the same warm local demo reply instead of a red error card, and
+   the chat never stalls. A live backend that CAN answer always wins (this only
+   runs from the catch, after a real send failed). */
+function isEngineUnavailable(err) {
+  return isBackendUnreachable(err) || err?.status === 429 || err?.type === 'rate_limit'
+}
+
 function localDemoReply(text, aiName, language) {
   const name = (aiName || 'Aira').trim() || 'Aira'
   const q = String(text || '').trim()
@@ -2412,7 +2422,16 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
     setMemLoading(true)
     listMemories(authToken)
       .then((r) => setMemories(r.data || []))
-      .catch(() => setNotice('Could not load memories — is the backend running on :8787?'))
+      .catch((err) => {
+        /* Frontend-only deploy (Vercel has no Express backend): the memories route
+           404s, which is expected — settle to empty and stay quiet in production.
+           In dev the :8787 hint is still useful. Only a genuine failure surfaces a
+           notice in prod, and never with a dev port. */
+        if (isBackendUnreachable(err)) {
+          setMemories([])
+          if (import.meta.env.DEV) setNotice('Could not load memories — is the backend running on :8787?')
+        } else setNotice('Could not load your memories right now — please try again.')
+      })
       .finally(() => setMemLoading(false))
   }, [isLoggedIn, authToken])
 
@@ -2428,7 +2447,12 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
     setConvLoading(true)
     listConversations(authToken)
       .then((r) => setConversations(r.data || []))
-      .catch(() => setNotice('Could not load your conversations — is the backend running on :8787?'))
+      .catch((err) => {
+        if (isBackendUnreachable(err)) {
+          setConversations([])
+          if (import.meta.env.DEV) setNotice('Could not load your conversations — is the backend running on :8787?')
+        } else setNotice('Could not load your conversations right now — please try again.')
+      })
       .finally(() => setConvLoading(false))
   }, [isLoggedIn, authToken])
 
@@ -2482,7 +2506,12 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
             : 'planned',
         })))
       })
-      .catch(() => setNotice('Could not load your schedule — is the backend running on :8787?'))
+      .catch((err) => {
+        if (isBackendUnreachable(err)) {
+          setTasks([])
+          if (import.meta.env.DEV) setNotice('Could not load your schedule — is the backend running on :8787?')
+        } else setNotice('Could not load your schedule right now — please try again.')
+      })
   }, [isLoggedIn, authToken])
 
   useEffect(() => {
@@ -3053,11 +3082,14 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
         setNotice(`🪫 ${aiName}: Daily token limit khatam — reset par wapis milte hain`)
         return
       }
-      /* No AI server reachable (the static Vercel deploy has no backend, or the
-         user is offline). Answer locally with a warm demo reply instead of a red
-         error card, so the chat keeps working. A live backend always wins — this
-         only fires when the API is genuinely unreachable. */
-      if (isBackendUnreachable(err)) {
+      /* The live engine can't answer right now — either no AI server is reachable
+         (the static Vercel deploy has no Express backend, or the user is offline)
+         or Groq's free-tier budget throttled us mid-conversation (429). Both feel
+         the same to the person chatting: silence. So answer locally with a warm
+         demo reply instead of a red error card — the chat keeps moving and never
+         stalls. A live backend always wins; this only fires when it genuinely
+         can't reply. */
+      if (isEngineUnavailable(err)) {
         const demoText = localDemoReply(cleanPrompt, aiName, voicePrefs.language)
         setMessages((prev) =>
           prev.map((m) =>
@@ -3066,7 +3098,9 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
               : m,
           ),
         )
-        setNotice(`${aiName} replied (demo mode)`)
+        setNotice(err?.status === 429 || err?.type === 'rate_limit'
+          ? `${aiName}: AI is busy right now — replied locally. Try again in a minute ✨`
+          : `${aiName} replied (demo mode)`)
         return
       }
       setMessages((prev) =>
@@ -3076,7 +3110,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
             : m,
         ),
       )
-      setNotice(err.message || 'Chat failed — is the backend running on :8787?')
+      setNotice(err.message || 'Chat failed — please try again in a moment.')
     } finally {
       setStreaming(false)
       sendLockRef.current = false
