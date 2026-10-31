@@ -162,6 +162,7 @@ async function openTap() {
   const pending = new Float32Array(FRAME_SIZE * 4)
   let pendingLen = 0
   let noiseFloor = -50
+  let lastDb = -100
   node.onaudioprocess = (ev) => {
     const input = ev.inputBuffer.getChannelData(0)
     if (pendingLen + input.length > pending.length) pendingLen = 0
@@ -173,6 +174,7 @@ async function openTap() {
       /* Floor drops instantly to quieter frames and creeps up slowly, so it
          follows the room's noise without ever latching onto speech. */
       noiseFloor = db < noiseFloor ? db : noiseFloor + 0.02
+      lastDb = db
       const voiced = db > noiseFloor + VOICED_MARGIN_DB && db > ABS_MIN_DB
       frames.push({ t: Date.now(), voiced, ceps })
       if (frames.length > maxFrames) frames.splice(0, frames.length - maxFrames)
@@ -188,6 +190,8 @@ async function openTap() {
   if (ctx.state === 'suspended') { try { await ctx.resume() } catch { /* resumes on next gesture */ } }
   return {
     hopSec: HOP_SIZE / ctx.sampleRate,
+    /* 0..1 loudness above the room's noise — drives the enrollment orb. */
+    level() { return Math.max(0, Math.min(1, (lastDb - noiseFloor) / 35)) },
     voicedSince(t0, t1 = Date.now()) {
       return frames.filter((f) => f.voiced && f.t >= t0 && f.t <= t1).map((f) => f.ceps)
     },
@@ -218,6 +222,8 @@ export async function acquireVoiceTap() {
 }
 
 export function isTapLive() { return Boolean(tap) }
+
+export function tapLevel() { return tap ? tap.level() : 0 }
 
 /* ---------- voiceprint math ---------- */
 

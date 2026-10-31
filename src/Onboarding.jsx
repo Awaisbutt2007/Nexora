@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { loadSession, updateProfile } from './api/nexora.js'
 import NanoParticles from './NanoParticles.jsx'
 import { Icon } from './icons.jsx'
+import { useVoiceEnrollment } from './OwnerVoiceSetup.jsx'
 import './Onboarding.css'
 
 const AI_PROFILE_KEY = 'nexora_ai_profile'
@@ -22,6 +23,7 @@ const GREETINGS = [
   'Hi!\nWhat is your name?',
   'Lovely name!\nWhat do you want to name me?',
   'Almost there…\nI have no voice yet. Choose one.',
+  'One last thing…\nTeach me YOUR voice.',
   'Everything is ready.\nSay hello to your AI.',
 ]
 
@@ -111,8 +113,10 @@ function WaveBars({ analyserRef }) {
 }
 
 /**
- * Three-stage onboarding shown after a new Google sign-in / account sign-up:
- * 1. user's name (saved to backend)  2. name for the AI  3. voice + persona.
+ * Onboarding shown after a new Google sign-in / account sign-up:
+ * 1. user's name (saved to backend)  2. name for the AI  3. voice + persona
+ * 4. owner voice enrollment (Siri-style: read 4 lines so only this voice can
+ *    give spoken commands; skippable, Settings keeps it reachable)  5. reveal.
  */
 export default function Onboarding({ userProfile, source = 'google', onComplete }) {
   /* Restore the last saved step so a refresh never throws the user back to step 1 */
@@ -150,12 +154,17 @@ export default function Onboarding({ userProfile, source = 'google', onComplete 
   const [voiceName, setVoiceName] = useState('')
   /* Reveal stage: the Back / Enter buttons stay hidden until Aira finishes speaking */
   const [introDone, setIntroDone] = useState(false)
+  /* Owner voice enrollment (stage 3). Keyed exactly like the workspace's lock
+     (account id, else email) so the print recorded here is the one it checks. */
+  const ownerKey = userProfile?.id || userProfile?.email
+  const enrollment = useVoiceEnrollment({ userKey: ownerKey, ownerName: name || userProfile?.name, aiName: aiName.trim() || 'Aira' })
 
   const STEPS = [
     source === 'signup' ? 'Account created' : 'Google connected',
     'Pick your name',
     'Name your AI',
     'Choose a voice',
+    'Your voice',
   ]
   /* Which particle shape to show on the current stage: orb until the voice is
      picked, then the chosen gender portrait (there is no custom-face step). */
@@ -167,7 +176,7 @@ export default function Onboarding({ userProfile, source = 'google', onComplete 
   /* Stage 1 greets the human back with the name they just typed */
   const greeting = stage === 1 && name.trim()
     ? `Lovely name, ${name.trim()}!\n${GREETINGS[1].split('\n')[1]}`
-    : stage === 3
+    : stage === 4
       ? introLine
       : GREETINGS[stage]
 
@@ -496,7 +505,7 @@ export default function Onboarding({ userProfile, source = 'google', onComplete 
      The footer buttons only appear once the speech ends (onend) — with a
      watchdog fallback so a dropped onend never traps the user on the screen. */
   useEffect(() => {
-    if (stage !== 3) return undefined
+    if (stage !== 4) return undefined
     setIntroDone(false)
     let fallback = 0
     /* Start talking almost immediately so the spoken intro keeps pace with the
@@ -545,7 +554,7 @@ export default function Onboarding({ userProfile, source = 'google', onComplete 
         </ol>
       </header>
 
-      <section className={`onboarding-body${stage === 3 ? ' reveal' : ''}`}>
+      <section className={`onboarding-body${stage === 4 ? ' reveal' : ''}`}>
         <div className="onboarding-copy">
           <h1 className="type-heading">
             {/* Invisible full text reserves the final height so typing never shifts the layout */}
@@ -707,12 +716,39 @@ export default function Onboarding({ userProfile, source = 'google', onComplete 
           )}
 
           {stage === 3 && (
+            <div className="enroll-block">
+              {enrollment.recording ? <>
+                <div className="enroll-orb live" style={{ '--lvl': enrollment.level }} aria-hidden="true"><Icon name="mic" size={34} /></div>
+                {enrollment.step < enrollment.lines.length ? <>
+                  <p className="enroll-count">Line {enrollment.step + 1} / {enrollment.lines.length} - ye bol kar parhein</p>
+                  <p className="enroll-line" aria-live="polite">"{enrollment.lines[enrollment.step]}"</p>
+                  <div className="enroll-bar"><span style={{ width: `${Math.round(enrollment.progress * 100)}%` }} /></div>
+                  {enrollment.note && <p className="enroll-note">{enrollment.note}</p>}
+                </> : <p className="enroll-count">Aap ki awaaz yaad kar rahi hoon...</p>}
+              </> : enrollment.record ? <>
+                <div className="enroll-orb done" aria-hidden="true"><Icon name="check" size={34} /></div>
+                <p className="enroll-line">Ho gaya, {enrollment.owner.split(' ')[0]}! Ab {enrollment.ai} sirf aap ki awaaz ke commands maanegi. Koi aur bolega to jawab milega: "Sorry, main sirf apne owner ki baat maanti hoon."</p>
+              </> : <>
+                <button type="button" className="enroll-orb" onClick={enrollment.enroll} aria-label="Start voice registration"><Icon name="mic" size={34} /></button>
+                <p className="enroll-line">Jaise Siri sirf apne owner ki awaaz pe jaagti hai, waise hi {enrollment.ai} ko apni awaaz sikhaiye. Mic dabayein aur screen par aane wali 4 chhoti lines bol kar parhein (sirf 20 sec).</p>
+              </>}
+              {enrollment.error && <p className="onboarding-error">{enrollment.error}</p>}
+              <div className="voice-footer">
+                <button className="voice-back" type="button" disabled={enrollment.recording} onClick={() => setStage(2)}>Back</button>
+                {enrollment.record
+                  ? <button className="onboarding-continue" type="button" onClick={() => setStage(4)}>Continue</button>
+                  : <button className="onboarding-continue ghost" type="button" disabled={enrollment.recording} onClick={() => setStage(4)}>Skip for now</button>}
+              </div>
+            </div>
+          )}
+
+          {stage === 4 && (
             <div className="reveal-block">
               {/* Back pinned to the far left, the next action to the far right.
                   Space is reserved (visibility, not display) so the layout never
                   jumps — the row only becomes visible once the intro has played. */}
               <div className={`reveal-actions${introDone ? ' show' : ''}`}>
-                <button className="voice-back" type="button" onClick={() => { window.speechSynthesis?.cancel(); setStage(2) }}>Back</button>
+                <button className="voice-back" type="button" onClick={() => { window.speechSynthesis?.cancel(); setStage(3) }}>Back</button>
                 <button className="onboarding-continue" type="button" onClick={handleFinish}>Enter Nexora</button>
               </div>
             </div>

@@ -702,3 +702,21 @@
   .onboarding-body.reveal .onboarding-visual { width: min(34vw, 210px, 26vh); }
   .onboarding-body.reveal .onboarding-copy h1 { margin-bottom: 8px; }
 }
+
+/* Stage 4 — owner voice enrollment (Siri-style). The orb swells with the live
+   mic level (--lvl, 0..1) so the user can see they are being heard. */
+.enroll-block { display: flex; flex-direction: column; align-items: center; gap: 14px; text-align: center; max-width: 520px; }
+.enroll-orb { --lvl: 0; display: grid; place-items: center; width: 108px; height: 108px; border: 0; border-radius: 50%; color: #fff; background: radial-gradient(circle at 35% 30%, #d77bff 0%, #8a4dff 45%, #4f5cff 100%); box-shadow: 0 0 0 calc(6px + var(--lvl) * 26px) rgba(170,90,255,.18), 0 12px 40px rgba(120,70,255,.45); transform: scale(calc(1 + var(--lvl) * .18)); transition: transform .08s linear, box-shadow .08s linear; cursor: pointer; }
+button.enroll-orb { animation: enroll-breathe 2.4s ease-in-out infinite; }
+button.enroll-orb:hover { filter: brightness(1.1); }
+.enroll-orb.live { cursor: default; }
+.enroll-orb.done { cursor: default; background: radial-gradient(circle at 35% 30%, #7ef0c4 0%, #2fbf8f 55%, #1f8f7a 100%); box-shadow: 0 12px 40px rgba(47,191,143,.4); }
+@keyframes enroll-breathe { 0%, 100% { box-shadow: 0 0 0 6px rgba(170,90,255,.18), 0 12px 40px rgba(120,70,255,.45); } 50% { box-shadow: 0 0 0 20px rgba(170,90,255,.06), 0 12px 40px rgba(120,70,255,.45); } }
+.enroll-count { margin: 0; color: #a9aecb; font-size: 13px; letter-spacing: .02em; }
+.enroll-line { margin: 0; color: #f3f4ff; font-size: 17px; line-height: 1.5; }
+.enroll-note { margin: 0; color: #ffb37b; font-size: 13px; }
+.enroll-bar { width: min(360px, 80vw); height: 6px; border-radius: 999px; background: rgba(149,162,215,.15); overflow: hidden; }
+.enroll-bar span { display: block; height: 100%; background: linear-gradient(90deg,#bd42ef,#5267ff); transition: width .1s linear; }
+.enroll-block .voice-footer { width: 100%; }
+.onboarding-continue.ghost { background: transparent; border: 1px solid rgba(149,162,215,.35); box-shadow: none; }
+@media (prefers-reduced-motion: reduce) { button.enroll-orb { animation: none; } .enroll-orb { transition: none; } }

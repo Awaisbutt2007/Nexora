@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
   acquireVoiceTap, buildVoiceprint, capturePhrase, clearOwnerVoice, loadOwnerVoice,
-  phraseSeconds, saveOwnerVoice, STRICTNESS, MIN_PHRASE_SECONDS,
+  phraseSeconds, saveOwnerVoice, STRICTNESS, MIN_PHRASE_SECONDS, tapLevel,
 } from './ownerVoice.js'
 import { Icon } from './icons.jsx'
 
@@ -18,12 +18,14 @@ function enrollLines(owner, ai) {
   ]
 }
 
-/* Enroll / manage the owner's voiceprint. `compact` renders the first-run card
-   shown in the workspace; otherwise it is the Settings group body. */
-export default function OwnerVoiceSetup({ userKey, ownerName, aiName, compact = false, onDone }) {
+/* The recording flow, shared by Settings, the workspace card and onboarding.
+   `step` is -1 when idle, 0..n-1 while line n is being read, n while the print
+   is being built. `level` is the live mic loudness (0..1) for a reactive orb. */
+export function useVoiceEnrollment({ userKey, ownerName, aiName, onEnrolled }) {
   const [record, setRecord] = useState(() => loadOwnerVoice(userKey))
-  const [step, setStep] = useState(-1) /* -1 idle, 0..n-1 recording line n, n = building */
+  const [step, setStep] = useState(-1)
   const [progress, setProgress] = useState(0)
+  const [level, setLevel] = useState(0)
   const [error, setError] = useState('')
   const [note, setNote] = useState('')
   const owner = (ownerName || '').trim() || 'Owner'
@@ -39,6 +41,7 @@ export default function OwnerVoiceSetup({ userKey, ownerName, aiName, compact = 
   async function enroll() {
     setError(''); setNote('')
     let release = null
+    const meter = setInterval(() => setLevel(tapLevel()), 80)
     try {
       release = await acquireVoiceTap()
       const phrases = []
@@ -59,14 +62,25 @@ export default function OwnerVoiceSetup({ userKey, ownerName, aiName, compact = 
       const next = { ...print, ownerName: owner, enabled: true, strictness: record?.strictness || 'normal', enrolledAt: new Date().toISOString() }
       saveOwnerVoice(userKey, next)
       setRecord(next)
-      onDone?.(true)
+      onEnrolled?.(next)
     } catch (err) {
       setError(err?.name === 'NotAllowedError' ? 'Microphone permission was blocked. Allow it in the browser and try again.' : (err?.message || 'Could not record your voice.'))
     } finally {
+      clearInterval(meter)
       release?.()
-      setStep(-1); setProgress(0)
+      setStep(-1); setProgress(0); setLevel(0)
     }
   }
+
+  return { record, setRecord, step, progress, level, error, note, lines, owner, ai, enroll, recording: step >= 0 }
+}
+
+/* Enroll / manage the owner's voiceprint. `compact` renders the first-run card
+   shown in the workspace; otherwise it is the Settings group body. */
+export default function OwnerVoiceSetup({ userKey, ownerName, aiName, compact = false, onDone }) {
+  const { record, setRecord, step, progress, error, note, lines, owner, ai, enroll } = useVoiceEnrollment({
+    userKey, ownerName, aiName, onEnrolled: () => onDone?.(true),
+  })
 
   const update = (patch) => {
     const next = { ...record, ...patch }
