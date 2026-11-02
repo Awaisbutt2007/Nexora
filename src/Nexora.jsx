@@ -1576,7 +1576,8 @@ function DesktopView({ token, aiName, isLoggedIn, onLogin }) {
       <p className="desktop-muted">{paired ? 'This browser is already paired, but your Nexora Agent is not reachable right now — make sure it is still running on this PC.' : 'Run the Nexora Agent on this computer, then paste the 6-digit pairing code it prints to its console. We confirm your paid Nexora account before the agent hands this browser a token.'}</p>
       {pairStatus && <p className="desktop-notice" role="status"><Icon name="check" size={14} /> Nexora Agent detected and awaiting pairing — enter the code shown in its window.</p>}
       <ol className="desktop-steps">
-        <li>Start the agent: <code>cd desktop-agent</code> → <code>npm install</code> → <code>npm run dev:agent</code>.</li>
+        <li>Open a terminal <b>inside your Nexora project folder</b> (the repo root — the folder that <i>contains</i> <code>desktop-agent</code>). A new Windows terminal starts in <code>C:\WINDOWS\system32</code>, so first <code>cd "C:\path\to\Nexora"</code> — or open the folder in VS Code and use its built-in terminal.</li>
+        <li>From there, start the agent: <code>cd desktop-agent</code> → <code>npm install</code> → <code>npm run dev:agent</code>.</li>
         <li>Allow this site: set the agent's <code>AGENT_ALLOWED_ORIGINS</code> to <code>{AGENT_SELF_ORIGIN || 'this page origin'}</code> and its <code>NEXORA_BACKEND_URL</code> to your Nexora backend, then restart it.</li>
         <li>Copy the pairing code from the agent console and paste it below.</li>
       </ol>

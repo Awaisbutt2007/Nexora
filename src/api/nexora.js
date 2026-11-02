@@ -87,6 +87,39 @@ export function mapUser(user) {
   }
 }
 
+/* A static deploy (Vercel) has no Express backend, so every /api/user and /api/auth
+   write 404s and the Settings "Save name / Update email / Change password" buttons
+   would flash a raw `Request failed (404)`. Sign-in already falls back to a
+   device-only session on such a deploy (see SignIn.localSession) whose token starts
+   with `local-`; these writes belong to that same session, so apply them to it in
+   localStorage instead of reaching for a server that isn't there — the same way the
+   voice/companion prefs already persist locally. A real backend (dev :8787, or the
+   Render single-origin deploy) always wins: the local path only runs for a `local-`
+   token, or when the request never landed (network failure / 404 / dead gateway). */
+function isLocalToken(token) {
+  return String(token || '').startsWith('local-')
+}
+
+function isMissingBackend(err) {
+  if (err instanceof TypeError) return true
+  return err?.status === 404 || err?.status === 502 || err?.status === 504
+}
+
+/* Merge a profile write into the on-device session and return a server-shaped
+   { user } so the caller's onProfileUpdate(res.user) needs no special case.
+   prefs merge key-by-key (never replace), exactly like PATCH /api/user/profile. */
+function localProfilePatch(payload) {
+  const current = loadSession()
+  if (!current?.isLoggedIn) return null
+  const base = current.userProfile || {}
+  const merged = { ...base }
+  if (typeof payload?.name === 'string') merged.name = payload.name
+  if (typeof payload?.email === 'string') merged.email = payload.email
+  if (payload?.prefs && typeof payload.prefs === 'object') merged.prefs = { ...(base.prefs || {}), ...payload.prefs }
+  saveSession({ user: merged })
+  return { user: mapUser(merged) }
+}
+
 /* One quiet retry for the auth endpoints. `node --watch` restarts the backend on every
    edit, and any blip in that window reaches the browser as a bare TypeError ("Failed to
    fetch") — or, once the request goes through the dev-server proxy, as an empty 502.
@@ -143,12 +176,25 @@ export async function googleLogin(credential) {
  * Returns { user } with the fresh backend record.
  */
 export async function updateProfile(token, payload) {
-  const res = await fetch(`${API_BASE}/api/user/profile`, {
-    method: 'PATCH',
-    headers: authHeaders(token),
-    body: JSON.stringify(payload),
-  })
-  return parseJson(res)
+  if (isLocalToken(token)) {
+    const local = localProfilePatch(payload)
+    if (local) return local
+    throw new Error('Not signed in on this device.')
+  }
+  try {
+    const res = await fetch(`${API_BASE}/api/user/profile`, {
+      method: 'PATCH',
+      headers: authHeaders(token),
+      body: JSON.stringify(payload),
+    })
+    return await parseJson(res)
+  } catch (err) {
+    if (isMissingBackend(err)) {
+      const local = localProfilePatch(payload)
+      if (local) return local
+    }
+    throw err
+  }
 }
 
 /** Upload one downscaled reference image (data URL) for a chat attachment. */
@@ -171,22 +217,50 @@ export function resourceUrl(path) {
  * stolen token alone can't hijack the account. Returns { user, token }.
  */
 export async function updateEmail(token, { currentPassword, email }) {
-  const res = await fetch(`${API_BASE}/api/auth/email`, {
-    method: 'POST',
-    headers: authHeaders(token),
-    body: JSON.stringify({ currentPassword, email }),
-  })
-  return parseJson(res)
+  if (isLocalToken(token)) {
+    const local = localProfilePatch({ email })
+    if (local) return { ...local, token }
+    throw new Error('Not signed in on this device.')
+  }
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/email`, {
+      method: 'POST',
+      headers: authHeaders(token),
+      body: JSON.stringify({ currentPassword, email }),
+    })
+    return await parseJson(res)
+  } catch (err) {
+    if (isMissingBackend(err)) {
+      const local = localProfilePatch({ email })
+      if (local) return { ...local, token }
+    }
+    throw err
+  }
 }
 
 /** Change the account password (needs the current one). Returns { user }. */
 export async function updatePassword(token, { currentPassword, newPassword }) {
-  const res = await fetch(`${API_BASE}/api/auth/password`, {
-    method: 'POST',
-    headers: authHeaders(token),
-    body: JSON.stringify({ currentPassword, newPassword }),
-  })
-  return parseJson(res)
+  /* A device-only session has no server password to change, so accept it as an
+     on-device no-op success (the same token stays valid) rather than 404ing. */
+  if (isLocalToken(token)) {
+    const current = loadSession()
+    if (current?.isLoggedIn) return { user: current.userProfile, token }
+    throw new Error('Not signed in on this device.')
+  }
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/password`, {
+      method: 'POST',
+      headers: authHeaders(token),
+      body: JSON.stringify({ currentPassword, newPassword }),
+    })
+    return await parseJson(res)
+  } catch (err) {
+    if (isMissingBackend(err)) {
+      const current = loadSession()
+      if (current?.isLoggedIn) return { user: current.userProfile, token }
+    }
+    throw err
+  }
 }
 
 export async function me(token) {
