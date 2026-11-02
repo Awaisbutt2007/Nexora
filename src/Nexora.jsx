@@ -1,4 +1,5 @@
 import { lazy, Suspense, useState, useEffect, useLayoutEffect, useMemo, useRef, useCallback } from 'react'
+import { InstallAppButton } from './InstallApp.jsx'
 import { createPortal } from 'react-dom'
 import './Nexora.css'
 import './typography.css'
@@ -736,7 +737,7 @@ function Landing({ onLogin, onNavigate, isLoggedIn, userProfile, onUpgrade }) {
           <button className={`hamburger ${menuOpen ? 'open' : ''}`} type="button" aria-label="Menu" onClick={() => setMenuOpen(v => !v)}><span /><span /><span /></button>
         </div>
       </div>
-      {menuOpen && <div className="mobile-menu-panel wrap"><a href="#features" onClick={() => setMenuOpen(false)}>Features</a><a href="#showcase" onClick={() => setMenuOpen(false)}>Showcase</a><a href="#plans" onClick={() => setMenuOpen(false)}>Pricing</a><a href="#faq" onClick={() => setMenuOpen(false)}>FAQ</a><a href="#about" onClick={() => setMenuOpen(false)}>About</a></div>}
+      {menuOpen && <div className="mobile-menu-panel wrap"><a href="#features" onClick={() => setMenuOpen(false)}>Features</a><a href="#showcase" onClick={() => setMenuOpen(false)}>Showcase</a><a href="#plans" onClick={() => setMenuOpen(false)}>Pricing</a><a href="#faq" onClick={() => setMenuOpen(false)}>FAQ</a><a href="#about" onClick={() => setMenuOpen(false)}>About</a><InstallAppButton className="mobile-menu-install" label="Install app" /></div>}
     </header>
 
     <section className="hero wrap">
@@ -747,6 +748,7 @@ function Landing({ onLogin, onNavigate, isLoggedIn, userProfile, onUpgrade }) {
         <div className="hero-actions">
           <button className="button button-primary button-large" type="button" onClick={() => onNavigate('Home', null, 'Nexora Workspace')}>Get started free <span>→</span></button>
           <a className="button button-ghost button-large" href="#features"><span className="play-icon"><Icon name="play" size={13} /></span> See what Nexora can do</a>
+          <InstallAppButton />
         </div>
         <p className="hero-note">Works on every browser · Free to start. A paid plan unlocks more magic.</p>
         <div className="social-proof">

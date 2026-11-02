@@ -1,0 +1,53 @@
+.install-icon { display: inline-flex; align-items: center; margin-right: 6px; }
+
+.install-backdrop {
+  position: fixed; inset: 0; z-index: 9999;
+  background: rgba(4, 5, 14, 0.66);
+  backdrop-filter: blur(6px);
+  display: flex; align-items: center; justify-content: center;
+  padding: 20px;
+  animation: install-fade 0.18s ease-out;
+}
+
+.install-sheet {
+  width: min(420px, 100%);
+  background: linear-gradient(160deg, #19153e 0%, #0b0d22 100%);
+  border: 1px solid rgba(169, 99, 255, 0.35);
+  border-radius: 20px;
+  padding: 22px;
+  color: #eef0ff;
+  font-family: 'DM Sans', system-ui, sans-serif;
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.55);
+}
+
+.install-head { display: flex; gap: 14px; align-items: center; margin-bottom: 16px; }
+.install-head img { border-radius: 12px; flex: none; }
+.install-head h3 { margin: 0 0 4px; font-family: 'Space Grotesk', sans-serif; font-size: 1.15rem; }
+.install-head p { margin: 0; font-size: 0.88rem; color: #b4b8d8; }
+
+.install-steps { margin: 0 0 16px; padding-left: 20px; line-height: 1.7; font-size: 0.95rem; }
+.install-steps b { color: #fff; }
+.install-glyph { display: inline-block; padding: 0 4px; border: 1px solid rgba(255,255,255,0.3); border-radius: 5px; font-size: 0.8em; }
+
+.install-exe {
+  display: block; text-align: center; margin-bottom: 12px;
+  padding: 10px; border-radius: 12px;
+  border: 1px solid rgba(98, 228, 255, 0.4);
+  color: #62e4ff; text-decoration: none; font-weight: 600; font-size: 0.92rem;
+}
+.install-exe:hover { background: rgba(98, 228, 255, 0.08); }
+
+.install-close {
+  width: 100%; padding: 11px; border: 0; border-radius: 12px; cursor: pointer;
+  font-weight: 700; font-size: 0.95rem; color: #fff;
+  background: linear-gradient(90deg, #62e4ff, #a963ff 50%, #f45bd8);
+}
+
+@keyframes install-fade { from { opacity: 0 } to { opacity: 1 } }
+
+.mobile-menu-install {
+  display: flex; align-items: center; justify-content: center; margin-top: 6px;
+  padding: 10px 14px; border-radius: 12px; border: 0; cursor: pointer;
+  font: inherit; color: #fff; font-weight: 700;
+  background: linear-gradient(90deg, #62e4ff, #a963ff 50%, #f45bd8);
+}
