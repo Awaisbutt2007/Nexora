@@ -156,6 +156,7 @@ export class Agent {
       case 'system.info': return system.info()
       case 'system.restart': return system.restart(args, signal)
       case 'system.shutdown': return system.shutdown(args, signal)
+      case 'system.runCommand': return system.runCommand(args, signal)
 
       // Screen observation — the bytes are returned in-memory to the caller; the
       // execute() audit already drops result bodies, and nothing is written to

@@ -25,6 +25,7 @@ files.organize    args: { dir: string, strategy?: "by-extension"|"by-date"|"flat
 system.info       args: {}
 system.restart    args: { note?: string }                                  // always confirmed, never from voice
 system.shutdown   args: { note?: string }                                  // always confirmed, never from voice
+system.runCommand args: { command: string, timeoutMs?: number }             // run a shell/CMD command; ALWAYS confirmed by a human first, never from voice
 screen.capture    args: { monitor?: "primary", maxWidth?: number, save?: bool, name?: string }   // look at the screen; nothing saved unless save:true
 desktop.move      args: { x: int, y: int }
 desktop.click     args: { x: int, y: int, button?: "left"|"right"|"middle", double?: bool }

@@ -103,6 +103,8 @@ app.use((_req, res, next) => {
    route below, so with a build present `/` serves the app and without one it serves docs. */
 if (config.hostClient && fs.existsSync(path.join(config.clientDir, 'index.html'))) {
   app.use(express.static(config.clientDir, { index: 'index.html', extensions: ['html'] }))
+  // Client-side page (DownloadPage.jsx) — serve the app shell for it.
+  app.get('/download', (_req, res) => res.sendFile(path.join(config.clientDir, 'index.html')))
 }
 
 app.get('/health', (_req, res) => {

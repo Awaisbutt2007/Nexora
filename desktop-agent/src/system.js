@@ -64,3 +64,49 @@ export function abortPower() {
     execFile('shutdown', ['/a'], (err) => resolve({ attempted: true, cancelled: !err, note: err ? 'nothing was scheduled' : 'scheduled power action cancelled' }))
   })
 }
+
+/* ── ARBITRARY COMMAND EXECUTION ─────────────────────────────────────────────
+   The one genuinely open-ended capability, added on the owner's explicit request
+   for full terminal access. It is deliberately NOT a silent path: the allowlist
+   flags it `alwaysConfirm`, so NOTHING runs until a human approves the exact
+   command string (the agent refuses execution without `approvedThisAction`).
+   The runner still bounds it with a hard timeout and the emergency STOP kills it.
+   Output is capped so a chatty command can't blow up the response. */
+const OUTPUT_CAP = 20000
+
+function cap(text) {
+  const s = String(text || '')
+  return s.length > OUTPUT_CAP ? `${s.slice(0, OUTPUT_CAP)}\n… (truncated ${s.length - OUTPUT_CAP} chars)` : s
+}
+
+export function runCommand(args, signal) {
+  if (signal?.aborted) return Promise.reject(signal.reason || new Error('cancelled'))
+  const command = String(args.command || '').trim()
+  if (!command) return Promise.reject(new Error('No command to run.'))
+  const timeoutMs = Math.max(1000, Math.min(120000, args.timeoutMs || 30000))
+  /* Windows runs it through PowerShell; other hosts are dev/test boxes only. The
+     command is passed as a single argv element to `-Command`/`-c`, never string-
+     interpolated into another shell layer, so there is no extra quoting surface. */
+  const argv = IS_WIN
+    ? ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command]
+    : ['-c', command]
+  const shell = IS_WIN ? 'powershell.exe' : '/bin/sh'
+  return new Promise((resolve, reject) => {
+    const child = execFile(shell, argv, { encoding: 'utf8', timeout: timeoutMs, windowsHide: true, maxBuffer: 16 * 1024 * 1024 },
+      (err, stdout, stderr) => {
+        if (signal?.aborted) return reject(signal.reason || new Error('cancelled'))
+        const timedOut = Boolean(err && err.signal === 'SIGTERM')
+        const exitCode = typeof child.exitCode === 'number' ? child.exitCode : (err && !timedOut ? 1 : null)
+        resolve({
+          command,
+          exitCode,
+          ok: exitCode === 0,
+          timedOut,
+          stdout: cap(stdout),
+          stderr: cap(stderr),
+          note: timedOut ? `Timed out after ${timeoutMs}ms and was killed.` : undefined,
+        })
+      })
+    signal?.addEventListener?.('abort', () => { try { child.kill('SIGKILL') } catch { /* already gone */ } })
+  })
+}

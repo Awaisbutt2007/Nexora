@@ -2,17 +2,19 @@ import { z } from 'zod'
 import { SAFE_KEYS } from './input.js'
 
 /* ────────────────────────────────────────────────────────────────────────────
-   THE ALLOWLIST is the single source of truth for what the agent can do. There
-   is no "run this command" action and no free-form path — every action is a
-   fixed, named operation with a strict zod argument schema, the permission
-   SCOPE it needs, a RISK level, and an `alwaysConfirm` flag.
+   THE ALLOWLIST is the single source of truth for what the agent can do. Every
+   action is a fixed, named operation with a strict zod argument schema, the
+   permission SCOPE it needs, a RISK level, and an `alwaysConfirm` flag. The one
+   open-ended operation is `system.runCommand`, which is itself allowlisted, gated
+   to the `system` scope and forced `alwaysConfirm` — so even it can never run
+   without a human approving the exact command string.
 
    The language model may only ever PROPOSE `{ action, args }` that matches one
    of these definitions. Anything not in this list is rejected before a single
    syscall runs, so the model can never grant itself a permission or invent a new
    capability. High-risk / irreversible operations (send, submit, delete, write,
-   organize, restart, shutdown) force an explicit human preview→confirm even when
-   the scope has already been granted.
+   organize, restart, shutdown, runCommand) force an explicit human preview→confirm
+   even when the scope has already been granted.
    ──────────────────────────────────────────────────────────────────────────── */
 
 export const SCOPES = ['browser', 'files', 'apps', 'system', 'screen', 'desktop']
@@ -194,6 +196,20 @@ export const ACTIONS = [
     description: 'Shut down the PC after explicit confirmation (never from ambiguous voice).',
     args: z.object({ note: z.string().trim().max(200).optional() }),
     preview: () => `⚠ SHUT DOWN the computer. Close unsaved work first — this is disruptive.`,
+  },
+  {
+    id: 'system.runCommand',
+    scope: 'system',
+    risk: 'high',
+    // Arbitrary command execution is the most powerful thing the agent can do, so it
+    // ALWAYS shows the exact command for a human to approve — even once the system
+    // scope is granted. This is the "approve each command" consent the owner chose.
+    alwaysConfirm: true,
+    description: 'Run a shell command (PowerShell on Windows) on this PC and return its output. Every run needs your explicit approval.',
+    // The command MUST be visible in the preview — it is exactly what the human
+    // approves — so it is deliberately NOT treated as a secret arg.
+    args: z.object({ command: z.string().trim().min(1).max(4000), timeoutMs: z.number().int().min(1000).max(120000).default(30000) }),
+    preview: (a) => `⚠ RUN COMMAND on this PC:\n${a.command}\nRuns with your user privileges. Approve only if you trust this.`,
   },
 
   /* ── SCREEN OBSERVATION ─────────────────────────────────────────────────── */

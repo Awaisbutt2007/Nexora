@@ -1004,6 +1004,18 @@ a { color: inherit; text-decoration: none; }
    while the face is being assembled and photographed off-screen. */
 .chat-shot-caption { display: block; margin: 8px 0 2px; padding: 7px 11px; border: 1px dashed rgba(95,208,255,.35); border-radius: 10px; background: rgba(95,208,255,.07); color: #9fdcff; font: 600 11.5px/1.5 'Space Grotesk',sans-serif; letter-spacing: .02em; }.chat-shot-caption.is-pending { border-color: rgba(189,108,255,.4); background: rgba(189,108,255,.08); color: #d9c4ff; animation: chatShotPulse 1.4s ease-in-out infinite; }
 @keyframes chatShotPulse { 0%,100% { opacity: .5; } 50% { opacity: 1; } }
+/* Queued terminal commands ([DESKTOP:system.runCommand|…]): the one open-ended action,
+   so it is never auto-run — the agent's ⚠ preview sits here and nothing executes until a
+   real click on Run. The result panel scrolls but shows no scrollbar (project rule). */
+.chat-desktop-queue { display: flex; flex-direction: column; gap: 10px; margin-top: 10px; }
+.chat-desktop-cmd { display: flex; flex-direction: column; gap: 8px; padding: 12px 13px; border: 1px solid rgba(189,108,255,.34); border-radius: 12px; background: rgba(10,14,28,.73); }
+.chat-desktop-head { display: flex; align-items: center; gap: 7px; color: #d9c4ff; font: 700 11.5px/1.4 'Space Grotesk',sans-serif; letter-spacing: .02em; }
+.chat-desktop-command { display: block; padding: 9px 11px; border-radius: 9px; border: 1px solid rgba(149,162,215,.16); background: rgba(6,9,20,.72); color: #e7d9ff; font: 600 12.5px/1.55 ui-monospace,'Cascadia Code',Menlo,Consolas,monospace; white-space: pre-wrap; word-break: break-word; unicode-bidi: plaintext; }
+.chat-desktop-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; width: 100%; }
+.chat-desktop-run { margin-left: auto; padding: 8px 16px; border: 0; border-radius: 10px; background: linear-gradient(135deg,#bd6cff,#5fd0ff); color: #fff; font: 700 13px 'Space Grotesk',sans-serif; cursor: pointer; }
+.chat-desktop-cancel { margin-right: auto; padding: 8px 16px; border: 1px solid rgba(149,162,215,.2); border-radius: 10px; background: transparent; color: #949bb3; font: 600 13px 'Space Grotesk',sans-serif; cursor: pointer; }.chat-desktop-cancel:hover { color: #fff; }
+.chat-desktop-note { display: flex; align-items: center; gap: 8px; color: #9fdcff; font: 600 12px/1.5 'Space Grotesk',sans-serif; }.chat-desktop-note.is-error { color: #ffb3c0; }
+.chat-desktop-result { margin: 0; max-height: 240px; overflow: auto; padding: 10px 12px; border-radius: 9px; border: 1px solid rgba(149,162,215,.14); background: rgba(6,9,20,.8); color: #cdd3e8; font: 500 12px/1.55 ui-monospace,'Cascadia Code',Menlo,Consolas,monospace; white-space: pre-wrap; word-break: break-word; scrollbar-width: none; -ms-overflow-style: none; unicode-bidi: plaintext; }.chat-desktop-result::-webkit-scrollbar { display: none; width: 0; height: 0; }
 .chat-lightbox { position: fixed; inset: 0; z-index: 2000; display: grid; place-items: center; padding: 24px; background: rgba(4,6,14,.82); -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px); animation: chatImgFade .18s ease; }
 .chat-lightbox-inner { display: flex; flex-direction: column; align-items: center; gap: 14px; max-width: min(92vw, 900px); }
 .chat-lightbox-img { max-width: 100%; max-height: 74vh; border-radius: 14px; border: 1px solid rgba(149,162,215,.22); box-shadow: 0 30px 80px rgba(0,0,0,.6); object-fit: contain; }
@@ -1201,3 +1213,27 @@ textarea.settings-input { min-height: 84px; padding: 12px 14px; line-height: 1.5
 .owner-voice-card { position: fixed; right: 20px; bottom: 96px; z-index: 60; width: min(380px, calc(100vw - 40px)); padding: 16px 18px; border-radius: 16px; border: 1px solid rgba(149,162,215,.2); background: rgba(10,14,28,.94); backdrop-filter: blur(12px); box-shadow: 0 18px 50px rgba(0,0,0,.45); }
 .owner-voice-card h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font: 600 15px 'Space Grotesk',sans-serif; color: #f3f4ff; }
 .owner-voice-card .settings-row { margin: 0; }
+
+/* ---------- Download link (replaces "Sign in" in the landing header) ---------- */
+.login-link.header-download { display: inline-flex; align-items: center; gap: 6px; padding: 8px 14px; border: 1px solid rgba(160,125,255,.38); border-radius: 999px; color: #fff; text-decoration: none; background: linear-gradient(135deg,rgba(189,108,255,.18),rgba(95,208,255,.14)); font-weight: 600; }
+.login-link.header-download:hover { border-color: rgba(160,125,255,.7); }
+a.mobile-menu-install { text-decoration: none; }
+@media (max-width: 900px) { .login-link.header-download { display: inline-flex; padding: 7px 11px; font-size: 13px; } }
+@media (max-width: 420px) { .header-actions .header-cta { display: none; } }
+
+/* ---------- Workspace top bar on phones / tablets ----------
+   Brand + credits + account stay on the first row; the Chat/Schedule/Memory/Tools/
+   Desktop tabs drop to their own full-width row that scrolls sideways, so nothing is
+   pushed off-screen (the account button — and with it Settings / Logout — used to be). */
+@media (max-width: 900px) {
+  .workspace-topbar { height: auto; min-height: 58px; flex-wrap: wrap; row-gap: 6px; column-gap: 10px; padding-block: 8px; }
+  .workspace-actions { margin-left: auto; min-width: 0; flex-shrink: 1; }
+  .workspace-nav { order: 3; flex: 1 0 100%; min-width: 0; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; -webkit-overflow-scrolling: touch; padding-bottom: 2px; }
+  .workspace-nav::-webkit-scrollbar { display: none; }
+  .workspace-nav-btn { flex: 0 0 auto; }
+  .workspace-main { height: 100svh; }
+}
+@media (max-width: 400px) {
+  .workspace-nav { gap: 2px; }
+  .workspace-nav-btn { padding: 6px 8px; font-size: 11.5px; }
+}

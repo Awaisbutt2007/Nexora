@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import Nexora from './Nexora.jsx'
+import DownloadPage from './DownloadPage.jsx'
 import { captureInstallPrompt } from './InstallApp.jsx'
 
 /* Catch the browser's install offer before React mounts (it can fire very early). */
@@ -8,7 +9,7 @@ captureInstallPrompt()
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <Nexora />
+    {/^\/download\/?$/.test(window.location.pathname) ? <DownloadPage /> : <Nexora />}
   </StrictMode>,
 )
 

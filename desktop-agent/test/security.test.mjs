@@ -92,6 +92,13 @@ test('desktop.type rejects control characters (Enter/Tab belong in desktop.key)'
   assert.equal(validateRequest('desktop.type', { text: 'a\tb' }).ok, false)
 })
 
+test('system.runCommand is allowlisted, alwaysConfirm and needs a non-empty command', () => {
+  assert.equal(validateRequest('system.runCommand', { command: 'ipconfig' }).ok, true)
+  assert.equal(validateRequest('system.runCommand', { command: '   ' }).ok, false, 'empty/whitespace command rejected')
+  assert.equal(validateRequest('system.runCommand', { command: 'x'.repeat(5000) }).ok, false, 'over-long command rejected')
+  assert.equal(validateRequest('system.runCommand', { command: 'ipconfig' }).def.alwaysConfirm, true, 'the one open-ended action must always confirm')
+})
+
 test('audit redact: secret-ish keys and bearer tokens never leak', () => {
   const out = redact(
     { action: 'browser.fill', value: 'hunter2', password: 'p', authorization: 'Bearer abc.def', nested: { content: 'private file body' } },
@@ -288,6 +295,23 @@ test('desktop.type is gated twice: needs its scope AND a fresh confirm', async (
   const denied = await api('POST', '/actions/execute', { body: { planId: p.json.planId, approvedThisAction: true } })
   assert.equal(denied.status, 403)
   assert.equal(denied.json.status, 'permission_denied')
+})
+
+test('system.runCommand cannot auto-run: scope + fresh confirm, then a real command returns', async () => {
+  await api('POST', '/permissions/grant', { body: { scope: 'system' } })
+  const p = await api('POST', '/actions/plan', { body: { action: 'system.runCommand', args: { command: 'echo nexora-probe' } } })
+  assert.equal(p.json.ok, true)
+  assert.equal(p.json.needsConfirm, true, 'the terminal is the one open-ended action — alwaysConfirm')
+  // granted scope but NO per-command approval → the agent refuses before the shell runs
+  const denied = await api('POST', '/actions/execute', { body: { planId: p.json.planId, approvedThisAction: false } })
+  assert.equal(denied.status, 403)
+  assert.equal(denied.json.status, 'needs_confirmation')
+  // re-plan and approve — the human click is the only thing that runs a command
+  const p2 = await api('POST', '/actions/plan', { body: { action: 'system.runCommand', args: { command: 'echo nexora-probe' } } })
+  const ok = await api('POST', '/actions/execute', { body: { planId: p2.json.planId, approvedThisAction: true } })
+  assert.equal(ok.json.status, 'completed')
+  assert.equal(ok.json.result.exitCode, 0)
+  assert.match(String(ok.json.result.stdout || ''), /nexora-probe/)
 })
 
 test('audit endpoint returns redacted entries — no file bodies or secrets', async () => {

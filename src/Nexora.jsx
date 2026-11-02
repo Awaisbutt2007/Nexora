@@ -428,6 +428,19 @@ function localDemoReply(text, aiName, language) {
   return line + demoNote
 }
 
+/* A turn that came back with nothing to show. The Vercel Edge path relays Groq raw
+   and can finish with an empty body (a safety filter, or a bare stop with no text),
+   which used to render as a blank bubble — the exact "empty message" the user saw.
+   The local backend already refuses to save an empty reply; this covers every
+   transport at display time so she is never speechless. */
+function emptyReplyFallback(language, aiName) {
+  const name = (aiName || 'Aira').trim() || 'Aira'
+  const lang = String(language || 'auto').toLowerCase()
+  if (lang === 'ur') return `معاف کیجیے، میرا جواب خالی آ گیا — ایک بار پھر پوچھیں، میں دوبارہ کوشش کروں گی۔ 🙂`
+  if (lang === 'en') return `Hmm, my reply came out blank — could you send that once more? I'll answer properly this time. 🙂`
+  return `Arre, mera reply khaali aa gaya 🙂 Ek baar aur bhej do, is baar main theek se jawab dungi. ✨ (${name})`
+}
+
 /* The five choices the workspace remembers, in the shape the backend stores them. */
 const voicePrefsPayload = (p) => ({ voice: p.voice, language: p.language, assistantName: p.assistantName, persona: p.persona, gender: p.gender })
 
@@ -731,13 +744,13 @@ function Landing({ onLogin, onNavigate, isLoggedIn, userProfile, onUpgrade }) {
               <span>{userProfile?.name ? `${userProfile.name.split(' ')[0]}'s Space` : 'Open workspace'}</span>
             </button>
           ) : (
-            <button className="login-link" type="button" onClick={onLogin}>Sign in</button>
+            <a className="login-link header-download" href="/download"><Icon name="download" size={15} /> Download</a>
           )}
           <button className="button button-primary header-cta" type="button" onClick={() => onNavigate('Home', null, 'Nexora Workspace')}>Get Started <span>↗</span></button>
           <button className={`hamburger ${menuOpen ? 'open' : ''}`} type="button" aria-label="Menu" onClick={() => setMenuOpen(v => !v)}><span /><span /><span /></button>
         </div>
       </div>
-      {menuOpen && <div className="mobile-menu-panel wrap"><a href="#features" onClick={() => setMenuOpen(false)}>Features</a><a href="#showcase" onClick={() => setMenuOpen(false)}>Showcase</a><a href="#plans" onClick={() => setMenuOpen(false)}>Pricing</a><a href="#faq" onClick={() => setMenuOpen(false)}>FAQ</a><a href="#about" onClick={() => setMenuOpen(false)}>About</a><InstallAppButton className="mobile-menu-install" label="Install app" /></div>}
+      {menuOpen && <div className="mobile-menu-panel wrap"><a href="#features" onClick={() => setMenuOpen(false)}>Features</a><a href="#showcase" onClick={() => setMenuOpen(false)}>Showcase</a><a href="#plans" onClick={() => setMenuOpen(false)}>Pricing</a><a href="#faq" onClick={() => setMenuOpen(false)}>FAQ</a><a href="#about" onClick={() => setMenuOpen(false)}>About</a><a className="mobile-menu-install" href="/download">Download app</a></div>}
     </header>
 
     <section className="hero wrap">
@@ -1328,6 +1341,7 @@ const desktopActions = [
   { id: 'system.info', scope: 'system', risk: 'low', example: {} },
   { id: 'system.restart', scope: 'system', risk: 'high', confirm: true, example: {} },
   { id: 'system.shutdown', scope: 'system', risk: 'high', confirm: true, example: {} },
+  { id: 'system.runCommand', scope: 'system', risk: 'high', confirm: true, example: { command: 'ipconfig' } },
   { id: 'screen.capture', scope: 'screen', risk: 'low', example: { save: false } },
   { id: 'desktop.move', scope: 'desktop', risk: 'medium', example: { x: 400, y: 300 } },
   { id: 'desktop.click', scope: 'desktop', risk: 'medium', example: { x: 400, y: 300, button: 'left' } },
@@ -2037,6 +2051,10 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
      the auto-grant in fulfilDesktopActions runs only once (the first time the
      AI emits a [DESKTOP:...] marker in a chat reply). */
   const desktopAutoGranted = useRef(false)
+  /* The transport fulfilDesktopActions resolved (direct paired agent vs backend proxy),
+     kept in a ref so a later Approve click on a queued terminal command runs through
+     the exact same route the plan was taken on. */
+  const desktopTransportRef = useRef(null)
   useEffect(() => {
     try { demoPromptsRef.current = Number(localStorage.getItem(DEMO_PROMPTS_KEY)) || 0 } catch { /* private mode */ }
   }, [])
@@ -3007,12 +3025,16 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
       /* Keep the Chat surface's "Recent chats" panel honest: a thread that was
          just saved should show up without the user first having to visit Memory. */
       refreshConversations()
+      /* Never finalize a blank bubble: an empty body (or pure whitespace) from the
+         engine is replaced with a warm retry line, unless the user pressed Stop —
+         then we keep the "stopped" signal instead of faking an answer. */
       setMessages((prev) =>
-        prev.map((m) =>
-          m.id === tempAsstId
-            ? { ...m, content: spokenAck + result.fullText, streaming: false, stopped: controller.signal.aborted }
-            : m,
-        ),
+        prev.map((m) => {
+          if (m.id !== tempAsstId) return m
+          const finalText = spokenAck + result.fullText
+          const content = !finalText.trim() && !controller.signal.aborted ? emptyReplyFallback(voicePrefs.language, aiName) : finalText
+          return { ...m, content, streaming: false, stopped: controller.signal.aborted }
+        }),
       )
       setNotice(controller.signal.aborted ? `${aiName} stopped.` : `${aiName} replied.`)
       /* Auto-voice on the reply: only when the stream completed on its own
@@ -3275,11 +3297,14 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
     if (!markers.length) return
     /* Transport: a paired browser drives its OWN local agent directly (the cloud
        backend can't reach a remote loopback); with no client token we fall back to
-       the authenticated backend proxy for self-host / local-first installs. */
+       the authenticated backend proxy for self-host / local-first installs. Keep the
+       resolved transport in a ref so the later Approve click uses the same route. */
     const direct = agentTransport()
+    desktopTransportRef.current = direct
     /* Auto-grant all scopes once per session — the agent refuses to execute
        actions whose scope is not granted, so the first marker would fail if we
-       skip this. */
+       skip this. runCommand sits in the auto-granted 'system' scope, yet the
+       agent's alwaysConfirm gate still stops it here for a per-command Approve. */
     if (!desktopAutoGranted.current) {
       try {
         await Promise.all(['browser', 'files', 'apps', 'system', 'screen', 'desktop'].map((scope) => (direct ? direct.grant({ scope }) : desktopGrant(authToken, { scope }))))
@@ -3287,11 +3312,27 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
       } catch { /* agent might be offline; the per-action plan below surfaces a clearer error */ }
     }
     let updatedText = text
+    const pendingCmds = []
     for (const m of markers) {
       const action = m[1].toLowerCase()
       const full = m[0]
       let args
       try { args = JSON.parse(m[2]) } catch { updatedText = updatedText.replace(full, `\u26a0\ufe0f Invalid desktop args: ${m[2]}`); continue }
+      /* A terminal / CMD command is the one open-ended thing the agent can do, so it
+         is NEVER auto-run. We take the agent's plan (validated args + the ⚠ preview),
+         park it on the message and wait for a real click on Approve — which alone
+         sends approvedThisAction:true. Every other action stays one-tap automatic. */
+      if (action === 'system.runCommand') {
+        try {
+          const plan = direct ? await direct.plan({ action, args, context: { fromVoice: false } }) : await desktopPlan(authToken, { action, args, context: { fromVoice: false } })
+          if (!plan.planId) { updatedText = updatedText.replace(full, `\u26a0\ufe0f ${plan.reason || 'Agent refused: ' + (plan.status || 'unknown')}`); continue }
+          pendingCmds.push({ planId: plan.planId, command: String(args.command || ''), preview: plan.preview || `Run: ${args.command}`, status: 'pending', result: '', error: '' })
+          updatedText = updatedText.replace(full, `\u23f3 ${aiName} wants to run a terminal command on this PC \u2014 review it below and tap \u25b6 Run.`)
+        } catch (err) {
+          updatedText = updatedText.replace(full, `\u26a0\ufe0f ${err.message || 'Desktop agent unavailable — is it running? Start with: npm run dev:agent'}`)
+        }
+        continue
+      }
       try {
         const plan = direct ? await direct.plan({ action, args, context: { fromVoice: false } }) : await desktopPlan(authToken, { action, args, context: { fromVoice: false } })
         if (!plan.planId) { updatedText = updatedText.replace(full, `\u26a0\ufe0f ${plan.reason || 'Agent refused: ' + (plan.status || 'unknown')}`); continue }
@@ -3306,10 +3347,51 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
         updatedText = updatedText.replace(full, `\u26a0\ufe0f ${err.message || 'Desktop agent unavailable — is it running? Start with: npm run dev:agent'}`)
       }
     }
-    /* Replace the markers in the displayed message with execution results. */
-    if (updatedText !== text) {
-      setMessages((prev) => prev.map((msg) => msg.id === tempId ? { ...msg, content: updatedText } : msg))
+    /* Replace the markers in the displayed message with execution results, and mount
+       any queued terminal commands as an inline Approve / Cancel card. */
+    if (updatedText !== text || pendingCmds.length) {
+      setMessages((prev) => prev.map((msg) => msg.id === tempId ? { ...msg, content: updatedText, ...(pendingCmds.length ? { pendingDesktop: [...(msg.pendingDesktop || []), ...pendingCmds] } : {}) } : msg))
     }
+  }
+
+  /* Approve one parked terminal command: the human click is the approval, so this is
+     the only path that sends approvedThisAction:true for runCommand. The agent's
+     execute() shape is { ok, status, action, result:{ exitCode, stdout, stderr } }.
+     We render the return code plus stdout/stderr and drop the plan so it can't run
+     twice — expired plans (5-minute TTL) tell them to just ask again. */
+  async function approveDesktopCommand(msgId, index) {
+    const msg = messages.find((mm) => mm.id === msgId)
+    const item = msg?.pendingDesktop?.[index]
+    if (!item || item.status !== 'pending') return
+    const mark = (patch) => setMessages((prev) => prev.map((mm) => mm.id !== msgId ? mm : {
+      ...mm,
+      pendingDesktop: (mm.pendingDesktop || []).map((it, i) => (i === index ? { ...it, ...patch } : it)),
+    }))
+    mark({ status: 'running' })
+    const direct = desktopTransportRef.current || agentTransport()
+    try {
+      const res = direct ? await direct.execute({ planId: item.planId, approvedThisAction: true }) : await desktopExecute(authToken, { planId: item.planId, approvedThisAction: true })
+      if (res.ok === false) {
+        const why = res.status === 'expired' ? 'That approval timed out \u2014 ask me again and I will re-run it.' : (res.reason || res.error || 'The agent refused to run it.')
+        mark({ status: 'error', error: why })
+        return
+      }
+      const r = res.result || {}
+      const head = `exit ${r.exitCode ?? '?'}`
+      const tail = [r.stdout, r.stderr].filter(Boolean).join('\n').slice(0, 6000)
+      mark({ status: 'done', result: `${r.ok ? '\u2705' : '\u26a0\ufe0f'} ${head}${r.timedOut ? ` \u2014 ${r.note || 'timed out'}` : ''}${tail ? `\n${tail}` : ''}` })
+    } catch (err) {
+      mark({ status: 'error', error: err.message || 'Could not reach the desktop agent.' })
+    }
+  }
+
+  /* Decline a parked command. We never execute it; the short-lived plan simply ages
+     out on the agent, so there is nothing to clean up beyond updating the card. */
+  function declineDesktopCommand(msgId, index) {
+    setMessages((prev) => prev.map((mm) => mm.id !== msgId ? mm : {
+      ...mm,
+      pendingDesktop: (mm.pendingDesktop || []).map((it, i) => (i === index ? { ...it, status: 'declined' } : it)),
+    }))
   }
 
   /* Fulfil [SCREENSHOT:…]: capture it for real → upload it → show it in the bubble →
@@ -3475,14 +3557,15 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
     onWake: (raw) => {
       /* A bare name (or "listen") heard while asleep IS the wake signal: clear
          the flag. `fireWake` already opened the command window, so the very next
-         utterance is picked up as a command — the "Ji, boliye" ack below doubles
-         as the "I'm awake again" confirmation. */
+         utterance is picked up as a command. The "Ji, boliye" ack is now a VISUAL
+         toast only — she must NOT read it aloud. Speaking it made her vocalise the
+         notification (and talk over the real reply that follows), which the user
+         flagged as wrong; the green "your turn" mic pill is the listening cue. */
       if (!ownerVoiceAllows({ short: true })) return
       if (voiceAsleepRef.current) { voiceAsleepRef.current = false; setVoiceAsleep(false) }
       const heard = (raw || aiName).trim()
       const ack = WAKE_ACK_LINES[voicePrefs.language]?.wake || WAKE_ACK_LINES.auto.wake
       setNotice(`🎙 Heard: "${heard}" — ${aiName}: "${ack}"`)
-      speakWakeLine(ack, { language: voicePrefs.language, gender: voicePrefs.gender })
     },
     onCommand: (cmd) => {
       /* Owner voice lock first: a stranger's command is refused before it can
@@ -3505,8 +3588,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
          and (b) a false promise — she claims the task is done/under way before
          the model has answered at all. So the command ack is now VISUAL ONLY
          (a silent "I heard you" toast) and the AI's real streamed reply is the
-         only thing spoken. The wake ack ("Ji, boliye") still speaks because it
-         is an honest "I'm listening" signal, not a fake task confirmation. */
+         only thing spoken. The wake ack is visual-only too, for the same reason. */
       setNotice(`🎙 You: "${cmd}"`)
       sendPrompt(null, cmd, {})
     },
@@ -3778,6 +3860,22 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
                           {/* The face shot takes a few seconds to assemble — say so instead of looking stuck. */}
                           {m.shooting ? <div className="chat-shot-caption is-pending"><Icon name="camera" size={13} /> Taking a real screenshot…</div> : null}
                           <div className="chat-text">{m.streaming && !m.content ? <span className="chat-thinking"><span className="chat-dots" aria-hidden="true"><i /><i /><i /></span><em>{aiName} is thinking…</em></span> : <>{renderChatContent(m.content)}{m.streaming ? <span className="chat-cursor" aria-hidden="true" /> : null}</>}</div>
+                          {/* Queued terminal commands: Aira proposed them, the agent validated them, but
+                              nothing runs until this human click — the one action that sends approval. */}
+                          {m.pendingDesktop?.length ? <div className="chat-desktop-queue">{m.pendingDesktop.map((d, di) => (
+                            <div key={`${m.id}-cmd-${di}`} className="chat-desktop-cmd">
+                              <div className="chat-desktop-head"><Icon name="warn" size={14} /><span>{aiName} wants to run this on your PC</span></div>
+                              <code className="chat-desktop-command">{d.command}</code>
+                              {d.status === 'pending' ? <div className="chat-desktop-actions">
+                                <button type="button" className="chat-desktop-run" onClick={() => approveDesktopCommand(m.id, di)}><Icon name="send" size={13} /> Run</button>
+                                <button type="button" className="chat-desktop-cancel" onClick={() => declineDesktopCommand(m.id, di)}>Cancel</button>
+                              </div> : null}
+                              {d.status === 'running' ? <div className="chat-desktop-note"><span className="chat-dots" aria-hidden="true"><i /><i /><i /></span> Running…</div> : null}
+                              {d.status === 'done' ? <pre className="chat-desktop-result">{d.result}</pre> : null}
+                              {d.status === 'error' ? <div className="chat-desktop-note is-error" role="alert">{d.error}</div> : null}
+                              {d.status === 'declined' ? <div className="chat-desktop-note">Cancelled — nothing was run.</div> : null}
+                            </div>
+                          ))}</div> : null}
                         </div>
                         {m.ts || replyable || copyable ? <div className="chat-msg-meta">{m.ts ? <span className="chat-msg-time">{formatChatTime(m.ts)}</span> : null}{copyable ? <button type="button" className={`chat-msg-copy${copiedMsgId === m.id ? ' copied' : ''}`} aria-label={copiedMsgId === m.id ? 'Copied to clipboard' : 'Copy message'} onClick={() => copyMessage(m)}>{copiedMsgId === m.id ? <><Icon name="check" size={12} /> Copied</> : <><Icon name="copy" size={12} /> Copy</>}</button> : null}{replyable ? <button type="button" className="chat-msg-reply" aria-label={`Reply to ${aiName}'s message`} onClick={() => startReply(m)}><Icon name="reply" size={12} /> Reply</button> : null}</div> : null}
                       </div>
