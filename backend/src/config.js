@@ -14,7 +14,9 @@ export const config = {
   nodeEnv: process.env.NODE_ENV || 'development',
   jwtSecret: process.env.JWT_SECRET || DEFAULT_DEV_JWT_SECRET,
   jwtExpiresIn: process.env.JWT_EXPIRES_IN || '7d',
-  corsOrigin: process.env.CORS_ORIGIN || 'http://localhost:5173',
+  /* On Render the public https URL is injected as RENDER_EXTERNAL_URL, so a fresh deploy
+     boots without a manual CORS_ORIGIN step (the client is served from that same origin). */
+  corsOrigin: process.env.CORS_ORIGIN || process.env.RENDER_EXTERNAL_URL || 'http://localhost:5173',
   /* Vite silently rolls to :5174/:5175 whenever a port is busy, and people open the dev
      app through the printed Network URL (http://192.168.x.x:5173) or from a phone. An
      origin that is not in CORS_ORIGIN makes every browser fetch die as an opaque

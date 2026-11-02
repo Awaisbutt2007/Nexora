@@ -10,8 +10,8 @@
    index.html, so a reload with no connection still boots the UI (which then shows its
    normal signed-out / offline state, not a blank page). Bump VERSION on any shell
    change so stale caches are replaced on activate. */
-const VERSION = 'nexora-v1'
-const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/pwa-icon.svg', '/pwa-icon-maskable.svg']
+const VERSION = 'nexora-v2'
+const SHELL = ['/', '/index.html', '/manifest.webmanifest', '/pwa-icon.svg', '/pwa-icon-maskable.svg', '/pwa-icon-192.png', '/pwa-icon-512.png']
 
 self.addEventListener('install', (event) => {
   event.waitUntil(

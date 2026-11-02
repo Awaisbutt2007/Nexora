@@ -31,10 +31,14 @@ services:
         value: openai/gpt-oss-120b,openai/gpt-oss-20b
       - key: AI_DAILY_TOKEN_LIMIT
         value: "200000"
+      # Render's load balancer sits in front, so the rate limiter must read the real client IP.
+      - key: TRUST_PROXY
+        value: "true"
       - key: AI_DEVELOPER_NAME
         value: Awais
       # Secrets / late-bound values you fill in from the Render dashboard:
       - key: OPENAI_API_KEY
         sync: false          # paste your Groq key here (never committed)
       # CORS_ORIGIN is left unset on purpose: the client is served by THIS same
-      # service (single origin), so no cross-origin request is ever made.
+      # service (single origin), and backend/src/config.js falls back to Render's
+      # RENDER_EXTERNAL_URL, so the production boot guard passes without a manual step.
