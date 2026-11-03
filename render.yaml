@@ -1,20 +1,29 @@
-# Render blueprint — deploy the whole app (frontend + API) as ONE web service
-# from this repo. Render reads the root Dockerfile and runs Express, which ALSO
-# hosts the built React client, so a deployed page calls relative /api URLs.
+# Render blueprint — deploy the Nexora backend (Express + SQLite) as one web
+# service from this repo. Render reads the root Dockerfile, which builds the React
+# client AND runs the API that also hosts it, so this service works standalone at
+# its own https://….onrender.com URL (relative /api, no CORS).
 #
-# FREE-TIER note: this is configured for the $0 plan so it deploys without a
-# card. The free tier has NO persistent disk and sleeps when idle, so accounts
-# and conversations reset on a redeploy/restart and the first request after a
-# nap takes ~50s to wake. To keep data permanently, change `plan` to `starter`
-# below and add back the `disk` block.
+# It is ALSO wired to serve the EXISTING Vercel frontend: CORS_ORIGIN below lists
+# the Vercel production URL, and the Vercel build sets VITE_API_URL to this
+# service's URL, so the Vercel page calls /api here (memory, chat, credits, voice).
+#
+# PERSISTENCE: memories/accounts/conversations live in the SQLite file at DB_PATH,
+# which sits on the mounted disk. The $0 free tier has NO disk and sleeps, so data
+# would reset on every restart — this blueprint therefore uses the `starter` plan
+# ($7/mo, needs a card) with a real disk. To trial it for $0 instead, set plan back
+# to `free` and delete the `disk` block, accepting that data resets on restart.
 services:
   - type: web
     name: nexora
     runtime: docker
-    plan: free               # $0 tier; no persistent disk (data resets on restart)
+    plan: starter            # persistent-instance tier required for the disk below
     region: oregon
     dockerfilePath: ./Dockerfile
     healthCheckPath: /health
+    disk:
+      name: nexora-data
+      mountPath: /data
+      sizeGB: 1              # SQLite file + uploads survive redeploys/restarts on this volume
     envVars:
       - key: NODE_ENV
         value: production
@@ -36,9 +45,11 @@ services:
         value: "true"
       - key: AI_DEVELOPER_NAME
         value: Awais
-      # Secrets / late-bound values you fill in from the Render dashboard:
+      # The Vercel frontend calls this API cross-origin, so its exact production
+      # origin must be allowed here. Render's own origin works same-origin and
+      # needs no listing. Change this if you ever move off the Vercel URL.
+      - key: CORS_ORIGIN
+        value: https://nexora-opal-beta-29.vercel.app
+      # Secrets you fill in from the Render dashboard (never committed):
       - key: OPENAI_API_KEY
-        sync: false          # paste your Groq key here (never committed)
-      # CORS_ORIGIN is left unset on purpose: the client is served by THIS same
-      # service (single origin), and backend/src/config.js falls back to Render's
-      # RENDER_EXTERNAL_URL, so the production boot guard passes without a manual step.
+        sync: false          # paste your Groq key here
