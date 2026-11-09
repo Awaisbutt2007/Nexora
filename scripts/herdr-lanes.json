@@ -1,0 +1,23 @@
+{
+  "worktreeRoot": "..\\Nexora-wt",
+  "base": "main",
+  "claudeArgs": ["--permission-mode", "acceptEdits"],
+  "copyEnvFiles": [".env", "backend/.env", "desktop-agent/.env"],
+  "lanes": [
+    {
+      "name": "frontend",
+      "branch": "agent/frontend",
+      "prompt": "You are the FRONTEND lane for Nexora, working in your own git worktree on branch agent/frontend. Only edit files under src/ (plus backend/src/routes/tools.js for item 1). Read NEXT_STEPS.md, then do P0 items: (1) honest tool labels: rename 'PDF Reader' and 'YouTube Notes' to make clear they work from pasted text, in TOOL_CATALOG and the Nexora.jsx UI; (4) add a Regenerate action that re-runs the last user turn and a copy-whole-message button in Nexora.jsx, reusing sendPrompt; (5) remove the unused src/App.jsx boilerplate if nothing imports it. Run npm install if node_modules is missing, then npm run lint and npm run build. Commit each item separately on your branch. Do not push, do not merge, do not touch other branches."
+    },
+    {
+      "name": "backend",
+      "branch": "agent/backend",
+      "prompt": "You are the BACKEND lane for Nexora, working in your own git worktree on branch agent/backend. Only edit files under backend/. Read NEXT_STEPS.md, then do P0 item 3: pass a timeout and maxRetries to the OpenAI client in backend/src/services/ai.js createClient(), so a hung provider can't wedge a request or a credit. Make the values configurable through env with safe defaults, document them in backend/.env.example, and add a test. Run npm --prefix backend install if needed, then npm --prefix backend test. Commit on your branch. Do not push, do not merge, do not touch other branches."
+    },
+    {
+      "name": "qa",
+      "branch": "agent/qa",
+      "prompt": "You are the QA lane for Nexora, working in your own git worktree on branch agent/qa. Do NOT change application code. Install dependencies if they are missing, then run npm run lint, npm test, npm run test:agent and npm run security:check. Write a concise report to docs/QA_REPORT.md that lists every failure with file:line, its likely cause and a suggested fix, ranked by severity. Commit only that report on your branch. Do not push or merge."
+    }
+  ]
+}
