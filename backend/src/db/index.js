@@ -162,6 +162,11 @@ function migrate(database) {
        migration never logs anyone out on upgrade. */
     database.exec('ALTER TABLE users ADD COLUMN tokens_valid_after TEXT')
   }
+  if (!userColumns.includes('credits_refilled_at')) {
+    /* Last monthly top-up for free accounts (services/credits.js). NULL = never
+       refilled; the account's created_at month then counts as the first grant. */
+    database.exec('ALTER TABLE users ADD COLUMN credits_refilled_at TEXT')
+  }
 
   /* User-attached reference images live as /uploads paths in a JSON array so a
      text-only message and an image message can share the same table. */

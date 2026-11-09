@@ -91,7 +91,9 @@ export const config = {
      ensureCredits/deductCredits). Lowered from 100 to 50: the wallet pill is
      now the hero of the topbar and a 3-digit number felt oversized against
      the compact pill. */
-  freeMonthlyCredits: Number(process.env.FREE_MONTHLY_CREDITS || 50),
+  /* Granted at sign-up and refilled once per calendar month for free accounts
+     (services/credits.js → refillMonthlyCredits). Keep the landing page copy in sync. */
+  freeMonthlyCredits: Number(process.env.FREE_MONTHLY_CREDITS || 100),
   /* ── Server-side web reading (see services/webfetch.js) ───────────────────
      When a user pastes a link, the backend fetches and reads the page so the AI
      can talk about it — the cloud model has no browser of its own. ON by default;
@@ -149,7 +151,10 @@ export const config = {
      whenever NODE_ENV=production, no matter what AUTH_OPEN_MODE says; same fail-fast
      philosophy as the JWT/CORS guards below, but non-fatal so an existing deploy
      keeps booting instead of crashing on a forgotten env line. */
-  openAuth: process.env.AUTH_OPEN_MODE !== '0' && (process.env.NODE_ENV || 'development') !== 'production',
+  /* OPT-IN only: a deploy that forgets NODE_ENV=production must not silently become an
+     auth bypass, so open mode needs an explicit AUTH_OPEN_MODE=1 (and is still forced
+     off in production). */
+  openAuth: process.env.AUTH_OPEN_MODE === '1' && (process.env.NODE_ENV || 'development') !== 'production',
   /* Billing is a demo today: /api/user/upgrade hands out unlimited Pro credits for
      free off a client call. Fine locally, but a public deployment must not mint
      premium access without a payment. Plan UPGRADES are refused in production until a
@@ -216,7 +221,7 @@ export const PLANS = {
   free: {
     id: 'free',
     name: 'Starter',
-    pricePkr: 6000,
+    pricePkr: 0,
     credits: config.freeMonthlyCredits,
     features: ['helpful_ai', 'everyday_tools', 'basic_memory'],
   },

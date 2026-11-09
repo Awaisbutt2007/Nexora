@@ -19,7 +19,7 @@ router.get('/health', async (_req, res) => {
     const data = await desktopAgent.health()
     res.json({ enabled: true, agent: data })
   } catch (err) {
-    res.status(err.status || 502).json({ enabled: false, error: { message: err.message, type: err.type || 'desktop_agent_unavailable' } })
+    res.status(err.status || 503).json({ enabled: false, error: { message: err.message, type: err.type || 'desktop_agent_unavailable' } })
   }
 })
 
@@ -78,6 +78,9 @@ router.post('/intent', async (req, res, next) => {
       fromVoice: z.boolean().default(false),
       assistantName: z.string().trim().max(40).optional(),
     }).parse(req.body || {})
+    /* Check the agent BEFORE paying for a model call: with no agent running the
+       translated intent could never be planned anyway, so the AI tokens were wasted. */
+    await desktopAgent.health()
     const intent = await translateIntent({
       utterance: body.utterance,
       fromVoice: body.fromVoice,

@@ -73,11 +73,24 @@ export function enrichImagePrompt(subject) {
      quality tail (sharp focus, high detail, cinematic lighting, 4k) is what
      pushes Flux past the soft, flat look the user complained about; the old
      "dark background" made everything muddy, so it is gone. */
-  if (/\b(coding|code|program|programming|developer|software|app|website|web|tech|technology|computer|python|java|js|javascript|html|css|react|api|database|ai|artificial\s+intelligence|robot|cyber|game|gaming)\b/i.test(s)) {
+  /* Only genuinely ABSTRACT programming topics get the code-editor scene. Concrete
+     subjects that merely sound "techy" (a robot, a game character, an app icon) are
+     things to draw, not screens — "a cute robot waving" must stay a waving robot. */
+  if (TECH_TOPIC_RE.test(s) && !PEOPLE_RE.test(s)) {
     return `${s} concept illustration, a glowing code editor window with colorful syntax-highlighted source code lines and a terminal window with running commands, software developer tools, keyboard and monitor, crisp sharp focus, intricate detail, professional digital art, vibrant colors, cinematic lighting, clean softly-lit background, 4k, high resolution, no people, no faces, no watermark`
   }
-  return `beautiful highly detailed illustration of ${s}, crisp sharp focus, vibrant colors, professional quality, cinematic lighting, clean background, 4k, high resolution, no people, no faces, no text, no watermark`
+  /* Respect a style the user named (anime, photo, watercolor…) instead of forcing
+     "illustration", and never forbid people when people ARE the subject. */
+  const lead = STYLE_RE.test(s) ? `beautiful highly detailed ${s}` : `beautiful highly detailed illustration of ${s}`
+  /* "no people" (not "no faces": a robot or a cat still needs one) keeps a thin
+     abstract prompt from collapsing into a random portrait. */
+  const people = PEOPLE_RE.test(s) ? '' : ', no people'
+  return `${lead}, crisp sharp focus, vibrant colors, professional quality, cinematic lighting, clean background, 4k, high resolution${people}, no text, no watermark`
 }
+
+const TECH_TOPIC_RE = /^\s*(?:(?:a|an|the)\s+)?(?:coding|code|programming|program|developer|software(?:\s+development)?|web\s+development|python|javascript|java|js|html|css|react|api|database|tech|technology)\b/i
+const PEOPLE_RE = /\b(?:person|people|man|men|woman|women|girl|girls|boy|boys|child|children|kid|kids|baby|family|couple|lady|guy|portrait|face|selfie|human|friends?|mother|father|mom|dad|bride|groom|student|teacher|doctor|player|warrior|princess|prince|king|queen)\b/i
+const STYLE_RE = /\b(?:anime|manga|cartoon|photo|photograph|photorealistic|realistic|watercolor|watercolour|oil\s+painting|painting|sketch|pencil|3d|render|pixel|vector|logo|icon|illustration|digital\s+art|comic|chibi|minimalist)\b/i
 
 /**
  * LLM-based prompt refinement — for complex or ambiguous requests where the

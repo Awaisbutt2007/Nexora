@@ -108,6 +108,7 @@ export default function OwnerVoiceSetup({ userKey, ownerName, aiName, compact = 
       <div className="settings-row">
         <p className="settings-hint">
           Abhi {ai} har kisi ki awaaz par chal jati hai. Apni awaaz register karein — phir {ai} sirf {owner} ki awaaz wali voice commands maanegi, aur kisi aur ko bolegi: “Sorry, main sirf apne owner ki baat maanti hoon.”
+          {' '}<small>Note: yeh ek basic awaaz-match hai, password jaisi security nahi — milti julti awaaz ya recording isay dhoka de sakti hai.</small>
         </p>
         <div className="settings-actions">
           <button className="settings-save" type="button" onClick={enroll}><Icon name="mic" size={14} /> Register my voice (20 sec)</button>

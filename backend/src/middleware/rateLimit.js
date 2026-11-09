@@ -55,6 +55,23 @@ export function aiLimiter(req, res, next) {
   next()
 }
 
+/* Per-IP throttle for GET /api/images/generate. That endpoint is loaded by plain
+   <img src> tags, so it cannot carry a Bearer token — without this anyone could use
+   the server as a free, unlimited image proxy. Generous enough for a chat that
+   shows a few pictures; the browser caches each finished image for a day. */
+const IMAGE_LIMIT = Math.max(1, Number(process.env.IMAGE_RATE_LIMIT || 15))
+const IMAGE_WINDOW_MS = 5 * 60 * 1000
+export function imageLimiter(req, res, next) {
+  const ip = req.ip || req.socket?.remoteAddress || 'unknown'
+  if (!takeSlot(`img:${ip}`, IMAGE_LIMIT, IMAGE_WINDOW_MS)) {
+    res.setHeader('Retry-After', Math.ceil(IMAGE_WINDOW_MS / 1000))
+    return res.status(429).json({
+      error: { message: 'Too many images in a short time — please wait a few minutes.', type: 'rate_limited' },
+    })
+  }
+  next()
+}
+
 /* Light janitor: drop buckets whose newest hit already aged out of the window,
    so long-lived processes don't accumulate keys forever. */
 setInterval(() => {

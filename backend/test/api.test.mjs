@@ -953,7 +953,7 @@ test('tts: prepareTextForSpeech does not touch plain English replies', () => {
 test('tts: prepareTextForSpeech expands symbols and demotes punctuation', () => {
   const raw = 'Save 50% — visit https://nexora.ai/pricing NOW!!!'
   const out = tts.prepareTextForSpeech(raw, { language: 'en' })
-  assert.doesNotMatch(out, /https\:/, 'URL is replaced with a spoken placeholder')
+  assert.doesNotMatch(out, /https:/, 'URL is replaced with a spoken placeholder')
   assert.match(out, /percent/, 'percent sign expands')
   assert.doesNotMatch(out, /!!!/, 'runs of exclaim collapse to one terminator')
   /* FULL-CAPS is spelled letter-by-letter by the engine unless we demote it. */

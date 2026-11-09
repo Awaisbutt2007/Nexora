@@ -33,6 +33,10 @@ test('pairing: rotateCode invalidates the old code and mints a new one', () => {
   const fresh = p.rotateCode()
   assert.notEqual(fresh.code, undefined)
   assert.match(fresh.code, /^\d{6}$/)
+  /* What the test name promises: the old code stops working (unless the random draw
+     happened to repeat it — a 1-in-a-million coincidence, not a regression). */
+  if (fresh.code !== old) assert.equal(p.verifyCode(old), false, 'old pairing code is rejected after rotation')
+  assert.equal(p.verifyCode(fresh.code), true, 'new pairing code is accepted')
 })
 
 test('pairing: issued token verifies, revokes, and only a hash is persisted', () => {

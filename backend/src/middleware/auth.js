@@ -1,6 +1,7 @@
 import jwt from 'jsonwebtoken'
 import { config } from '../config.js'
 import { getDb } from '../db/index.js'
+import { refillMonthlyCredits } from '../services/credits.js'
 
 /* True when a token predates the account's session floor (set on password change).
    `iat` is seconds; the floor is an ISO string. A token minted in the SAME second as
@@ -39,7 +40,7 @@ export function requireAuth(req, res, next) {
     if (isTokenRevoked(user, payload)) {
       return res.status(401).json({ error: { message: 'Session expired — please sign in again.', type: 'auth_error' } })
     }
-    req.user = sanitizeUser(user)
+    req.user = sanitizeUser(refillMonthlyCredits(user))
     next()
   } catch {
     return res.status(401).json({ error: { message: 'Invalid or expired token', type: 'auth_error' } })
@@ -54,7 +55,7 @@ export function optionalAuth(req, _res, next) {
   try {
     const payload = jwt.verify(token, config.jwtSecret)
     const user = getDb().prepare('SELECT * FROM users WHERE id = ?').get(payload.sub)
-    if (user && !isTokenRevoked(user, payload)) req.user = sanitizeUser(user)
+    if (user && !isTokenRevoked(user, payload)) req.user = sanitizeUser(refillMonthlyCredits(user))
   } catch {
     // ignore invalid optional token
   }

@@ -13,7 +13,39 @@
  * The hosted Express backend (localhost / Render) still owns the full product —
  * memory, credits, voice, tools. This endpoint only answers chat. */
 
-export const config = { runtime: 'edge' }
+/* Node.js runtime (Fluid Compute) — the Edge runtime is deprecated. Web-standard
+   Request/Response handlers work unchanged here via the named POST/GET exports. */
+
+/* ── Abuse guard ─────────────────────────────────────────────────────────────
+   This endpoint spends the operator's Groq key and has no accounts behind it, so
+   without a guard ANY site or script could use it as a free LLM proxy.
+   1. Origin: browsers always send Origin on a POST fetch; only this deployment's
+      own origin (plus ALLOWED_ORIGINS, comma-separated) may call it.
+   2. Per-IP sliding window (CHAT_RATE_LIMIT per minute, default 12). In-memory per
+      instance — Fluid Compute reuses instances, so it bites; it is a speed bump,
+      not a billing system. The real fix is the full backend (accounts + credits). */
+const RATE_LIMIT = Math.max(1, Number(globalThis.process?.env?.CHAT_RATE_LIMIT || 12))
+const RATE_WINDOW_MS = 60_000
+const hits = new Map()
+function rateLimited(ip) {
+  const now = Date.now()
+  const list = (hits.get(ip) || []).filter((t) => now - t < RATE_WINDOW_MS)
+  const blocked = list.length >= RATE_LIMIT
+  list.push(now)
+  hits.set(ip, list)
+  if (hits.size > 5000) { for (const [k, v] of hits) if (!v.some((t) => now - t < RATE_WINDOW_MS)) hits.delete(k) }
+  return blocked
+}
+function originAllowed(req) {
+  const origin = req.headers.get('origin')
+  if (!origin) return false
+  let host
+  try { host = new URL(origin).host } catch { return false }
+  const self = req.headers.get('x-forwarded-host') || req.headers.get('host') || ''
+  if (host === self) return true
+  const extra = String(globalThis.process?.env?.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean)
+  return extra.includes(origin)
+}
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions'
 const DEV = (globalThis.process?.env?.AI_DEVELOPER_NAME || 'Awais').trim().slice(0, 40) || 'Awais'
@@ -95,14 +127,22 @@ function json(obj, status = 200) {
   return new Response(JSON.stringify(obj), { status, headers: { 'Content-Type': 'application/json' } })
 }
 
-export default async function handler(req) {
-  if (req.method !== 'POST') return json({ error: { message: 'Method not allowed', type: 'invalid_request_error' } }, 405)
+export function GET() {
+  return json({ error: { message: 'Method not allowed', type: 'invalid_request_error' } }, 405)
+}
+
+export async function POST(req) {
+  if (!originAllowed(req)) return json({ error: { message: 'Forbidden', type: 'forbidden' } }, 403)
+  const ip = (req.headers.get('x-forwarded-for') || '').split(',')[0].trim() || req.headers.get('x-real-ip') || 'unknown'
+  if (rateLimited(ip)) return json({ error: { message: 'You are sending messages too quickly — please wait a minute. 🙏', type: 'rate_limited' } }, 429)
 
   const key = globalThis.process?.env?.OPENAI_API_KEY
   if (!key) return json({ error: { message: 'The AI engine is not configured on this deployment.', type: 'not_configured' } }, 503)
 
+  const raw = await req.text().catch(() => '')
+  if (raw.length > 200_000) return json({ error: { message: 'Request too large', type: 'invalid_request_error' } }, 413)
   let body = {}
-  try { body = await req.json() } catch { body = {} }
+  try { body = JSON.parse(raw || '{}') } catch { body = {} }
 
   const userText = String(
     body.message
@@ -123,7 +163,7 @@ export default async function handler(req) {
     : []
 
   const messages = [
-    { role: 'system', content: systemPrompt({ assistantName: body.assistantName, persona: body.persona, gender: body.gender, language: body.language, desktop: body.desktop === true }) },
+    { role: 'system', content: systemPrompt({ assistantName: body.assistantName, persona: body.persona, gender: body.gender, language: body.language, userName: body.userName, desktop: body.desktop === true }) },
     ...history,
     { role: 'user', content: userText },
   ]

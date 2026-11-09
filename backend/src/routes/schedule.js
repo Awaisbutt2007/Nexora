@@ -176,20 +176,35 @@ router.post('/reminders', aiLimiter, async (req, res, next) => {
       })
     }
 
-    ensureCredits(req.user, 1)
+    /* A reminder the user scheduled must ALWAYS arrive. The AI-written version is a
+       nicety: with an empty wallet, or when the provider is rate-limited/down, fall
+       back to the free template instead of dropping the reminder on the floor. */
+    const fallback = () => res.json({ content: templateReminder(due, upcoming, body.assistantName || 'Nexora'), ...ids, creditsCharged: 0 })
+    try {
+      ensureCredits(req.user, 1)
+    } catch {
+      return fallback()
+    }
     const memories = db
       .prepare(`SELECT key, value FROM memories WHERE user_id = ? ORDER BY updated_at DESC LIMIT 20`)
       .all(req.user.id)
 
-    const result = await completeChat({
-      history: [{ role: 'user', content: reminderDirective(due, upcoming, body.language) }],
-      memories,
-      assistantName: body.assistantName,
-      userName: req.user.name,
-      persona: body.persona,
-      gender: body.gender,
-      language: body.language,
-    })
+    let result
+    try {
+      result = await completeChat({
+        history: [{ role: 'user', content: reminderDirective(due, upcoming, body.language) }],
+        memories,
+        assistantName: body.assistantName,
+        userName: req.user.name,
+        persona: body.persona,
+        gender: body.gender,
+        language: body.language,
+        channel: 'tool',
+      })
+    } catch (err) {
+      console.warn('[schedule] AI reminder failed, using template:', err?.message || err)
+      return fallback()
+    }
     const content = (result.content || '').trim()
     if (!content) {
       return res.json({ content: templateReminder(due, upcoming, body.assistantName || 'Nexora'), ...ids, creditsCharged: 0 })

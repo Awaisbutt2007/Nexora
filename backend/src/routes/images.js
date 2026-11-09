@@ -1,4 +1,5 @@
 import { Router } from 'express'
+import { imageLimiter } from '../middleware/rateLimit.js'
 import { fetchGeneratedImage, isNsfwPrompt } from '../services/images.js'
 
 const router = Router()
@@ -23,7 +24,7 @@ const clampInt = (raw, fallback) => {
    403, while a plain server-side `fetch` from this same host returns 200 image/*.
    Proxying keeps the <img> request same-origin (no referrer/CORS rejection),
    keeps the token server-side, and lets our retry loop own the failure. */
-router.get('/generate', async (req, res, next) => {
+router.get('/generate', imageLimiter, async (req, res, next) => {
   try {
     const prompt = String(req.query.prompt || '').trim().slice(0, 900)
     if (!prompt) {

@@ -100,7 +100,7 @@ function isLocalToken(token) {
   return String(token || '').startsWith('local-')
 }
 
-function isMissingBackend(err) {
+export function isMissingBackend(err) {
   if (err instanceof TypeError) return true
   return err?.status === 404 || err?.status === 502 || err?.status === 504
 }
@@ -389,7 +389,9 @@ export async function streamChat({ token, message, conversationId = null, assist
        behaviour is unchanged. */
     /* `desktop` tells the serverless endpoint this browser is paired with the
        user's local Desktop Agent, so the model may emit [DESKTOP:…] markers. */
-    body: JSON.stringify({ message, conversationId, assistantName, persona, gender, language, images, replyTo, replyToText, ...(history?.length ? { messages: history } : {}), ...(desktop ? { desktop: true } : {}), stream: true }),
+    /* userName only matters to the account-less Vercel chat function (the full backend
+       reads it from the signed-in user), so it rides along for on-device sessions only. */
+    body: JSON.stringify({ message, conversationId, assistantName, persona, gender, language, images, replyTo, replyToText, ...(history?.length ? { messages: history } : {}), ...(desktop ? { desktop: true } : {}), ...(isLocalToken(token) ? { userName: loadSession()?.userProfile?.name || undefined } : {}), stream: true }),
     signal,
   })
 

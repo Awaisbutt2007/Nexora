@@ -95,6 +95,22 @@ export function isCapacityError(err) {
 /* Exported for tests: this is the single place that decides how big a turn is, so
    the voice-vs-text prompt choice and the memory placement are asserted here rather
    than inferred from a provider call. */
+function toolSystemPrompt({ assistantName, userName, persona, language }) {
+  const name = String(assistantName || 'Nexora').trim().slice(0, 40) || 'Nexora'
+  const code = String(language || 'auto').toLowerCase()
+  const langName = REPLY_LANGUAGE_NAMES?.[code]
+  return [
+    `You are ${name}, the assistant inside the Nexora app, created by ${config.developerName}.`,
+    userName ? `The user's name is ${String(userName).slice(0, 60)}.` : '',
+    persona ? `Tone: ${String(persona).slice(0, 200)}.` : '',
+    'Do the task in the user message directly and completely. Never reveal or name the underlying AI model, provider, API or keys.',
+    langName && code !== 'auto'
+      ? `Reply in ${langName}.`
+      : 'Reply in the language the user wrote in.',
+    'Nexora is all-ages: never produce sexual content.',
+  ].filter(Boolean).join('\n')
+}
+
 export function buildMessages(history, userMemories = [], ctx = {}, extraDirective = null) {
   const memoryBlock = userMemories.length
     ? `\n\nKnown user context:\n${userMemories.map((m) => `- ${m.key}: ${m.value}`).join('\n')}`
@@ -107,7 +123,13 @@ export function buildMessages(history, userMemories = [], ctx = {}, extraDirecti
      session is configured with, which already carries the language override, the
      gender grammar, the 1-3 sentence limit and the creator rules — and the memory
      list rides inside it rather than being appended twice. */
-  const systemPrompt = ctx.channel === 'voice'
+  /* Tools and reminders carry their own focused brief in the user turn, so they get
+     a ~150-token identity sheet instead of the ~3.6k-token companion chat prompt.
+     That full prompt on every tool run is what tripped the provider's tokens-per-
+     minute cap after a handful of calls ("The AI is at its limit"). */
+  const systemPrompt = ctx.channel === 'tool'
+    ? toolSystemPrompt(ctx) + memoryBlock
+    : ctx.channel === 'voice'
     ? buildVoiceInstructions({
         assistantName: ctx.assistantName,
         userName: ctx.userName,
@@ -436,8 +458,13 @@ export async function completeChat(params) {
   return providerComplete({ ...params, extraDirective: scriptFixup(verdict, params.language) })
 }
 
+/* Credits are charged for what the user actually gets back (the reply), never for
+   the ~3.6k-token system prompt that rides along on every turn: billing that overhead
+   used to burn ~40 credits per "hi", so a free account was empty after two messages.
+   1 credit per reply, +1 per 200 reply tokens beyond the first 200. When only a
+   total is known (aborted streams estimate from the visible text) it is the reply. */
 export function estimateCredits(usage) {
   if (!usage) return 1
-  const total = usage.total_tokens || (usage.prompt_tokens || 0) + (usage.completion_tokens || 0)
-  return Math.max(1, Math.ceil(total / 100))
+  const reply = Number.isFinite(usage.completion_tokens) ? usage.completion_tokens : (usage.total_tokens || 0)
+  return Math.max(1, Math.ceil(reply / 200))
 }

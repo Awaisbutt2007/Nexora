@@ -12,6 +12,7 @@ import { detectImageRequest, imageProxyPath, isNsfwPrompt, isSelfUiRequest, refi
 import { buildWebContext } from '../services/webfetch.js'
 import { safeProviderMessage } from '../services/providerErrors.js'
 import { deductCredits, ensureCredits } from '../services/credits.js'
+import { TOOL_CATALOG } from './tools.js'
 import { getQuotaSnapshot, isLoopbackRequest } from '../services/quota.js'
 import { maybeReflectOnConversation } from '../services/selfReflect.js'
 import { titleFromPrompt } from './conversations.js'
@@ -107,13 +108,41 @@ function writeSse(res, payload) {
 
 /* "remember …" / "yad rakho …" — a lightweight, deterministic way for the user to
    teach the assistant, matching the onboarding promise. No LLM round-trip needed. */
-const REMEMBER_RE = /(?:\bremember(?:\s+that)?\b|\bkeep\s+in\s+mind\b|\bnote\s+that\b|\bsave\s+that\b|\by[ae]d\s+ra[kc]ho\b|\bya?ad\s+ra[kc]h\b)\s*[-:]?\s*(.+)/i
+/* The keyword can come FIRST ("yaad rakho: mujhe chai pasand hai", "remember that…")
+   or LAST ("mera favourite color blue hai, yaad rakhna") — people say both, and the
+   model happily promises "yaad rakhungi" either way, so both must actually save.
+   Works per sentence so a follow-up question in the same message is never stored,
+   and questions ("do you remember…?", "kya yaad hai?") are not commands. */
+const REMEMBER_KW = /(?:\bremember(?:\s+(?:that|this|it))?\b|\bkeep\s+in\s+mind\b|\bnote\s+(?:that|this)\b|\bsave\s+(?:that|this)\b|\bdon'?t\s+forget\b|\bya?a?d\s+ra[kc]h(?:o|na|ni|iye|iyega|ein|en|\s*l[oe])?\b)/i
+const QUESTION_START = /^\s*(?:do|did|does|can|could|will|would|what|kya|kia|tum(?:he|hein)?\s+ya?a?d)\b/i
+function cleanFact(s) {
+  return String(s || '')
+    .replace(/^[\s,:;\-–—]+|[\s,:;\-–—.!]+$/g, '')
+    .replace(/^(?:that|this|ke|ki|k)\s+/i, '')
+    .trim()
+}
 function detectRememberRequest(text) {
   if (!text) return null
-  const m = REMEMBER_RE.exec(text)
-  if (!m) return null
-  const fact = (m[1] || '').trim().replace(/[.!?]+$/, '')
-  return fact.length >= 3 ? fact.slice(0, 500) : null
+  const sentences = String(text).match(/[^.!?\n]+[.!?]?/g) || []
+  for (const sentence of sentences) {
+    const m = REMEMBER_KW.exec(sentence)
+    if (!m) continue
+    if (/\?\s*$/.test(sentence) || QUESTION_START.test(sentence)) continue
+    const after = cleanFact(sentence.slice(m.index + m[0].length))
+    const before = cleanFact(sentence.slice(0, m.index))
+    const fact = after.length >= 3 ? after : before
+    if (fact.length >= 3) return fact.slice(0, 500)
+  }
+  return null
+}
+
+/* A picture made from chat costs the same as the Image Generator tool, so the tool
+   price can't be dodged by asking in chat. Counts every rendered image in the reply:
+   the server's own proxy links and the model's ![…](IMAGE:…) markers. */
+const IMAGE_CREDIT_COST = TOOL_CATALOG.find((t) => t.id === 'image_generator')?.creditCost ?? 20
+function imageCredits(text) {
+  const count = (String(text || '').match(/\]\((?:\/api\/images\/generate|IMAGE:)/g) || []).length
+  return count * IMAGE_CREDIT_COST
 }
 
 function saveMemory(db, userId, fact, stamp) {
@@ -210,6 +239,11 @@ router.post('/completions', aiLimiter, async (req, res, next) => {
     }
 
     ensureCredits(req.user, 1)
+    /* A clear "make me a picture" request costs the image price — check it up front
+       so a nearly-empty wallet gets an honest 402 instead of a free image. */
+    if (!isSelfUiRequest(userMessage) && detectImageRequest(userMessage)) {
+      ensureCredits(req.user, IMAGE_CREDIT_COST)
+    }
 
     /* The daily token budget is the single source of truth the top-bar pill shows,
        so when it reaches zero the server must ACTUALLY stop answering — otherwise
@@ -334,7 +368,7 @@ router.post('/completions', aiLimiter, async (req, res, next) => {
         conversationId,
       )
 
-      const cost = estimateCredits(result.usage)
+      const cost = estimateCredits(result.usage) + imageCredits(result.content)
       const updated = deductCredits(req.user.id, cost)
 
       // Self-improvement: distil durable learnings from the exchange just now and
@@ -513,7 +547,7 @@ router.post('/completions', aiLimiter, async (req, res, next) => {
         choices: [],
       })
 
-      const cost = estimateCredits(usage || { total_tokens: Math.ceil(fullText.length / 4) })
+      const cost = estimateCredits(usage || { total_tokens: Math.ceil(fullText.length / 4) }) + imageCredits(fullText)
       const updated = deductCredits(req.user.id, cost)
 
       /* Hand the client the new wallet count so the top-bar pill re-renders

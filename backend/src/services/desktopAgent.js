@@ -7,7 +7,10 @@ import { config, isLoopbackUrl } from '../config.js'
 
 function agentUnavailable(message) {
   const err = new Error(message)
-  err.status = 502
+  /* 503, not 502: the Nexora API itself is healthy — only the optional local agent is
+     missing. The client treats a bare 502/504 as "backend offline", so a 502 here made
+     an absent desktop agent look like the whole server was down. */
+  err.status = 503
   err.type = 'desktop_agent_unavailable'
   throw err
 }

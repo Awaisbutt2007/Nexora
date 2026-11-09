@@ -26,15 +26,17 @@ export const TOOL_CATALOG = [
     creditCost: 5,
   },
   {
+    /* Ids stay stable for saved runs; names say what the tool really does — it reads
+       text the user pastes, it does not open PDF files or fetch videos. */
     id: 'pdf_reader',
-    name: 'PDF Reader',
-    description: 'Ask questions and find details in any PDF.',
+    name: 'Document Q&A',
+    description: 'Paste document text, then ask questions about it.',
     creditCost: 8,
   },
   {
     id: 'youtube_notes',
-    name: 'YouTube Notes',
-    description: 'Turn long videos into clear takeaways.',
+    name: 'Video Notes',
+    description: 'Paste a video transcript and get clear takeaways.',
     creditCost: 10,
   },
   {
@@ -115,7 +117,8 @@ router.post('/:toolId/run', aiLimiter, async (req, res, next) => {
       tool: tool.id,
       status: 'completed',
       output,
-      creditsCharged: tool.creditCost,
+      /* Premium plans are unlimited — report what was actually taken. */
+      creditsCharged: req.user.isPremium ? 0 : tool.creditCost,
       user: sanitizeUser(updated),
       createdAt: stamp,
       completedAt: stamp,
@@ -141,7 +144,7 @@ function safeJson(value) {
    the same parser the chat uses (code fences → copy button, images → lightbox). */
 const TOOL_BRIEF = {
   code_assistant: 'You are the Nexora Code Assistant. Write complete, correct, ready-to-run code for the request. Put the full solution inside one fenced code block tagged with the language, then add a short explanation. Do not leave TODO placeholders or empty stub bodies.',
-  pdf_reader: 'You are the Nexora PDF Reader. If the user pasted document text, summarize it and answer their questions with short supporting quotes. If they only gave a title or a question with no text, ask them to paste the document text — Nexora does not fetch files on its own.',
+  pdf_reader: 'You are the Nexora Document Q&A tool. If the user pasted document text, summarize it and answer their questions with short supporting quotes. If they only gave a title or a question with no text, ask them to paste the document text — Nexora does not fetch files on its own.',
   youtube_notes: 'You are the Nexora Notes tool. Turn the transcript or topic the user pastes into concise takeaways: a two-line summary, key points as bullets, and suggested action items. If no content was pasted, ask for the transcript or notes.',
   meeting_notes: 'You are the Nexora Meeting Notes tool. From the raw notes the user pastes, produce Decisions, Action Items (owner + task) and Open Questions. If nothing was pasted, ask for the raw notes.',
   social_studio: "You are the Nexora Social Studio. Rewrite the user's idea into polished, platform-native copy for X/Twitter, LinkedIn and Instagram, each under its own bold heading, ready to post.",
@@ -181,6 +184,7 @@ async function buildToolOutput(tool, payload, ctx) {
     assistantName: ctx.assistantName,
     userName: ctx.userName,
     persona: ctx.persona,
+    channel: 'tool',
   })
   return { type: 'text', prompt, answer: result.content, model: publicModelLabel(result.model) }
 }

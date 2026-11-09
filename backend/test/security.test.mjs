@@ -244,14 +244,17 @@ test('security: production forces demo open-auth OFF even if AUTH_OPEN_MODE is l
   assert.match(r.stdout, /OPENAUTH=false/, 'openAuth must be false in production regardless of AUTH_OPEN_MODE')
 })
 
-test('security: non-production keeps the demo open-auth available (AUTH_OPEN_MODE unset)', () => {
+/* Open auth is OPT-IN: a deploy that forgets NODE_ENV=production (self-host, a bare
+   `docker run`) must not quietly become an auth bypass. Unset → off; =1 → on (dev). */
+test('security: demo open-auth is off unless AUTH_OPEN_MODE=1 (even outside production)', () => {
   const script = `import('./src/config.js').then((m)=>console.log('OPENAUTH=' + m.config.openAuth)).catch((e)=>{console.log('THREW')})`
-  const r = spawnSync(process.execPath, ['--input-type=module', '-e', script], {
+  const run = (mode) => spawnSync(process.execPath, ['--input-type=module', '-e', script], {
     cwd: BACKEND_ROOT,
     encoding: 'utf8',
-    env: { ...process.env, NODE_ENV: 'development', AUTH_OPEN_MODE: '' },
-  })
-  assert.match(r.stdout, /OPENAUTH=true/, 'the demo/dev sign-in must remain available outside production')
+    env: { ...process.env, NODE_ENV: 'development', AUTH_OPEN_MODE: mode },
+  }).stdout
+  assert.match(run(''), /OPENAUTH=false/, 'unset must NOT enable password-less sign-in')
+  assert.match(run('1'), /OPENAUTH=true/, 'explicit AUTH_OPEN_MODE=1 still enables the dev demo')
 })
 
 /* ── Identity and information-disclosure controls ───────────────────────────

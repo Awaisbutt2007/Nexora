@@ -1,5 +1,5 @@
 import React, { useRef, useState } from 'react'
-import { apiErrorText, googleLogin, login, register, saveSession } from './api/nexora.js'
+import { apiErrorText, googleLogin, isMissingBackend, login, register, saveSession } from './api/nexora.js'
 import { Icon } from './icons.jsx'
 import './SignIn.css'
 
@@ -83,8 +83,12 @@ export default function SignIn({ onBack, onLoginSuccess, targetLabel }) {
     try {
       const data = await login({ email: signInEmail.trim(), password: signInPassword })
       finishAuth(data, 'Welcome back!')
-    } catch {
-      finishAuth(localSession(signInEmail.trim()), 'Welcome back!')
+    } catch (err) {
+      /* Only a backend that is genuinely absent (static deploy / offline) falls back
+         to an on-device session. A real answer — wrong password, rate limit — must be
+         shown, never papered over with a fake "Welcome back!" login. */
+      if (isMissingBackend(err)) finishAuth(localSession(signInEmail.trim()), 'Welcome back! (offline mode — saved on this device only)')
+      else showToast(apiErrorText(err, 'Sign-in failed. Check your email and password.'))
     } finally {
       setBusy(false)
     }
@@ -102,8 +106,9 @@ export default function SignIn({ onBack, onLoginSuccess, targetLabel }) {
         phone: signUpPhone.trim() || undefined,
       })
       finishAuth(data, 'Account created — welcome to Nexora!', { source: 'signup' })
-    } catch {
-      finishAuth(localSession(signUpEmail.trim(), signUpName.trim()), 'Welcome to Nexora!', { source: 'signup' })
+    } catch (err) {
+      if (isMissingBackend(err)) finishAuth(localSession(signUpEmail.trim(), signUpName.trim()), 'Welcome to Nexora! (offline mode — saved on this device only)', { source: 'signup' })
+      else showToast(apiErrorText(err, 'Could not create the account.'))
     } finally {
       setBusy(false)
     }
@@ -146,28 +151,53 @@ export default function SignIn({ onBack, onLoginSuccess, targetLabel }) {
     }
   }
 
+  /* Each browser gets its OWN throwaway demo account (random email + password kept in
+     this browser's storage). The old single shared demo@nexora.ai login — with its
+     password in the bundle — let every visitor read everyone else's chats and
+     memories and drained one shared credit wallet. */
+  const demoIdentity = () => {
+    const KEY = 'nexora_demo_identity'
+    try {
+      const saved = JSON.parse(localStorage.getItem(KEY) || 'null')
+      if (saved?.email && saved?.password) return saved
+    } catch { /* corrupt or private mode — mint a new one */ }
+    const rand = (n) => Array.from(crypto.getRandomValues(new Uint8Array(n)), (b) => b.toString(36).padStart(2, '0')).join('').slice(0, n * 2)
+    const identity = { email: `demo-${rand(6)}@demo.nexora.app`, password: rand(12) }
+    try { localStorage.setItem(KEY, JSON.stringify(identity)) } catch { /* private mode: one-off demo */ }
+    return identity
+  }
+
   const handleDemoAuth = async () => {
     setBusy(true)
     showToast('Signing in to demo account...')
+    const { email, password } = demoIdentity()
     try {
       let data
       try {
-        data = await login({ email: 'demo@nexora.ai', password: 'demo1234' })
-      } catch {
-        data = await register({ name: 'Demo Explorer', email: 'demo@nexora.ai', password: 'demo1234' })
+        data = await login({ email, password })
+      } catch (err) {
+        if (isMissingBackend(err)) throw err
+        data = await register({ name: 'Demo Explorer', email, password })
       }
       try { localStorage.removeItem('nexora_demo_prompts') } catch { /* private mode */ }
       finishAuth({ ...data, user: { ...data.user, isDemo: true } }, 'Demo mode ready — try Chat!')
-    } catch {
+    } catch (err) {
+      if (!isMissingBackend(err)) {
+        showToast(apiErrorText(err, 'Demo sign-in failed — please try again.'))
+        return
+      }
       try { localStorage.removeItem('nexora_demo_prompts') } catch { /* private mode */ }
-      finishAuth({ ...localSession('demo@nexora.ai', 'Demo Explorer'), user: { ...localSession('demo@nexora.ai', 'Demo Explorer').user, isDemo: true } }, 'Demo mode ready — try Chat!')
+      const local = localSession(email, 'Demo Explorer')
+      finishAuth({ ...local, user: { ...local.user, isDemo: true } }, 'Demo mode ready — try Chat!')
     } finally {
       setBusy(false)
     }
   }
 
+  /* There is no email service behind Nexora yet, so never claim a reset link was
+     sent. Say what is actually possible instead. */
   const handleForgotPassword = () => {
-    showToast(signInEmail.trim() ? `Password reset link sent to ${signInEmail}` : 'Enter your email above to reset password')
+    showToast('Password reset by email is not available yet. If you are signed in on another device, change it under Settings → Password; otherwise contact the Nexora team to reset it.')
   }
 
   const toggleToSignUp = () => setIsSignUp(true)

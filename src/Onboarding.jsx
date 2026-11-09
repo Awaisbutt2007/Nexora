@@ -127,7 +127,9 @@ export default function Onboarding({ userProfile, source = 'google', onComplete 
   }
   const saved = savedRef.current
   const [stage, setStage] = useState(() => (saved.stage > 0 && saved.stage < GREETINGS.length ? saved.stage : 0))
-  const [name, setName] = useState(typeof saved.name === 'string' ? saved.name : '')
+  /* The name typed at sign-up (or from Google) pre-fills the field — asking for it
+     a second time from blank felt like the first answer was lost. Still editable. */
+  const [name, setName] = useState(typeof saved.name === 'string' ? saved.name : (String(userProfile?.name || '').trim().slice(0, 40)))
   const [aiName, setAiName] = useState(typeof saved.aiName === 'string' ? saved.aiName : '')
   const [typedCount, setTypedCount] = useState(0)
   const [voiceGender, setVoiceGender] = useState(saved.voiceGender === 'male' ? 'male' : 'female')
@@ -730,14 +732,19 @@ export default function Onboarding({ userProfile, source = 'google', onComplete 
                 <p className="enroll-line">Ho gaya, {enrollment.owner.split(' ')[0]}! Ab {enrollment.ai} sirf aap ki awaaz ke commands maanegi. Koi aur bolega to jawab milega: "Sorry, main sirf apne owner ki baat maanti hoon."</p>
               </> : <>
                 <button type="button" className="enroll-orb" onClick={enrollment.enroll} aria-label="Start voice registration"><Icon name="mic" size={34} /></button>
-                <p className="enroll-line">Jaise Siri sirf apne owner ki awaaz pe jaagti hai, waise hi {enrollment.ai} ko apni awaaz sikhaiye. Mic dabayein aur screen par aane wali 4 chhoti lines bol kar parhein (sirf 20 sec).</p>
+                <p className="enroll-line">Jaise Siri sirf apne owner ki awaaz pe jaagti hai, waise hi {enrollment.ai} ko apni awaaz sikhaiye. Mic dabayein aur screen par aane wali 4 chhoti lines bol kar parhein (sirf 20 sec). Yeh ek basic awaaz-match hai, password jaisi pakki security nahi.</p>
               </>}
               {enrollment.error && <p className="onboarding-error">{enrollment.error}</p>}
               <div className="voice-footer">
                 <button className="voice-back" type="button" disabled={enrollment.recording} onClick={() => setStage(2)}>Back</button>
                 {enrollment.record
                   ? <button className="onboarding-continue" type="button" onClick={() => setStage(4)}>Continue</button>
-                  : <button className="onboarding-continue ghost" type="button" disabled={enrollment.recording} onClick={() => setStage(4)}>Skip for now</button>}
+                  : <button className="onboarding-continue ghost" type="button" disabled={enrollment.recording} onClick={() => {
+                    /* Remember the choice so the workspace doesn't pop the same
+                       "register your voice" card a few seconds later. */
+                    try { sessionStorage.setItem('nexora_owner_voice_prompt', '0') } catch { /* private mode */ }
+                    setStage(4)
+                  }}>Skip for now</button>}
               </div>
             </div>
           )}

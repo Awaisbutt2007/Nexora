@@ -502,24 +502,34 @@ function initialNavHash() {
   return NAV_SECTIONS.some(([hash]) => hash === window.location.hash) ? window.location.hash : '#home'
 }
 
+/* Footer social links. Empty href = hidden (dead "#" links were shown before).
+   Put the real URLs here, e.g. 'https://wa.me/923001234567' or 'mailto:hello@…'. */
+const SOCIAL_LINKS = [
+  { label: 'WhatsApp', icon: 'whatsapp', href: '' },
+  { label: 'Email', icon: 'mail', href: '' },
+  { label: 'GitHub', icon: 'code', href: '' },
+  { label: 'YouTube', icon: 'youtube', href: '' },
+  { label: 'X', icon: 'cross', size: 15, href: '' },
+]
+
 const navItems = [['Chat', 'chat'], ['Schedule', 'schedule'], ['Memory', 'memory'], ['Tools', 'tools'], ['Desktop', 'desktop'], ['Settings', 'settings']]
 /* Schedule chips are a lookup, not a render-time clock read (oxlint purity):
    refreshTasks stamps each task with its phase while the data lands. */
-const SCHEDULE_CHIP = { due: ['Due now', 'chip-due'], soon: ['Reminds tomorrow', 'chip-soon'], planned: ['Planned', 'chip-planned'], done: ['Done ✓', 'chip-done'] }
+const SCHEDULE_CHIP = { due: ['Due now', 'chip-due'], soon: ['Due within 24h', 'chip-soon'], planned: ['Planned', 'chip-planned'], done: ['Done ✓', 'chip-done'] }
 
 /* The three plans, shared by the landing pricing section and the in-app upgrade
    modal so the price a visitor sees is the price a member is charged. `key` maps
    to the backend enum ('free' | 'pro' | 'yearly_pro'). */
 const PLANS = [
-  { key: 'free', feat: false, label: 'STARTER', name: 'Starter', price: 'FREE', sub: 'to begin', desc: 'Har roz ke sawal aur chhote ideas ke liye.', items: ['Helpful AI conversations', 'Everyday creative tools', '100 credits on sign-up — top up any time', 'Your own idea library'], cta: 'Get Starter', tint: 'outline' },
+  { key: 'free', feat: false, label: 'STARTER', name: 'Starter', price: 'FREE', sub: 'to begin', desc: 'Har roz ke sawal aur chhote ideas ke liye.', items: ['Helpful AI conversations', 'Everyday creative tools', '100 free credits every month', 'Your own idea library'], cta: 'Get Starter', tint: 'outline' },
   { key: 'pro', feat: true, label: 'MOST LOVED · MONTHLY', name: 'Pro', price: '₨10,000', sub: '/ month', desc: 'Ambitious projects aur unlimited work ke liye.', items: ['Premium AI models', 'Faster image and file tools', 'No credit limit — unlimited', 'Bigger projects, longer memory'], cta: 'Get Pro', tint: 'primary' },
   { key: 'yearly_pro', feat: false, label: 'YEARLY · BEST VALUE', name: 'Yearly Pro', price: '₨80,000', sub: '/ year', desc: 'Poore saal ka magic, saste mein.', items: ['Premium AI models', 'Faster image and file tools', 'No credit limit — unlimited', 'Bigger projects, longer memory', '12 months for the price of 8'], cta: 'Get Yearly Pro', tint: 'outline' },
 ]
 const tools = [
   ['image', 'Image Generator', 'Create striking images from a simple prompt.', 'violet', 'image_generator', 'Describe the image you want — scene, style, mood…'],
   ['code', 'Code Assistant', 'Write, debug, and explain code with context.', 'blue', 'code_assistant', 'Describe the code you need: language, inputs, expected behaviour…'],
-  ['pdf', 'PDF Reader', 'Ask questions and find details in any PDF.', 'pink', 'pdf_reader', 'Paste the document text, then ask your question…'],
-  ['youtube', 'YouTube Notes', 'Turn long videos into clear takeaways.', 'cyan', 'youtube_notes', 'Paste a transcript or describe the video topic…'],
+  ['pdf', 'Document Q&A', 'Paste document text, then ask questions about it.', 'pink', 'pdf_reader', 'Paste the document text, then ask your question…'],
+  ['youtube', 'Video Notes', 'Paste a video transcript and get clear takeaways.', 'cyan', 'youtube_notes', 'Paste a transcript or describe the video topic…'],
   ['meeting', 'Meeting Notes', 'Capture decisions and next steps automatically.', 'violet', 'meeting_notes', 'Paste your raw meeting notes or agenda…'],
   ['social', 'Social Studio', 'Shape one idea into content for every channel.', 'green', 'social_studio', 'Describe the idea and the tone you want…'],
 ]
@@ -541,13 +551,13 @@ const TOOL_STARTERS = {
     intro: `Code Assistant on. Tell me: 1) language / framework, 2) the goal in one plain sentence, 3) inputs and expected output, 4) constraints (perf, no deps, style, target runtime). Paste any existing snippet you want me to work with. Complete the draft below and I'll take it from there.`,
     draft: `[Code Assistant · session] Help me with this code:\n• Language / stack: \n• Goal: \n• Inputs → Expected output: \n• Constraints: \n• Existing snippet (optional): \n`,
   },
-  'PDF Reader': {
-    intro: `PDF Reader open. Nexora does not fetch files itself — paste the PDF's text (or the section you care about), then tell me the question, the summary style you want, or which fields to extract. Fill the draft and I'll answer from the text only.`,
-    draft: `[PDF Reader · session] Document text:\n\n\n• What I want from it (summary / Q&A / key quotes / outline): \n• Specific question (if any): \n`,
+  'Document Q&A': {
+    intro: `Document Q&A open. Nexora does not fetch files itself — paste the PDF's text (or the section you care about), then tell me the question, the summary style you want, or which fields to extract. Fill the draft and I'll answer from the text only.`,
+    draft: `[Document Q&A · session] Document text:\n\n\n• What I want from it (summary / Q&A / key quotes / outline): \n• Specific question (if any): \n`,
   },
-  'YouTube Notes': {
-    intro: `YouTube Notes ready. Paste the transcript (or describe the video's topic and chapters) and tell me the angle you want — quick takeaways, timestamped summary, quotes, or action items. Complete the draft and I'll turn it into notes you can save.`,
-    draft: `[YouTube Notes · session] Video transcript or topic:\n\n\n• Focus (takeaways / timestamps / quotes / actions): \n• Desired output length: \n`,
+  'Video Notes': {
+    intro: `Video Notes ready. Paste the transcript (or describe the video's topic and chapters) and tell me the angle you want — quick takeaways, timestamped summary, quotes, or action items. Complete the draft and I'll turn it into notes you can save.`,
+    draft: `[Video Notes · session] Video transcript or topic:\n\n\n• Focus (takeaways / timestamps / quotes / actions): \n• Desired output length: \n`,
   },
   'Meeting Notes': {
     intro: `Meeting Notes on. Paste the raw notes, transcript or agenda and I'll extract decisions, action items, owners and follow-ups into a clean summary. Fill the draft so I know who was in the room and how tight you want the output.`,
@@ -577,7 +587,7 @@ const testimonials = [
 
 const faqs = [
   { q: 'Hum Nexora kyu purchase karein?', a: 'Nexora ek personal AI assistant hai jismein chat, image creation, code help, file reading, planning aur memory — sab ek hi jagah milta hai. Aap ek workspace se apne poore ideas ko manage kar sakte hain. Yeh ek ordinary AI assistant se behtar hai — aap isse apni baatein share kar sakte hain, yeh aapke liye khud kaam karega, aap isko kisi bhi insaan ki voice de sakte hain, aur yeh aapke kai projects mein bhi bohat madadgar hoga.' },
-  { q: 'Kya Nexora free use kar sakte hain?', a: 'Ji haan — sign-up par aapko 100 free credits milte hain jo daily sawalon, chhote ideas aur creative tools ke liye kaafi hain. Jab credits khatam ho jayen to Pro (₨10,000/mo) ya Yearly Pro (₨80,000/yr) plan le sakte hain jismein unlimited access milta hai.' },
+  { q: 'Kya Nexora free use kar sakte hain?', a: 'Ji haan — har mahine aapko 100 free credits milte hain (har mahine ki 1 tareekh ko refill) jo daily sawalon, chhote ideas aur creative tools ke liye kaafi hain. Agar mahine ke beech credits khatam ho jayen to Pro (₨10,000/mo) ya Yearly Pro (₨80,000/yr) plan le sakte hain jismein unlimited access milta hai.' },
   { q: 'Pro aur Yearly Pro main kya extra milta hai?', a: 'Pro (₨10,000/month) aur Yearly Pro (₨80,000/year) dono main aapko premium AI models, faster image aur file tools, aur bilkul unlimited credits ka access milta hai — 100 free credits ki hadd nahi rahti. Yearly Pro mein 12 mahine sirf 8 ke daam mein milte hain — sabse zyada value wala plan hai.' },
   { q: 'Kya meri files aur data secure hain?', a: 'Haan, aapke data aur chats aapki hi personal space main rehte hain. Nexora aapke ideas aur files ko private rakhta hai — aapka data kisi aur ke saath share nahi hota.' },
   { q: 'Mobile ya sirf desktop par chalega?', a: 'Nexora ka interface responsive design ka hai — aap desktop, tablet aur mobile dono par aaram se use kar sakte hain. Workspace aur landing page dono har screen size par optimized hain.' },
@@ -613,10 +623,10 @@ const SHOWCASE_SHOTS = [
   { label: 'Chat', src: workspaceShot, alt: 'The Nexora workspace chat: companion greeting, starter prompts and the message composer.' },
   { label: 'Schedule', src: workspaceSchedule, alt: 'The Schedule page: upcoming tasks with reminder chips and a live schedule nudge from Nexora.' },
   { label: 'Memory', src: workspaceMemory, alt: 'The Memory vault: a particle brain with wires connecting saved memories and chats.' },
-  { label: 'Tools', src: workspaceTools, alt: 'The Tools page: Image Generator, Code Assistant, PDF Reader, YouTube Notes, Meeting Notes and Social Studio.' },
+  { label: 'Tools', src: workspaceTools, alt: 'The Tools page: Image Generator, Code Assistant, Document Q&A, Video Notes, Meeting Notes and Social Studio.' },
 ]
 
-function Landing({ onLogin, onNavigate, isLoggedIn, userProfile, onUpgrade }) {
+function Landing({ onNavigate, isLoggedIn, userProfile, onUpgrade }) {
   const [openFaq, setOpenFaq] = useState(0)
   const [menuOpen, setMenuOpen] = useState(false)
   const [scrolled, setScrolled] = useState(false)
@@ -961,17 +971,18 @@ function Landing({ onLogin, onNavigate, isLoggedIn, userProfile, onUpgrade }) {
           <Brand />
           <p className="footer-tag">More room for what's next.</p>
           <p className="footer-about">The unified AI workspace for curious minds. Turn an ordinary session into a flow that listens, moves, and feels alive — the kind you’ve only daydreamed about.</p>
-          <div className="footer-socials">
-            <a href="#" aria-label="WhatsApp" title="WhatsApp"><Icon name="whatsapp" size={18} /></a>
-            <a href="#" aria-label="Email" title="Email"><Icon name="mail" size={18} /></a>
-            <a href="#" aria-label="GitHub" title="GitHub"><Icon name="code" size={18} /></a>
-            <a href="#" aria-label="YouTube" title="YouTube"><Icon name="youtube" size={18} /></a>
-            <a href="#" aria-label="X" title="X"><Icon name="cross" size={15} /></a>
-          </div>
+          {/* Only links that actually go somewhere are shown — fill SOCIAL_LINKS. */}
+          {SOCIAL_LINKS.some((s) => s.href) && (
+            <div className="footer-socials">
+              {SOCIAL_LINKS.filter((s) => s.href).map((s) => (
+                <a key={s.label} href={s.href} aria-label={s.label} title={s.label} target={s.href.startsWith('http') ? '_blank' : undefined} rel="noopener noreferrer"><Icon name={s.icon} size={s.size || 18} /></a>
+              ))}
+            </div>
+          )}
         </div>
         {[
           { title: 'Product', links: [['Overview', '#home'], ['Features', '#features'], ['Showcase', '#showcase'], ['Pricing', '#plans'], ['Releases', '#home'], ['Reviews', '#home']] },
-          { title: 'Features', links: [['Chat', '#home'], ['Image Generator', '#home'], ['Code Assistant', '#home'], ['PDF Reader', '#home'], ['YouTube Notes', '#home'], ['Meeting Notes', '#home']] },
+          { title: 'Features', links: [['Chat', '#home'], ['Image Generator', '#home'], ['Code Assistant', '#home'], ['Document Q&A', '#home'], ['Video Notes', '#home'], ['Meeting Notes', '#home']] },
           { title: 'Resources', links: [['Use Cases', '#home'], ['Compare', '#home'], ['Guide', '#home'], ['FAQ', '#faq'], ['Urdu / Hindi', '#home'], ['Blog', '#home']] },
           { title: 'Company', links: [['About', '#about'], ['Tools', '#home'], ['Workspace', '#home'], ['Plans', '#plans'], ['Contact', '#home'], ['Support', '#home']] },
           { title: 'Legal', links: [['Terms', '#home'], ['Privacy', '#home'], ['Refund', '#home'], ['Delivery', '#home'], ['Licence', '#home']] },
@@ -1564,7 +1575,7 @@ function DesktopView({ token, aiName, isLoggedIn, onLogin }) {
       {health == null && <span>Checking for the desktop agent on your PC…</span>}
       {paired && enabled && <span><Icon name="dotOn" size={14} /> Connected to your PC (local agent) — {health.bind || '127.0.0.1'} · loopback only, this browser only.</span>}
       {!paired && health && enabled && <span>● Connected — {health.agent?.bind || '127.0.0.1'} · loopback only. Automation browser, approved apps and folders only.</span>}
-      {health && !enabled && <span>○ Not connected — {paired ? 'your paired agent is not reachable right now — make sure it is still running on this PC.' : (health.error?.message || 'no local Nexora Agent detected and the backend bridge is off')}.</span>}
+      {health && !enabled && <span>○ Not connected — {paired ? 'your paired agent is not reachable right now — make sure it is still running on this PC' : String(health.error?.message || 'no local Nexora Agent detected and the backend bridge is off').replace(/[.\s]+$/, '')}.</span>}
       {paired && <button type="button" className="desktop-link danger" onClick={doRevokeThisPc}>Revoke this PC</button>}
     </div>
 
@@ -1577,7 +1588,7 @@ function DesktopView({ token, aiName, isLoggedIn, onLogin }) {
       {pairStatus && <p className="desktop-notice" role="status"><Icon name="check" size={14} /> Nexora Agent detected and awaiting pairing — enter the code shown in its window.</p>}
       <ol className="desktop-steps">
         <li>Open a terminal <b>inside your Nexora project folder</b> (the repo root — the folder that <i>contains</i> <code>desktop-agent</code>). A new Windows terminal starts in <code>C:\WINDOWS\system32</code>, so first <code>cd "C:\path\to\Nexora"</code> — or open the folder in VS Code and use its built-in terminal.</li>
-        <li>From there, start the agent: <code>cd desktop-agent</code> → <code>npm install</code> → <code>npm run dev:agent</code>.</li>
+        <li>From there (still in the repo root), install and start the agent: <code>npm install --prefix desktop-agent</code> → <code>npm run dev:agent</code>.</li>
         <li>Allow this site: set the agent's <code>AGENT_ALLOWED_ORIGINS</code> to <code>{AGENT_SELF_ORIGIN || 'this page origin'}</code> and its <code>NEXORA_BACKEND_URL</code> to your Nexora backend, then restart it.</li>
         <li>Copy the pairing code from the agent console and paste it below.</li>
       </ol>
@@ -2530,7 +2541,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
           ...t,
           phase: t.status === 'done' ? 'done'
             : Date.parse(t.dueAt) <= nowMs ? 'due'
-            : !t.remindedAt && Date.parse(t.dueAt) - nowMs <= 86400000 ? 'soon'
+            : Date.parse(t.dueAt) - nowMs <= 86400000 ? 'soon'
             : 'planned',
         })))
       })
@@ -2545,7 +2556,10 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
   useEffect(() => {
     if (activeView !== 'Schedule' || !isLoggedIn || !authToken) return undefined
     const id = setTimeout(refreshTasks, 0)
-    return () => clearTimeout(id)
+    /* Phases are stamped per fetch, so re-fetch every minute while the page is open
+       or a task that just came due keeps saying "Due within 24h". */
+    const tick = setInterval(refreshTasks, 60000)
+    return () => { clearTimeout(id); clearInterval(tick) }
   }, [activeView, isLoggedIn, authToken, refreshTasks])
 
   /* One nudge per sign-in: ask what needs saying RIGHT NOW — tomorrow's tasks
@@ -3083,12 +3097,12 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
         setStreamedCredits(0)
         const lang = String(voicePrefs.language || 'auto').toLowerCase()
         const rechargeLine = lang === 'ur'
-          ? 'آپ کے کریڈٹ ختم ہو گئے ہیں۔ براہ کرم کریڈٹ ری چارج کروا کر دوبارہ کوشش کریں — اپنی پروفائل آئیکن → اکاؤنٹ سیٹنگز → اپ گریڈ سے پلان بدل سکتے ہیں۔ ✨'
+          ? 'اس مہینے کے مفت کریڈٹ ختم ہو گئے ہیں — اگلے مہینے کی پہلی تاریخ کو دوبارہ مل جائیں گے۔ ابھی جاری رکھنے کے لیے اپنی پروفائل آئیکن → اکاؤنٹ سیٹنگز → اپ گریڈ سے پلان بدل سکتے ہیں۔ ✨'
           : lang === 'hinglish'
-            ? 'Aap ke credits khatam ho gaye hain 🙂 Thaham recharge karwao aur phir se milte hain — profile icon → Upgrade dabao, 2 second me ho jayega. ✨'
+            ? 'Is mahine ke free credits khatam ho gaye hain 🙂 Agle mahine ki 1 tareekh ko phir se mil jayenge. Abhi chat jari rakhni hai to profile icon → Upgrade dabao. ✨'
             : lang === 'en'
-              ? 'You have run out of credits — please top up to keep chatting. Tap your profile icon → Upgrade to pick a plan. ✨'
-              : 'Aap ke credits khatam ho gaye hain 🙂 Thaham recharge karwao aur phir se milte hain — profile icon → Upgrade dabao, 2 second me ho jayega. ✨'
+              ? 'You have used this month’s free credits — they refill on the 1st of next month. To keep chatting now, tap your profile icon → Upgrade to pick a plan. ✨'
+              : 'Is mahine ke free credits khatam ho gaye hain 🙂 Agle mahine ki 1 tareekh ko phir se mil jayenge. Abhi chat jari rakhni hai to profile icon → Upgrade dabao. ✨'
         setMessages((prev) =>
           prev.map((m) =>
             m.id === tempAsstId

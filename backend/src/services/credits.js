@@ -1,5 +1,27 @@
 import { getDb, nowIso } from '../db/index.js'
-import { PLANS } from '../config.js'
+import { PLANS, config } from '../config.js'
+
+const monthKey = (iso) => {
+  const d = new Date(iso || 0)
+  return Number.isNaN(d.getTime()) ? '' : `${d.getUTCFullYear()}-${d.getUTCMonth()}`
+}
+
+/* Free accounts get their monthly allowance back at the start of each calendar month
+   (UTC). Tops UP to the allowance — never lowers a balance that is already higher.
+   Takes and returns a raw users row so requireAuth can call it on every request
+   cheaply: the UPDATE only runs on the first request of a new month. */
+export function refillMonthlyCredits(row) {
+  if (!row || row.is_premium || row.plan !== 'free') return row
+  const now = nowIso()
+  const last = row.credits_refilled_at || row.created_at
+  if (monthKey(last) === monthKey(now)) return row
+  const allowance = config.freeMonthlyCredits
+  const credits = Math.max(row.credits_remaining || 0, allowance)
+  getDb()
+    .prepare('UPDATE users SET credits_remaining = ?, credits_refilled_at = ?, updated_at = ? WHERE id = ?')
+    .run(credits, now, now, row.id)
+  return { ...row, credits_remaining: credits, credits_refilled_at: now }
+}
 
 export function ensureCredits(user, cost = 1) {
   if (user.isPremium || user.plan === 'pro' || user.plan === 'yearly_pro') {

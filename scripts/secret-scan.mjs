@@ -55,7 +55,7 @@ const PLACEHOLDER_RE = /(test|example|changeme|change-me|placeholder|dummy|sampl
 // strict provider-credential rules still scan test files, so a REAL key pasted
 // into a test is never forgiven.
 function isTestPath(source) {
-  return /(^|[\\/])(test|tests|__tests__)[\/]/i.test(source) || /\.(test|spec)\.[cm]?js$/i.test(source)
+  return /(^|[\\/])(test|tests|__tests__)[\\/]/i.test(source) || /\.(test|spec)\.[cm]?js$/i.test(source)
 }
 
 function* walk(dir) {
