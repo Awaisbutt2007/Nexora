@@ -42,6 +42,7 @@
  */
 import { synthesizeSpeech } from './api/nexora.js'
 import { configureUtterForSpeech, getCachedVoices } from './voiceSelect.js'
+import { isMobileBrowser } from './speechUnlock.js'
 
 /* Server audio currently playing (or fetched but not yet started). Kept
  * on module scope so barge-in from the wake-word hook (which does not sit
@@ -81,7 +82,9 @@ const liveUtterances = new Set()
 /* Self-heal for a lost `onend`: Chrome reports `speaking` from the moment an
  * utterance is queued (even while an online voice is still loading), so "we owe
  * an utterance but the engine is idle" for a few polls means the count is stale. */
-const STALE_IDLE_POLLS = 4
+/* Phones report `speaking` late while an online voice loads, so they get ~3 s
+ * before the count is treated as stale (desktop keeps the snappy 400 ms). */
+const STALE_IDLE_POLLS = isMobileBrowser() ? 30 : 4
 let idlePolls = 0
 /* Set as soon as the server refuses a synth for THIS burst. 503 ("no speech key
  * configured", a Groq-only install) is the expected one, but an expired token, an
@@ -134,6 +137,7 @@ function endBurst() {
  * the "start the next sentence 100ms after this one" feel the user asked for. The
  * timer is cleared when the burst closes, so an idle tab holds nothing. */
 const HANDOFF_PEEK_MS = 100
+const MOBILE = isMobileBrowser()
 let stallPoke = null
 function armStallPoke() {
   if (stallPoke || typeof window === 'undefined') return
@@ -145,7 +149,9 @@ function armStallPoke() {
     }
     try {
       const eng = window.speechSynthesis
-      if (eng && eng.speaking && !eng.paused) eng.resume()
+      /* The resume() poke is a Windows Chrome/Edge workaround; on phones it can
+         stall or skip the utterance, so it only runs on desktop. */
+      if (!MOBILE && eng && eng.speaking && !eng.paused) eng.resume()
       idlePolls = eng && !eng.speaking && !eng.pending ? idlePolls + 1 : 0
       if (idlePolls >= STALE_IDLE_POLLS) recoverLostEnd()
     } catch { /* ignore */ }
@@ -193,7 +199,7 @@ export function cancelSpeakQueue() {
   clearStallPoke()
   try { if (currentAudio) { currentAudio.pause(); if (currentAudio.src && currentAudio.src.startsWith('blob:')) URL.revokeObjectURL(currentAudio.src) } } catch { /* ignore */ }
   currentAudio = null
-  try { if (window.speechSynthesis) window.speechSynthesis.cancel() } catch { /* ignore */ }
+  try { const eng = window.speechSynthesis; if (eng && (eng.speaking || eng.pending)) eng.cancel() } catch { /* ignore */ }
   burstOpen = false
   markEnd()
 }
@@ -440,7 +446,21 @@ function utterOnEngine(plain, opts) {
     if (myGen === generation && !engineOutstanding && !held.length && !pending.length && !playing) endBurst()
   }
   utter.onend = done
-  utter.onerror = done
+  /* A phone without the chosen language's voice (Urdu is rarely installed)
+     rejects the utterance instead of speaking it. Retry once on the engine's
+     default voice so the reply is still heard, just in a plainer accent. */
+  utter.onerror = (ev) => {
+    const code = ev?.error
+    if (!opts?._retried && myGen === generation && (code === 'language-unavailable' || code === 'voice-unavailable' || code === 'synthesis-failed')) {
+      if (settled) return
+      settled = true
+      liveUtterances.delete(utter)
+      engineOutstanding = Math.max(0, engineOutstanding - 1)
+      utterOnEngine(plain, { ...opts, _retried: true, language: 'en' })
+      return
+    }
+    done()
+  }
   try { window.speechSynthesis.speak(utter) } catch { done() }
 }
 

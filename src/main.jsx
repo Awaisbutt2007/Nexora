@@ -3,9 +3,12 @@ import { createRoot } from 'react-dom/client'
 import Nexora from './Nexora.jsx'
 import DownloadPage from './DownloadPage.jsx'
 import { captureInstallPrompt } from './InstallApp.jsx'
+import { installSpeechUnlock } from './speechUnlock.js'
 
 /* Catch the browser's install offer before React mounts (it can fire very early). */
 captureInstallPrompt()
+/* Phones mute speech until a tap has "unlocked" it — arm that before anything renders. */
+installSpeechUnlock()
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>

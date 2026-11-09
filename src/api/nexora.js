@@ -8,6 +8,8 @@
    phone or stale tab can ever trip CORS — the failure class that read as "Failed to fetch"
    while creating an account. Set VITE_API_URL only when the frontend is deployed apart from
    its API (then the backend must list that origin in CORS_ORIGIN). */
+import { deleteLocalMemory, listLocalMemories, rememberFromChat, saveLocalMemory } from '../localMemory.js'
+
 const API_BASE = import.meta.env.VITE_API_URL ?? ''
 const SESSION_KEY = 'nexora_user_session'
 
@@ -380,6 +382,14 @@ export async function runTool(token, toolId, { prompt, input, assistantName, per
  * Returns { conversationId, fullText }.
  */
 export async function streamChat({ token, message, conversationId = null, assistantName, persona, gender, language, images, replyTo, replyToText, history, desktop, onDelta, onMeta, signal }) {
+  /* A device-only session has no server to store "yaad rakhna …" or to read
+     memories from, so do both here: save the fact locally and hand the saved
+     memories to the serverless chat function so the reply can use them. */
+  let localMemories
+  if (isLocalToken(token)) {
+    try { rememberFromChat(memoryOwner(), message) } catch { /* storage unavailable */ }
+    localMemories = listLocalMemories(memoryOwner()).slice(0, 30).map((m) => ({ key: m.key, value: m.value }))
+  }
   const res = await fetch(`${API_BASE}/api/chat/completions`, {
     method: 'POST',
     headers: authHeaders(token),
@@ -391,7 +401,7 @@ export async function streamChat({ token, message, conversationId = null, assist
        user's local Desktop Agent, so the model may emit [DESKTOP:…] markers. */
     /* userName only matters to the account-less Vercel chat function (the full backend
        reads it from the signed-in user), so it rides along for on-device sessions only. */
-    body: JSON.stringify({ message, conversationId, assistantName, persona, gender, language, images, replyTo, replyToText, ...(history?.length ? { messages: history } : {}), ...(desktop ? { desktop: true } : {}), ...(isLocalToken(token) ? { userName: loadSession()?.userProfile?.name || undefined } : {}), stream: true }),
+    body: JSON.stringify({ message, conversationId, assistantName, persona, gender, language, images, replyTo, replyToText, ...(history?.length ? { messages: history } : {}), ...(desktop ? { desktop: true } : {}), ...(isLocalToken(token) ? { userName: loadSession()?.userProfile?.name || undefined } : {}), ...(localMemories?.length ? { memories: localMemories } : {}), stream: true }),
     signal,
   })
 
@@ -601,21 +611,44 @@ export async function chatOnce(token, { message, conversationId = null, assistan
   }
 }
 
+/* Memories live on the server when there is one; a device-only session (the
+   static Vercel deploy) keeps them in localStorage instead — see localMemory.js. */
+function memoryOwner() {
+  const u = loadSession()?.userProfile || {}
+  return u.email || u.id || 'me'
+}
+
 export async function listMemories(token) {
-  const res = await fetch(`${API_BASE}/api/memory`, { headers: authHeaders(token) })
-  return parseJson(res)
+  if (isLocalToken(token)) return { object: 'list', data: listLocalMemories(memoryOwner()) }
+  try {
+    const res = await fetch(`${API_BASE}/api/memory`, { headers: authHeaders(token) })
+    return await parseJson(res)
+  } catch (err) {
+    if (isMissingBackend(err)) return { object: 'list', data: listLocalMemories(memoryOwner()) }
+    throw err
+  }
 }
 
 export async function saveMemory(token, { key, value, source }) {
-  const res = await fetch(`${API_BASE}/api/memory`, {
-    method: 'POST',
-    headers: authHeaders(token),
-    body: JSON.stringify({ key, value, source }),
-  })
-  return parseJson(res)
+  if (isLocalToken(token)) return saveLocalMemory(memoryOwner(), { key, value, source })
+  try {
+    const res = await fetch(`${API_BASE}/api/memory`, {
+      method: 'POST',
+      headers: authHeaders(token),
+      body: JSON.stringify({ key, value, source }),
+    })
+    return await parseJson(res)
+  } catch (err) {
+    if (isMissingBackend(err)) return saveLocalMemory(memoryOwner(), { key, value, source })
+    throw err
+  }
 }
 
 export async function deleteMemory(token, id) {
+  if (isLocalToken(token) || String(id).startsWith('mem_local_')) {
+    deleteLocalMemory(memoryOwner(), id)
+    return { ok: true }
+  }
   const res = await fetch(`${API_BASE}/api/memory/${id}`, { method: 'DELETE', headers: authHeaders(token) })
   if (res.status === 204) return { ok: true }
   return parseJson(res)

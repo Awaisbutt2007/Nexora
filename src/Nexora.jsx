@@ -213,11 +213,21 @@ function speakWakeLine(text, { language, gender, onEnd } = {}) {
   try {
     /* Cancel any still-playing ack from a previous utterance — the user may
        have said the wake word twice and the second ack must not queue. */
-    window.speechSynthesis.cancel()
+    /* Only cancel when something is actually queued: on Android Chrome a
+       cancel() right before speak() can swallow the new utterance. */
+    if (window.speechSynthesis.speaking || window.speechSynthesis.pending) window.speechSynthesis.cancel()
     const utter = new SpeechSynthesisUtterance(text)
     configureUtterForSpeech(utter, window.speechSynthesis.getVoices(), { language, gender })
     utter.onend = () => { markAiSpeakingEnd(); onEnd?.() }
-    utter.onerror = () => { markAiSpeakingEnd(); onEnd?.() }
+    utter.onerror = (ev) => {
+      /* No voice for this language on the phone (Urdu usually) — say it once
+         more on an English voice rather than staying silent. */
+      if (language !== 'en' && ['language-unavailable', 'voice-unavailable', 'synthesis-failed'].includes(ev?.error)) {
+        speakWakeLine(text, { language: 'en', gender, onEnd })
+        return
+      }
+      markAiSpeakingEnd(); onEnd?.()
+    }
     /* Stamp barge-in tracker so the wake-word hook knows real speech is on
        the wire (and won't fire on our own echo for the first 800 ms). */
     markAiSpeakingStart()
