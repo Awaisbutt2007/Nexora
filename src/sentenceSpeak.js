@@ -43,6 +43,7 @@
 import { synthesizeSpeech } from './api/nexora.js'
 import { configureUtterForSpeech, getCachedVoices } from './voiceSelect.js'
 import { isMobileBrowser } from './speechUnlock.js'
+import { speechEnd, trackAudio, trackUtterance } from './speechViz.js'
 
 /* Server audio currently playing (or fetched but not yet started). Kept
  * on module scope so barge-in from the wake-word hook (which does not sit
@@ -199,6 +200,7 @@ export function cancelSpeakQueue() {
   clearStallPoke()
   try { if (currentAudio) { currentAudio.pause(); if (currentAudio.src && currentAudio.src.startsWith('blob:')) URL.revokeObjectURL(currentAudio.src) } } catch { /* ignore */ }
   currentAudio = null
+  speechEnd()
   try { const eng = window.speechSynthesis; if (eng && (eng.speaking || eng.pending)) eng.cancel() } catch { /* ignore */ }
   burstOpen = false
   markEnd()
@@ -293,7 +295,7 @@ async function drainQueue() {
     pending.shift()
     warming = pending.length ? prepareServerAudio(pending[0], myGen) : null
     if (myGen !== generation) break
-    if (prepared) await playServerAudio(prepared)
+    if (prepared) await playServerAudio({ ...prepared, text: item.text })
     /* No token, or the server refused this burst (not configured / expired /
        out of credits): that sentence is still worth hearing, so it goes to the
        engine while the queue moves on. */
@@ -364,6 +366,8 @@ function playServerAudio(prepared) {
     }
     audio.onended = finish
     audio.onerror = finish
+    /* lip-sync: the particle face opens its mouth per syllable of this sentence */
+    trackAudio(audio, prepared.text || '')
     beginBurst()
     audio.play().catch(finish)
   })
@@ -429,6 +433,7 @@ function utterOnEngine(plain, opts) {
   armStallPoke()
   const utter = new SpeechSynthesisUtterance(plain)
   configureUtterForSpeech(utter, getCachedVoices(), { language: opts?.language, gender: opts?.gender })
+  trackUtterance(utter)
   let settled = false
   liveUtterances.add(utter)
   const done = () => {
@@ -438,6 +443,7 @@ function utterOnEngine(plain, opts) {
     settled = true
     if (!liveUtterances.delete(utter)) return
     engineOutstanding = Math.max(0, engineOutstanding - 1)
+    if (!engineOutstanding) speechEnd()
     /* Queue the merged follow-up BEFORE notifying, so the burst never reads as
        finished between two chunks of the same reply. A cancel bumps the
        generation and empties `held`, so nothing stale is spoken. */

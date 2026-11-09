@@ -2,6 +2,48 @@ import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import femalePhoto from './assets/portrait-female.png'
 import malePhoto from './assets/portrait-male.png'
+import { isSpeechActive, mouthLevel } from './speechViz.js'
+
+/* Holographic palette (dark indigo → electric blue → cyan → violet → pink
+   highlight). A portrait's own photo brightness picks the stop, so shadows read
+   deep blue and lit skin glows cyan/violet — a sci-fi hologram, not grey dust. */
+const HOLO_STOPS = [
+  [0, [0.04, 0.08, 0.32]],
+  [0.3, [0.15, 0.39, 0.92]],
+  [0.55, [0.13, 0.83, 0.93]],
+  [0.8, [0.65, 0.55, 0.98]],
+  [1, [0.96, 0.67, 0.99]],
+]
+function holoAt(t) {
+  const x = t < 0 ? 0 : t > 1 ? 1 : t
+  for (let i = 1; i < HOLO_STOPS.length; i += 1) {
+    const [p1, c1] = HOLO_STOPS[i]
+    if (x <= p1) {
+      const [p0, c0] = HOLO_STOPS[i - 1]
+      const k = (x - p0) / (p1 - p0)
+      return [c0[0] + (c1[0] - c0[0]) * k, c0[1] + (c1[1] - c0[1]) * k, c0[2] + (c1[2] - c0[2]) * k]
+    }
+  }
+  return HOLO_STOPS[HOLO_STOPS.length - 1][1]
+}
+/* Recolour a photo-tinted particle set into the hologram palette, keeping a
+   little of the real colour so lips and eyes still read. */
+function holoize(src, targets, count) {
+  const out = new Float32Array(count * 3)
+  for (let i = 0; i < count; i += 1) {
+    const b = i * 3
+    const l = 0.299 * src[b] + 0.587 * src[b + 1] + 0.114 * src[b + 2]
+    const y = targets[b + 1]
+    /* the power curve keeps mid-tones in the blue/cyan band so only real
+       highlights reach violet/pink — otherwise lit skin washes out to white */
+    const g = holoAt(Math.pow(l, 1.5) * 0.86 + ((y + 2.6) / 5.2) * 0.14)
+    const lit = 0.38 + 0.78 * l
+    out[b] = Math.min(1, (g[0] * 0.9 + src[b] * 0.1) * lit)
+    out[b + 1] = Math.min(1, (g[1] * 0.9 + src[b + 1] * 0.1) * lit)
+    out[b + 2] = Math.min(1, (g[2] * 0.9 + src[b + 2] * 0.1) * lit)
+  }
+  return out
+}
 
 /**
  * 30k silver nano particles that live in one of three shapes:
@@ -759,7 +801,7 @@ function photoTargets(img, count, { tolerance = 26, worldMax = 5.4, lift = 0.1, 
   return arr
 }
 
-export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl = null, onFaceBox = null, state = 'idle', focusY = 0.2 }) {
+export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl = null, onFaceBox = null, state = 'idle', focusY = 0.2, voiceSync = false }) {
   const mountRef = useRef(null)
   const shapeRef = useRef(shape)
   shapeRef.current = shape
@@ -773,6 +815,9 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
      'idle' breathing + sway · 'listening' lean-in · 'thinking' look-away · 'talking' lip-sync */
   const stateRef = useRef(state)
   stateRef.current = state
+  /* true when replies are spoken aloud: then ONLY the real voice moves the lips */
+  const voiceSyncRef = useRef(voiceSync)
+  voiceSyncRef.current = voiceSync
   const customTargetsRef = useRef(null)
   const customColorsRef = useRef(null)
   /* per-particle mouth weight + jaw flag for the custom photo (parallel to targets) */
@@ -812,7 +857,7 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
           jawOut,
           onBox: (box) => { if (!cancelled) onFaceBoxRef.current?.(box) },
         })
-        customColorsRef.current = colorsOut
+        customColorsRef.current = holoize(colorsOut, customTargetsRef.current, count)
         customMouthRef.current = mouthOut
         customJawRef.current = jawOut
       } catch {
@@ -857,16 +902,16 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
     resizeObserver.observe(container)
 
     /* Silver palette for the particles: bright white-silver → cool grey → gunmetal shimmer */
-    const palette = [new THREE.Color('#f2f4f8'), new THREE.Color('#d0d5df'), new THREE.Color('#a8afbf'), new THREE.Color('#e6e9f0')]
+    const palette = [new THREE.Color('#5eead4'), new THREE.Color('#38bdf8'), new THREE.Color('#818cf8'), new THREE.Color('#c084fc'), new THREE.Color('#f472b6'), new THREE.Color('#e0f2fe')]
 
     /* The core: a dark gunmetal orb — the bright silver particles pop clearly against it */
     const core = new THREE.Mesh(
       new THREE.SphereGeometry(1.55, 48, 48),
-      new THREE.MeshBasicMaterial({ color: 0x272b36 }),
+      new THREE.MeshBasicMaterial({ color: 0x0b1235 }),
     )
     const halo = new THREE.Mesh(
       new THREE.SphereGeometry(1.95, 48, 48),
-      new THREE.MeshBasicMaterial({ color: 0x6d7484, transparent: true, opacity: 0.12, blending: THREE.AdditiveBlending, depthWrite: false }),
+      new THREE.MeshBasicMaterial({ color: 0x6d5cff, transparent: true, opacity: 0.16, blending: THREE.AdditiveBlending, depthWrite: false }),
     )
     scene.add(core, halo)
 
@@ -918,7 +963,7 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
 
     /* Thin bright ring that reads as the orbit circle (fades out in portrait mode) */
     const ringGeometry = new THREE.TorusGeometry(2.55, 0.012, 8, 220)
-    const ringMaterial = new THREE.MeshBasicMaterial({ color: 0xd8dde6, transparent: true, opacity: 0.35 })
+    const ringMaterial = new THREE.MeshBasicMaterial({ color: 0x67e8f9, transparent: true, opacity: 0.35 })
     const orbitRing = new THREE.Mesh(ringGeometry, ringMaterial)
     orbitRing.rotation.x = Math.PI / 2.15
     scene.add(orbitRing)
@@ -928,8 +973,8 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
     const dotGeometry = new THREE.BufferGeometry()
     const dotPositions = new Float32Array(DOT_COUNT * 3)
     const dotColors = new Float32Array(DOT_COUNT * 3)
-    const dotBright = new THREE.Color('#e6e9f0')
-    const dotDim = new THREE.Color('#8d95a8')
+    const dotBright = new THREE.Color('#67e8f9')
+    const dotDim = new THREE.Color('#8b5cf6')
     for (let i = 0; i < DOT_COUNT; i += 1) {
       const angle = (i / DOT_COUNT) * Math.PI * 2
       const r = 3.1 + (i % 7 === 0 ? 0.07 : 0) /* every 7th dot ticks outward like a clock mark */
@@ -982,7 +1027,7 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
           const fm = new Float32Array(count)
           const fj = new Float32Array(count)
           femaleTargets = photoTargets(fImg, count, { tolerance: 14, colorOut: fc, mouthOut: fm, jawOut: fj })
-          femaleColors = fc
+          femaleColors = holoize(fc, femaleTargets, count)
           femaleMouth = fm
           femaleJaw = fj
         }
@@ -991,7 +1036,7 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
           const mm = new Float32Array(count)
           const mj = new Float32Array(count)
           maleTargets = photoTargets(mImg, count, { tolerance: 14, colorOut: mc, mouthOut: mm, jawOut: mj })
-          maleColors = mc
+          maleColors = holoize(mc, maleTargets, count)
           maleMouth = mm
           maleJaw = mj
         }
@@ -1044,15 +1089,25 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
       let speech = 0
       if (st === 'listening') { tLean = 0.5; tTilt = 0.06 }
       else if (st === 'thinking') { tTurn = 0.55; tTilt = -0.12; tLean = -0.18 }
-      else if (st === 'talking') {
+      /* Lips follow the words actually being spoken (speechViz.js schedules a bump
+         per syllable and re-syncs on every word boundary). Only when replies are
+         NOT voiced does the streaming text fall back to a generic talking cadence. */
+      const voiceLive = isSpeechActive()
+      let talkingNow = false
+      if (voiceLive) {
+        speech = mouthLevel()
+        tLean = 0.12
+        talkingNow = true
+      } else if (st === 'talking' && !voiceSyncRef.current) {
         /* two detuned sines ≈ a natural syllable cadence (0..1) */
         speech = Math.abs(Math.sin(elapsed * 10.5)) * 0.62 + Math.abs(Math.sin(elapsed * 6.7 + 1.1)) * 0.38
         tLean = 0.12
+        talkingNow = true
       }
       pose.turn += (tTurn - pose.turn) * 0.06
       pose.tilt += (tTilt - pose.tilt) * 0.06
       pose.lean += (tLean - pose.lean) * 0.06
-      mouthOpen += (speech - mouthOpen) * 0.4
+      mouthOpen += (speech - mouthOpen) * 0.5
 
       /* Ease every particle toward its target — the "assembling" effect — while the
          mouth particles ride the speech envelope: the lower lip drops and eases
@@ -1060,6 +1115,7 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
       const pos = cloudGeometry.attributes.position.array
       const col = cloudGeometry.attributes.color.array
       const openAmt = mouthOpen * morphFactor
+      const scanY = 2.8 - ((elapsed * 0.32) % 1) * 6
       for (let p = 0; p < count; p += 1) {
         const b = p * 3
         let tx = targets[b]
@@ -1069,15 +1125,21 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
           const w = mouth[p]
           if (w > 0) {
             const amt = openAmt * w
-            if (jaw[p] === 1) { ty -= amt * 0.22; tz -= amt * 0.06 } else { ty += amt * 0.06 }
+            if (jaw[p] === 1) { ty -= amt * 0.3; tz -= amt * 0.07 } else { ty += amt * 0.07 }
           }
         }
         pos[b] += (tx - pos[b]) * 0.09
         pos[b + 1] += (ty - pos[b + 1]) * 0.09
         pos[b + 2] += (tz - pos[b + 2]) * 0.09
-        col[b] += ((tint ? tint[b] : orbColors[b]) - col[b]) * 0.09
-        col[b + 1] += ((tint ? tint[b + 1] : orbColors[b + 1]) - col[b + 1]) * 0.09
-        col[b + 2] += ((tint ? tint[b + 2] : orbColors[b + 2]) - col[b + 2]) * 0.09
+        /* hologram scan line: a bright cyan band sweeps down the portrait */
+        let sb = 0
+        if (morphFactor > 0.05) {
+          const dy = (ty - scanY) / 0.16
+          if (dy > -3 && dy < 3) sb = Math.exp(-dy * dy) * 0.45 * morphFactor
+        }
+        col[b] += ((tint ? tint[b] : orbColors[b]) + sb * 0.3 - col[b]) * 0.09
+        col[b + 1] += ((tint ? tint[b + 1] : orbColors[b + 1]) + sb - col[b + 1]) * 0.09
+        col[b + 2] += ((tint ? tint[b + 2] : orbColors[b + 2]) + sb - col[b + 2]) * 0.09
       }
       cloudGeometry.attributes.position.needsUpdate = true
       cloudGeometry.attributes.color.needsUpdate = true
@@ -1090,7 +1152,7 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
       const breath = Math.sin(elapsed * 1.15) * 0.03
       const sway = Math.sin(elapsed * 0.45) * 0.035
       const nod = Math.sin(elapsed * 0.9) * 0.02
-      const talkBob = st === 'talking' ? Math.sin(elapsed * 8.5) * 0.025 * mouthOpen : 0
+      const talkBob = talkingNow ? Math.sin(elapsed * 8.5) * 0.025 * mouthOpen : 0
       cloud.rotation.y = spinY * (1 - morphFactor) + (sideTurn + pose.turn + sway) * morphFactor
       cloud.rotation.x = Math.sin(elapsed * 0.25) * 0.12 * (1 - morphFactor) + (nod + talkBob) * morphFactor
       cloud.rotation.z = (pose.tilt + Math.sin(elapsed * 0.6) * 0.012) * morphFactor

@@ -83,6 +83,7 @@ import { captureCurrentPage, captureNode, captureSelfFace } from './selfCapture.
 import { useWakeWord } from './useWakeWord.js'
 import { configureUtterForSpeech, warmVoiceList } from './voiceSelect.js'
 import { streamFeed, streamFinal, cancelSpeakQueue, setSpeakMarkers } from './sentenceSpeak.js'
+import { speechEnd, trackAudio, trackUtterance } from './speechViz.js'
 /* Frontend mirror of the backend's WORLD_LANGUAGES table. Adding a language on
    the server without adding it here fails the "language mirror cannot drift"
    test in api.test.mjs, so the two lists cannot silently disagree. */
@@ -218,8 +219,10 @@ function speakWakeLine(text, { language, gender, onEnd } = {}) {
     if (window.speechSynthesis.speaking || window.speechSynthesis.pending) window.speechSynthesis.cancel()
     const utter = new SpeechSynthesisUtterance(text)
     configureUtterForSpeech(utter, window.speechSynthesis.getVoices(), { language, gender })
-    utter.onend = () => { markAiSpeakingEnd(); onEnd?.() }
+    trackUtterance(utter)
+    utter.onend = () => { speechEnd(); markAiSpeakingEnd(); onEnd?.() }
     utter.onerror = (ev) => {
+      speechEnd()
       /* No voice for this language on the phone (Urdu usually) — say it once
          more on an English voice rather than staying silent. */
       if (language !== 'en' && ['language-unavailable', 'voice-unavailable', 'synthesis-failed'].includes(ev?.error)) {
@@ -345,6 +348,7 @@ async function speakAssistantReply(text, { language, gender, authToken, voice, o
       audio.onended = () => { try { URL.revokeObjectURL(url) } catch { /* ignore */ }; if (currentServerAudio === audio) currentServerAudio = null; markAiSpeakingEnd(); onEnd?.() }
       audio.onerror = () => { try { URL.revokeObjectURL(url) } catch { /* ignore */ }; if (currentServerAudio === audio) currentServerAudio = null; markAiSpeakingEnd(); onEnd?.() }
       currentServerAudio = audio
+      trackAudio(audio, plain)
       /* Stamp barge-in tracker BEFORE play() so the 800 ms grace window starts
          ticking from the moment sound actually begins on the wire. */
       markAiSpeakingStart()
@@ -3846,13 +3850,21 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
             </>
           ) : (
             <>
-              <div className="chat-face" aria-hidden="true">
-                <div className="chat-face-stage">
-                  <Suspense fallback={null}>
-                    <NanoParticles count={16000} shape={voicePrefs.gender === 'male' ? 'male' : 'female'} state={streaming ? (messages.some((m) => m.streaming && m.content) ? 'talking' : 'thinking') : prompt.trim() ? 'listening' : 'idle'} />
-                  </Suspense>
-                </div>
-              </div>
+              {(() => {
+                const faceState = streaming ? (messages.some((m) => m.streaming && m.content) ? 'talking' : 'thinking') : prompt.trim() ? 'listening' : 'idle'
+                const faceLabel = { talking: 'is replying', thinking: 'is thinking', listening: 'is listening', idle: 'is online' }[faceState]
+                return (
+                  <div className={`chat-face face-${faceState}`} aria-hidden="true">
+                    <span className="chat-face-corner tl" /><span className="chat-face-corner tr" /><span className="chat-face-corner bl" /><span className="chat-face-corner br" />
+                    <div className="chat-face-stage">
+                      <Suspense fallback={null}>
+                        <NanoParticles count={16000} shape={voicePrefs.gender === 'male' ? 'male' : 'female'} state={faceState} voiceSync={speakReplies} />
+                      </Suspense>
+                    </div>
+                    <div className="chat-face-status"><i />{aiName} {faceLabel}</div>
+                  </div>
+                )
+              })()}
               <div className="chat-body">
               <div className="chat-thread-bar">
                 <span className="chat-thread-title">{aiName}<b className="chat-thread-dot" aria-hidden="true" /></span>
