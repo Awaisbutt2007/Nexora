@@ -203,12 +203,24 @@ export async function POST(req) {
   const stream = new ReadableStream({
     async start(controller) {
       const reader = upstream.body.getReader()
+      const decoder = new TextDecoder()
+      const encoder = new TextEncoder()
+      /* Line-buffered relay: the provider's model id ("qwen/…") is replaced with
+         "nexora" so the browser never learns which engine answers — same rule as the
+         full backend (publicModelLabel). A chunk can end mid-line, so hold the tail. */
+      let tail = ''
+      const scrub = (s) => s.replace(/"model":"[^"]*"/g, '"model":"nexora"')
       try {
         for (;;) {
           const { value, done } = await reader.read()
           if (done) break
-          controller.enqueue(value)
+          const text = tail + decoder.decode(value, { stream: true })
+          const cut = text.lastIndexOf('\n')
+          if (cut === -1) { tail = text; continue }
+          tail = text.slice(cut + 1)
+          controller.enqueue(encoder.encode(scrub(text.slice(0, cut + 1))))
         }
+        if (tail) controller.enqueue(encoder.encode(scrub(tail)))
       } catch {
         controller.enqueue(new TextEncoder().encode('data: {"error":{"message":"The reply was interrupted — please try again."}}\n\n'))
       } finally {
