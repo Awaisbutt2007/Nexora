@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom'
 import './Nexora.css'
 import './typography.css'
 import { Icon } from './icons.jsx'
+import Toast from './Toast.jsx'
 import SignIn from './SignIn.jsx'
 import workspaceShot from './assets/workspace-shot.png'
 import workspaceSchedule from './assets/workspace-schedule.png'
@@ -4052,7 +4053,7 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
             aria-live="polite" but not "assertive" — Chrome refines the text
             every ~200 ms and screen readers would otherwise stutter. */}
         {wakeLive && <div className="wake-live-caption" aria-live="polite"><span className="wake-live-dot" aria-hidden="true" /><em>You, saying:</em> {wakeLive}</div>}
-        {notice && <div className="toast-message" role="status"><Icon name="sparkle" size={14} />{notice}<button type="button" aria-label="Dismiss notification" onClick={() => setNotice('')}>×</button></div>}
+        <Toast text={notice} onClose={() => setNotice('')} />
       </div>
     </section>
 
