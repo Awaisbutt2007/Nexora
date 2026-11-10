@@ -38,7 +38,10 @@ export function moodFromText(text) {
   if (!t.trim()) return { mood: 'neutral', strength: 0 }
   let best = 'neutral'
   let bestScore = 0
-  for (const [mood, rules] of Object.entries(LEXICON)) {
+  /* the heavier feelings are checked first so a tie never reads as "happy"
+     (a comforting "you're not alone 💖" is not a cheerful message) */
+  for (const mood of ['sad', 'angry', 'surprised', 'happy']) {
+    const rules = LEXICON[mood]
     let score = 0
     for (const re of rules) {
       const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : `${re.flags}g`)
@@ -85,10 +88,15 @@ export function setFaceMood(mood, strength = 0.8, holdMs = 9000) {
     the face mirrors their feeling with empathy) and show it. */
 export function feelTurn(replyText, userText = '', holdMs = 9000) {
   let r = moodFromText(replyText)
-  if (r.mood === 'neutral' && userText) {
-    const u = moodFromText(userText)
-    /* mirror sadness / surprise / joy; answer anger with concern, not anger */
-    if (u.mood !== 'neutral') r = { mood: u.mood === 'angry' ? 'sad' : u.mood, strength: u.strength * 0.8 }
+  const u = userText ? moodFromText(userText) : { mood: 'neutral', strength: 0 }
+  /* empathy: when the user is hurting or upset, a warm reply ("you're not
+     alone 💖") should show concern on her face, not a cheerful smile */
+  const userHurting = u.mood === 'sad' || u.mood === 'angry'
+  if (userHurting && (r.mood === 'happy' || r.mood === 'neutral')) {
+    r = { mood: 'sad', strength: Math.max(0.65, u.strength * 0.85) }
+  } else if (r.mood === 'neutral' && u.mood !== 'neutral') {
+    /* otherwise mirror the user's surprise or joy */
+    r = { mood: u.mood, strength: u.strength * 0.8 }
   }
   if (r.mood === 'neutral') {
     if (currentMood !== 'neutral' && performance.now() < holdUntil) return currentMood
