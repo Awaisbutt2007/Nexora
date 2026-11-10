@@ -1290,8 +1290,8 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
       const ang = mw.angry
       const sur = mw.surprised
       /* lids: blink closes, a smile and anger squint, surprise widens */
-      const lid = Math.min(1, blink + hap * 0.28 + ang * 0.32 + sad * 0.18) - sur * 0.45
-      const corner = hap * 0.17 - sad * 0.13 - ang * 0.05
+      const lid = Math.min(1, blink + hap * 0.18 + ang * 0.3 + sad * 0.15) - sur * 0.45
+      const corner = hap * 0.3 - sad * 0.24 - ang * 0.08
       const widen = hap * 0.05
       const exprOn = !!feat && morphFactor > 0.05
 
@@ -1327,8 +1327,9 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
           const mx = feat[f + 4]
           if (mx !== 0 && mouth) {
             const w = mouth[p]
-            ty += corner * (mx * mx - 0.2) * w * morphFactor
-            tx += mx * w * widen * morphFactor
+            const cw = Math.pow(w, 0.35)
+            ty += corner * (mx * mx * 1.25 - 0.22) * cw * morphFactor
+            tx += mx * cw * widen * morphFactor
           }
           /* eyelids squeeze toward (or open away from) the eye line */
           const ew = feat[f]
@@ -1339,8 +1340,8 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
           if (bw > 0) {
             const side = feat[f + 3]
             const inner = 1 - Math.min(1, Math.abs(side))
-            ty += bw * morphFactor * (sur * 0.16 + sad * 0.12 * inner - sad * 0.03 - ang * 0.15 * inner + hap * 0.04)
-            tx -= Math.sign(side) * bw * morphFactor * ang * 0.05 * inner
+            ty += bw * morphFactor * (sur * 0.22 + sad * 0.18 * inner - sad * 0.05 - ang * 0.2 * inner + hap * 0.05)
+            tx -= Math.sign(side) * bw * morphFactor * ang * 0.07 * inner
           }
         }
         pos[b] += (tx - pos[b]) * 0.09
