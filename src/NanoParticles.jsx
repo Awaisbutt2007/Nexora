@@ -3,6 +3,7 @@ import * as THREE from 'three'
 import femalePhoto from './assets/portrait-female.png'
 import malePhoto from './assets/portrait-male.png'
 import { isSpeechActive, mouthLevel } from './speechViz.js'
+import { moodWeights } from './faceMood.js'
 
 /* Holographic palette (dark indigo → electric blue → cyan → violet → pink
    highlight). A portrait's own photo brightness picks the stop, so shadows read
@@ -597,6 +598,60 @@ function findLips(data, W, H, head) {
   return { x: Math.round(x), y: bestY }
 }
 
+/* Per-particle expression features, FEAT floats each:
+   [0] eyelid weight · [1] world-y offset from the eye line · [2] brow weight ·
+   [3] brow side (-1 outer-left … 0 between the brows … +1 outer-right) ·
+   [4] signed position across the mouth (corners at ±1) */
+const FEAT = 5
+
+/* Find the eyes above the lips: the eye row has the strongest horizontal
+   contrast in the face (whites, iris, lashes) — brows and the forehead are
+   smooth by comparison. Returns { y, xl, xr } in pixel space, or null. */
+function findEyes(data, W, H, head, lipX, lipY) {
+  const fw = head.faceW
+  const y0 = Math.max(1, Math.round(lipY - fw * 0.9))
+  const y1 = Math.min(H - 2, Math.round(lipY - fw * 0.18))
+  if (y1 - y0 < 6) return null
+  const inner = Math.round(fw * 0.06)
+  const outer = Math.round(fw * 0.38)
+  const lumaAt = (x, y) => lumaOf(data, (y * W + x) * 4)
+  const sideGrad = (y, from, to) => {
+    let g = 0
+    let gx = 0
+    for (let x = Math.max(1, from); x <= Math.min(W - 1, to); x += 1) {
+      const v = Math.abs(lumaAt(x, y) - lumaAt(x - 1, y))
+      g += v
+      gx += v * x
+    }
+    return [g, gx]
+  }
+  const rows = new Float32Array(y1 - y0 + 1)
+  for (let y = y0; y <= y1; y += 1) {
+    rows[y - y0] = sideGrad(y, lipX - outer, lipX - inner)[0] + sideGrad(y, lipX + inner, lipX + outer)[0]
+  }
+  let best = 0
+  let eyeY = -1
+  for (let k = 1; k < rows.length - 1; k += 1) {
+    const v = rows[k - 1] + rows[k] * 2 + rows[k + 1]
+    if (v > best) { best = v; eyeY = y0 + k }
+  }
+  if (eyeY < 0) return null
+  let lg = 0
+  let lgx = 0
+  let rg = 0
+  let rgx = 0
+  for (let y = eyeY - 2; y <= eyeY + 2; y += 1) {
+    const [a, ax] = sideGrad(y, lipX - outer, lipX - inner)
+    const [b, bx] = sideGrad(y, lipX + inner, lipX + outer)
+    lg += a; lgx += ax; rg += b; rgx += bx
+  }
+  if (!lg || !rg) return null
+  const xl = lgx / lg
+  const xr = rgx / rg
+  if (xr - xl < 6) return null
+  return { y: eyeY, xl, xr }
+}
+
 /* Sample particle targets straight from a real photo.
    Background is peeled off with a border flood-fill, then foreground pixels
    become particle targets with brightness-weighted density + fake depth.
@@ -605,7 +660,7 @@ function findLips(data, W, H, head) {
    the head ellipse is dropped — so no wall and no body ever becomes particles.
    colorOut: pass a Float32Array(count * 3) to receive each particle's source
    colour, so the point cloud reads as the real person instead of flat silver. */
-function photoTargets(img, count, { tolerance = 26, worldMax = 5.4, lift = 0.1, faceCrop = false, onBox = null, colorOut = null, mouthOut = null, jawOut = null } = {}) {
+function photoTargets(img, count, { tolerance = 26, worldMax = 5.4, lift = 0.1, faceCrop = false, onBox = null, colorOut = null, mouthOut = null, jawOut = null, featOut = null } = {}) {
   const iw = img.naturalWidth || img.width
   const ih = img.naturalHeight || img.height
   if (!iw || !ih) throw new Error('empty image')
@@ -634,6 +689,7 @@ function photoTargets(img, count, { tolerance = 26, worldMax = 5.4, lift = 0.1, 
   let mouthY = -1
   let mouthRX = 0
   let mouthRY = 0
+  let eyes = null
   if (mouthOut && headDetect && headDetect.faceW) {
     const fw = headDetect.faceW
     mouthX = headDetect.cx
@@ -647,6 +703,7 @@ function photoTargets(img, count, { tolerance = 26, worldMax = 5.4, lift = 0.1, 
     if (lip) { mouthY = lip.y; mouthX = lip.x }
     mouthRX = fw * 0.2
     mouthRY = fw * 0.1
+    eyes = findEyes(data, W, H, headDetect, mouthX, mouthY)
   }
   let cx0 = 0
   let cy0 = 0
@@ -856,6 +913,27 @@ function photoTargets(img, count, { tolerance = 26, worldMax = 5.4, lift = 0.1, 
       if (dd < 1) {
         mouthOut[i] = Math.pow(1 - dd, 1.15)
         if (jawOut) jawOut[i] = py > mouthY ? 1 : 0
+        /* signed position across the mouth (-1 left corner … +1 right corner) */
+        if (featOut) featOut[i * FEAT + 4] = Math.max(-1, Math.min(1, ddx))
+      }
+    }
+    /* expression features: eyelids (blink / squint / widen) and brows */
+    if (featOut && eyes) {
+      const d = (eyes.xr - eyes.xl) / 2
+      const ex = px < (eyes.xl + eyes.xr) / 2 ? eyes.xl : eyes.xr
+      const ex2 = (px - ex) / (d * 0.62)
+      const ey2 = (py - eyes.y) / (d * 0.36)
+      const de = ex2 * ex2 + ey2 * ey2
+      if (de < 1) {
+        featOut[i * FEAT] = Math.pow(1 - de, 0.7)
+        featOut[i * FEAT + 1] = -(py - eyes.y) * scale
+      }
+      const bx2 = (px - ex) / (d * 0.78)
+      const by2 = (py - (eyes.y - d * 0.62)) / (d * 0.3)
+      const db = bx2 * bx2 + by2 * by2
+      if (db < 1) {
+        featOut[i * FEAT + 2] = Math.pow(1 - db, 0.8)
+        featOut[i * FEAT + 3] = Math.max(-1, Math.min(1, (px - (eyes.xl + eyes.xr) / 2) / (d * 1.7)))
       }
     }
   }
@@ -884,6 +962,7 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
   /* per-particle mouth weight + jaw flag for the custom photo (parallel to targets) */
   const customMouthRef = useRef(null)
   const customJawRef = useRef(null)
+  const customFeatRef = useRef(null)
   /* keep the caller in a ref: an inline prop function would otherwise re-run
      the photo-decode effect on every render */
   const onFaceBoxRef = useRef(onFaceBox)
@@ -898,6 +977,7 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
       customColorsRef.current = null
       customMouthRef.current = null
       customJawRef.current = null
+      customFeatRef.current = null
       onFaceBoxRef.current?.(null)
       return undefined
     }
@@ -907,6 +987,7 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
       const colorsOut = new Float32Array(count * 3)
       const mouthOut = new Float32Array(count)
       const jawOut = new Float32Array(count)
+      const featOut = new Float32Array(count * FEAT)
       try {
         customTargetsRef.current = photoTargets(img, count, {
           tolerance: 14,
@@ -916,19 +997,22 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
           colorOut: colorsOut,
           mouthOut,
           jawOut,
+          featOut,
           onBox: (box) => { if (!cancelled) onFaceBoxRef.current?.(box) },
         })
         customColorsRef.current = holoize(colorsOut, customTargetsRef.current, count)
         customMouthRef.current = mouthOut
         customJawRef.current = jawOut
+        customFeatRef.current = featOut
       } catch {
         customTargetsRef.current = null
         customColorsRef.current = null
         customMouthRef.current = null
         customJawRef.current = null
+        customFeatRef.current = null
       }
     }
-    img.onerror = () => { customTargetsRef.current = null; customColorsRef.current = null; customMouthRef.current = null; customJawRef.current = null; onFaceBoxRef.current?.(null) }
+    img.onerror = () => { customTargetsRef.current = null; customColorsRef.current = null; customMouthRef.current = null; customJawRef.current = null; customFeatRef.current = null; onFaceBoxRef.current?.(null) }
     img.src = photoUrl
     return () => { cancelled = true }
   }, [photoUrl, count])
@@ -1072,6 +1156,8 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
     let femaleJaw = null
     let maleMouth = null
     let maleJaw = null
+    let femaleFeat = null
+    let maleFeat = null
     let portraitsCancelled = false
     const loadImage = (src) =>
       new Promise((resolve) => {
@@ -1087,7 +1173,9 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
           const fc = new Float32Array(count * 3)
           const fm = new Float32Array(count)
           const fj = new Float32Array(count)
-          femaleTargets = photoTargets(fImg, count, { tolerance: 14, colorOut: fc, mouthOut: fm, jawOut: fj })
+          const ff = new Float32Array(count * FEAT)
+          femaleTargets = photoTargets(fImg, count, { tolerance: 14, colorOut: fc, mouthOut: fm, jawOut: fj, featOut: ff })
+          femaleFeat = ff
           femaleColors = holoize(fc, femaleTargets, count)
           femaleMouth = fm
           femaleJaw = fj
@@ -1096,7 +1184,9 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
           const mc = new Float32Array(count * 3)
           const mm = new Float32Array(count)
           const mj = new Float32Array(count)
-          maleTargets = photoTargets(mImg, count, { tolerance: 14, colorOut: mc, mouthOut: mm, jawOut: mj })
+          const mf = new Float32Array(count * FEAT)
+          maleTargets = photoTargets(mImg, count, { tolerance: 14, colorOut: mc, mouthOut: mm, jawOut: mj, featOut: mf })
+          maleFeat = mf
           maleColors = holoize(mc, maleTargets, count)
           maleMouth = mm
           maleJaw = mj
@@ -1105,9 +1195,16 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
     })
 
     const pointer = { x: 0, y: 0 }
+    /* Eye contact: the face turns toward the pointer, measured from the face
+       itself (not the window centre), so it looks at where the user is. */
+    let lastPointerAt = 0
     const onPointerMove = (event) => {
-      pointer.x = (event.clientX / window.innerWidth) * 2 - 1
-      pointer.y = (event.clientY / window.innerHeight) * 2 - 1
+      const r = container.getBoundingClientRect()
+      const fx = r.left + r.width / 2
+      const fy = r.top + r.height * 0.4
+      pointer.x = Math.max(-1, Math.min(1, (event.clientX - fx) / (window.innerWidth * 0.5)))
+      pointer.y = Math.max(-1, Math.min(1, (event.clientY - fy) / (window.innerHeight * 0.5)))
+      lastPointerAt = performance.now()
     }
     window.addEventListener('pointermove', onPointerMove)
 
@@ -1117,6 +1214,10 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
     /* Eased "human" pose so a state change glides instead of snapping */
     const pose = { turn: 0, tilt: 0, lean: 0 }
     let mouthOpen = 0
+    /* blink: an eyelid close/open every few seconds, sometimes a double blink */
+    let nextBlink = 1.5 + Math.random() * 2
+    let blinkStart = -1
+    const gaze = { x: 0, y: 0 }
     /* THREE.Clock is deprecated (logs a console warning on every mount); a plain
        performance.now() delta gives the same seconds-since-mount for the animation. */
     const startTime = performance.now()
@@ -1141,6 +1242,8 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
          procedural fallback, so the mouth simply stays still until a photo lands. */
       const mouth = hasCustom ? customMouthRef.current : currentShape === 'female' ? femaleMouth : currentShape === 'male' ? maleMouth : null
       const jaw = hasCustom ? customJawRef.current : currentShape === 'female' ? femaleJaw : currentShape === 'male' ? maleJaw : null
+      const feat = hasCustom ? customFeatRef.current : currentShape === 'female' ? femaleFeat : currentShape === 'male' ? maleFeat : null
+      const mw = moodWeights()
 
       /* ---- behaviour → pose targets (blended in by morphFactor below) ---- */
       const st = stateRef.current
@@ -1170,6 +1273,28 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
       pose.lean += (tLean - pose.lean) * 0.06
       mouthOpen += (speech - mouthOpen) * 0.5
 
+      /* blink envelope 0..1 (fast close, slightly slower open) */
+      if (blinkStart < 0 && elapsed > nextBlink) blinkStart = elapsed
+      let blink = 0
+      if (blinkStart >= 0) {
+        const bt = elapsed - blinkStart
+        blink = bt < 0.07 ? bt / 0.07 : bt < 0.2 ? 1 - (bt - 0.07) / 0.13 : 0
+        if (bt >= 0.2) {
+          blinkStart = -1
+          nextBlink = elapsed + (Math.random() < 0.18 ? 0.25 : 2.4 + Math.random() * 3.6)
+        }
+      }
+      /* expression amounts (world units are ~5.4 for the whole head) */
+      const hap = mw.happy
+      const sad = mw.sad
+      const ang = mw.angry
+      const sur = mw.surprised
+      /* lids: blink closes, a smile and anger squint, surprise widens */
+      const lid = Math.min(1, blink + hap * 0.28 + ang * 0.32 + sad * 0.18) - sur * 0.45
+      const corner = hap * 0.17 - sad * 0.13 - ang * 0.05
+      const widen = hap * 0.05
+      const exprOn = !!feat && morphFactor > 0.05
+
       /* Ease every particle toward its target — the "assembling" effect — while the
          mouth particles ride the speech envelope: the lower lip drops and eases
          forward, the upper lip lifts a touch, so the face reads as actually talking. */
@@ -1177,16 +1302,45 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
       const col = cloudGeometry.attributes.color.array
       const openAmt = mouthOpen * morphFactor
       const scanY = 2.8 - ((elapsed * 0.32) % 1) * 6
+      /* the hologram warms with joy, cools with sadness, reddens with anger */
+      const moodSum = hap + sad + ang + sur
+      const moodTint = Math.min(1, moodSum) * 0.34 * morphFactor
+      const moodR = moodSum > 0 ? (hap * 1.0 + sad * 0.42 + ang * 1.0 + sur * 0.8) / moodSum : 0
+      const moodG = moodSum > 0 ? (hap * 0.7 + sad * 0.62 + ang * 0.28 + sur * 0.95) / moodSum : 0
+      const moodB = moodSum > 0 ? (hap * 0.62 + sad * 1.0 + ang * 0.36 + sur * 1.0) / moodSum : 0
       for (let p = 0; p < count; p += 1) {
         const b = p * 3
         let tx = targets[b]
         let ty = targets[b + 1]
         let tz = targets[b + 2]
-        if (mouth && openAmt > 0.001) {
+        if (mouth && (openAmt > 0.001 || sur > 0.01)) {
           const w = mouth[p]
           if (w > 0) {
-            const amt = openAmt * w
+            /* surprise parks the jaw a little open */
+            const amt = (openAmt + sur * 0.32 * morphFactor) * w
             if (jaw[p] === 1) { ty -= amt * 0.42; tz -= amt * 0.08 } else { ty += amt * 0.09 }
+          }
+        }
+        if (exprOn) {
+          const f = p * FEAT
+          /* mouth corners curl up (smile) or down (sad / angry), and widen */
+          const mx = feat[f + 4]
+          if (mx !== 0 && mouth) {
+            const w = mouth[p]
+            ty += corner * (mx * mx - 0.2) * w * morphFactor
+            tx += mx * w * widen * morphFactor
+          }
+          /* eyelids squeeze toward (or open away from) the eye line */
+          const ew = feat[f]
+          if (ew > 0) ty -= feat[f + 1] * ew * lid * 0.92 * morphFactor
+          /* brows: surprise lifts them, sadness lifts the inner ends, anger
+             drops the inner ends and pulls them together */
+          const bw = feat[f + 2]
+          if (bw > 0) {
+            const side = feat[f + 3]
+            const inner = 1 - Math.min(1, Math.abs(side))
+            ty += bw * morphFactor * (sur * 0.16 + sad * 0.12 * inner - sad * 0.03 - ang * 0.15 * inner + hap * 0.04)
+            tx -= Math.sign(side) * bw * morphFactor * ang * 0.05 * inner
           }
         }
         pos[b] += (tx - pos[b]) * 0.09
@@ -1198,9 +1352,17 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
           const dy = (ty - scanY) / 0.16
           if (dy > -3 && dy < 3) sb = Math.exp(-dy * dy) * 0.45 * morphFactor
         }
-        col[b] += ((tint ? tint[b] : orbColors[b]) + sb * 0.3 - col[b]) * 0.09
-        col[b + 1] += ((tint ? tint[b + 1] : orbColors[b + 1]) + sb - col[b + 1]) * 0.09
-        col[b + 2] += ((tint ? tint[b + 2] : orbColors[b + 2]) + sb - col[b + 2]) * 0.09
+        let cr = tint ? tint[b] : orbColors[b]
+        let cg = tint ? tint[b + 1] : orbColors[b + 1]
+        let cb = tint ? tint[b + 2] : orbColors[b + 2]
+        if (moodTint > 0.01) {
+          cr += (moodR * (0.55 + cr * 0.6) - cr) * moodTint
+          cg += (moodG * (0.55 + cg * 0.6) - cg) * moodTint
+          cb += (moodB * (0.55 + cb * 0.6) - cb) * moodTint
+        }
+        col[b] += (cr + sb * 0.3 - col[b]) * 0.09
+        col[b + 1] += (cg + sb - col[b + 1]) * 0.09
+        col[b + 2] += (cb + sb - col[b + 2]) * 0.09
       }
       cloudGeometry.attributes.position.needsUpdate = true
       cloudGeometry.attributes.color.needsUpdate = true
@@ -1209,16 +1371,22 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
          Idle life: breathing (rise/fall) + sway (yaw) + a gentle nod (pitch), with a
          livelier bob layered on while talking; lean/tilt/turn come from the state pose. */
       spinY += 0.0024
-      const sideTurn = -0.3 - Math.sin(elapsed * 0.5) * 0.06
+      /* face the user (eye contact) instead of a fixed 3/4 turn; follow the
+         pointer while it moves, drift back to looking straight out when idle */
+      const pointerFresh = performance.now() - lastPointerAt < 4000
+      gaze.x += ((pointerFresh ? pointer.x : 0) - gaze.x) * 0.05
+      gaze.y += ((pointerFresh ? pointer.y : 0) - gaze.y) * 0.05
+      const sideTurn = gaze.x * 0.34 - Math.sin(elapsed * 0.5) * 0.04
+      const moodNod = sad * 0.09 + ang * 0.05 - sur * 0.06 + gaze.y * 0.14
       const breath = Math.sin(elapsed * 1.15) * 0.03
       const sway = Math.sin(elapsed * 0.45) * 0.035
       const nod = Math.sin(elapsed * 0.9) * 0.02
       const talkBob = talkingNow ? Math.sin(elapsed * 8.5) * 0.025 * mouthOpen : 0
       cloud.rotation.y = spinY * (1 - morphFactor) + (sideTurn + pose.turn + sway) * morphFactor
-      cloud.rotation.x = Math.sin(elapsed * 0.25) * 0.12 * (1 - morphFactor) + (nod + talkBob) * morphFactor
-      cloud.rotation.z = (pose.tilt + Math.sin(elapsed * 0.6) * 0.012) * morphFactor
+      cloud.rotation.x = Math.sin(elapsed * 0.25) * 0.12 * (1 - morphFactor) + (nod + talkBob + moodNod) * morphFactor
+      cloud.rotation.z = (pose.tilt + Math.sin(elapsed * 0.6) * 0.012 + sad * 0.05 - hap * 0.035) * morphFactor
       cloud.position.y = breath * morphFactor
-      cloud.position.z = pose.lean * 0.5 * morphFactor
+      cloud.position.z = (pose.lean * 0.5 + ang * 0.12 - sur * 0.08) * morphFactor
 
       /* Core + ring shrink/fade away while the portrait forms */
       const orbPresence = Math.max(0.001, 1 - morphFactor * 1.25)
@@ -1242,8 +1410,11 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
       dotMaterial.opacity = morphFactor * (0.7 + Math.sin(elapsed * 2.6) * 0.25)
       dotMaterial.size = 0.05 + 0.012 * Math.sin(elapsed * 3.4)
 
-      camera.position.x += (pointer.x * 0.7 - camera.position.x) * 0.04
-      camera.position.y += (-pointer.y * 0.5 + 0.6 - camera.position.y) * 0.04
+      /* orb: camera parallax with the pointer. Portrait: the camera stays put so
+         the face keeps looking straight out at the user (the head turns instead) */
+      const parallax = 1 - morphFactor * 0.85
+      camera.position.x += (pointer.x * 0.7 * parallax - camera.position.x) * 0.04
+      camera.position.y += (-pointer.y * 0.5 * parallax + 0.6 - camera.position.y) * 0.04
       camera.lookAt(0, focusYRef.current, 0)
       renderer.render(scene, camera)
       raf = requestAnimationFrame(animate)

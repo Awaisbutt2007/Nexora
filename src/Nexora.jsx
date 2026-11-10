@@ -85,6 +85,7 @@ import { useWakeWord } from './useWakeWord.js'
 import { configureUtterForSpeech, warmVoiceList } from './voiceSelect.js'
 import { streamFeed, streamFinal, cancelSpeakQueue, setSpeakMarkers } from './sentenceSpeak.js'
 import { onSpeechChange, speechEnd, trackAudio, trackUtterance } from './speechViz.js'
+import { feelTurn, onMoodChange } from './faceMood.js'
 /* Frontend mirror of the backend's WORLD_LANGUAGES table. Adding a language on
    the server without adding it here fails the "language mirror cannot drift"
    test in api.test.mjs, so the two lists cannot silently disagree. */
@@ -2964,6 +2965,8 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
       { id: tempAsstId, role: 'assistant', content: spokenAck, streaming: true, ts: Date.now(), wakeAck: spokenAck || undefined },
     ])
     setStreaming(true)
+    /* the face reacts to what the user just said while she thinks */
+    feelTurn('', cleanPrompt, 12000)
 
     const controller = new AbortController()
     streamAbortRef.current = controller
@@ -3011,6 +3014,8 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
         conversationId,
         signal: controller.signal,
         onDelta: (_chunk, fullText) => {
+          /* her expression follows the feeling of the reply as it streams */
+          feelTurn(fullText, cleanPrompt, 14000)
           setMessages((prev) =>
             prev.map((m) => (m.id === tempAsstId ? { ...m, content: spokenAck + fullText } : m)),
           )
@@ -3549,6 +3554,9 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
   /* true while the AI voice is actually sounding — drives the face card status */
   const [aiVoiceLive, setAiVoiceLive] = useState(false)
   useEffect(() => onSpeechChange(setAiVoiceLive), [])
+  /* current facial mood (happy / sad / angry / surprised / neutral) for the face card */
+  const [faceMood, setFaceMoodState] = useState('neutral')
+  useEffect(() => onMoodChange(setFaceMoodState), [])
   const voiceOpenRef = useRef(voiceOpen)
   voiceOpenRef.current = voiceOpen
   /* The in-progress interim transcript — Chrome refines it every ~200 ms while
@@ -3866,7 +3874,9 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
                         <NanoParticles count={16000} shape={voicePrefs.gender === 'male' ? 'male' : 'female'} state={faceState} voiceSync={speakReplies} />
                       </Suspense>
                     </div>
-                    <div className="chat-face-status"><i />{aiName} {faceLabel}</div>
+                    <div className="chat-face-status"><i />{aiName} {faceLabel}{faceMood !== 'neutral' && (
+                      <span key={faceMood} className={`chat-face-mood mood-${faceMood}`}>{{ happy: '😊 happy', sad: '🥺 sad', angry: '😠 upset', surprised: '😮 surprised' }[faceMood]}</span>
+                    )}</div>
                   </div>
                 )
               })()}

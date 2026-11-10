@@ -1192,6 +1192,13 @@ textarea.settings-input { min-height: 84px; padding: 12px 14px; line-height: 1.5
 .chat-face-stage { width: clamp(96px,17vh,140px); aspect-ratio: 1; }
 .chat-face .nano-particles { width: 100%; height: 100%; aspect-ratio: 1; filter: drop-shadow(0 0 18px rgba(56,189,248,.45)) drop-shadow(0 0 34px rgba(139,92,246,.3)); }
 .chat-face-status { display: inline-flex; align-items: center; gap: 7px; font: 500 11px/1 'Space Grotesk',sans-serif; letter-spacing: .12em; text-transform: uppercase; color: #8fe9ff; }
+.chat-face-mood { margin-left: 4px; padding: 3px 7px; border-radius: 999px; font-size: 10px; letter-spacing: .08em; border: 1px solid var(--mc, #67e8f9); color: var(--mc, #67e8f9); background: color-mix(in srgb, var(--mc, #67e8f9) 14%, transparent); animation: moodPop .45s cubic-bezier(.34,1.56,.64,1) both; }
+.chat-face-mood.mood-happy { --mc: #fbbf24; }
+.chat-face-mood.mood-sad { --mc: #60a5fa; }
+.chat-face-mood.mood-angry { --mc: #f43f5e; }
+.chat-face-mood.mood-surprised { --mc: #e879f9; }
+@keyframes moodPop { from { opacity: 0; transform: scale(.6) translateY(4px); } to { opacity: 1; transform: none; } }
+@media (prefers-reduced-motion: reduce) { .chat-face-mood { animation: none; } }
 .chat-face-status i { width: 7px; height: 7px; border-radius: 50%; background: #22d3ee; box-shadow: 0 0 10px #22d3ee; animation: faceDot 1.6s ease-in-out infinite; }
 .chat-face.face-thinking .chat-face-status { color: #c4b5fd; }.chat-face.face-thinking .chat-face-status i { background: #a78bfa; box-shadow: 0 0 10px #a78bfa; animation-duration: .7s; }
 .chat-face.face-talking .chat-face-status { color: #f9a8d4; }.chat-face.face-talking .chat-face-status i { background: #f472b6; box-shadow: 0 0 10px #f472b6; animation-duration: .45s; }
