@@ -1125,7 +1125,7 @@ export default function NanoParticles({ count = 30000, shape = 'orb', photoUrl =
           const w = mouth[p]
           if (w > 0) {
             const amt = openAmt * w
-            if (jaw[p] === 1) { ty -= amt * 0.3; tz -= amt * 0.07 } else { ty += amt * 0.07 }
+            if (jaw[p] === 1) { ty -= amt * 0.42; tz -= amt * 0.08 } else { ty += amt * 0.09 }
           }
         }
         pos[b] += (tx - pos[b]) * 0.09

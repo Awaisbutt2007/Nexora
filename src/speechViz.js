@@ -13,6 +13,13 @@ let speaking = false
 let curText = ''
 let curCps = 14
 const now = () => performance.now() / 1000
+/* UI listeners (the face card's status line) told when speaking starts/stops */
+const listeners = new Set()
+function notify() { listeners.forEach((fn) => { try { fn(speaking) } catch { /* ignore */ } }) }
+export function onSpeechChange(fn) {
+  listeners.add(fn)
+  return () => listeners.delete(fn)
+}
 
 function syllables(word) {
   const latin = word.match(/[aeiouyàáâäèéêëìíîïòóôöùúûü]+/gi)
@@ -46,7 +53,7 @@ function scheduleFrom(fromIdx, t0) {
 export function speechStart(text, { rate = 1, durationSec = 0 } = {}) {
   curText = String(text || '')
   if (!curText) return
-  speaking = true
+  if (!speaking) { speaking = true; notify() }
   /* ~14 characters per second at rate 1; a known audio duration overrides it */
   curCps = durationSec > 0.3 ? Math.max(6, curText.length / (durationSec * 0.92)) : 14 * (rate || 1)
   scheduleFrom(0, now())
@@ -59,8 +66,8 @@ export function speechWord(charIndex) {
 }
 
 export function speechEnd() {
-  speaking = false
   peaks.length = 0
+  if (speaking) { speaking = false; notify() }
 }
 
 export function isSpeechActive() {

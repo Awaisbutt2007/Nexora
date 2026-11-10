@@ -83,7 +83,7 @@ import { captureCurrentPage, captureNode, captureSelfFace } from './selfCapture.
 import { useWakeWord } from './useWakeWord.js'
 import { configureUtterForSpeech, warmVoiceList } from './voiceSelect.js'
 import { streamFeed, streamFinal, cancelSpeakQueue, setSpeakMarkers } from './sentenceSpeak.js'
-import { speechEnd, trackAudio, trackUtterance } from './speechViz.js'
+import { onSpeechChange, speechEnd, trackAudio, trackUtterance } from './speechViz.js'
 /* Frontend mirror of the backend's WORLD_LANGUAGES table. Adding a language on
    the server without adding it here fails the "language mirror cannot drift"
    test in api.test.mjs, so the two lists cannot silently disagree. */
@@ -3545,6 +3545,9 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
      values from the render it was created in) always sees the live toggle. */
   const speakRepliesRef = useRef(speakReplies)
   speakRepliesRef.current = speakReplies
+  /* true while the AI voice is actually sounding — drives the face card status */
+  const [aiVoiceLive, setAiVoiceLive] = useState(false)
+  useEffect(() => onSpeechChange(setAiVoiceLive), [])
   const voiceOpenRef = useRef(voiceOpen)
   voiceOpenRef.current = voiceOpen
   /* The in-progress interim transcript — Chrome refines it every ~200 ms while
@@ -3852,9 +3855,10 @@ function Workspace({ activeView, setActiveView, selectedTool, setSelectedTool, i
             <>
               {(() => {
                 const faceState = streaming ? (messages.some((m) => m.streaming && m.content) ? 'talking' : 'thinking') : prompt.trim() ? 'listening' : 'idle'
-                const faceLabel = { talking: 'is replying', thinking: 'is thinking', listening: 'is listening', idle: 'is online' }[faceState]
+                const statusKey = aiVoiceLive ? 'speaking' : faceState
+                const faceLabel = { speaking: 'is speaking', talking: 'is replying', thinking: 'is thinking', listening: 'is listening', idle: 'is online' }[statusKey]
                 return (
-                  <div className={`chat-face face-${faceState}`} aria-hidden="true">
+                  <div className={`chat-face face-${statusKey === 'speaking' ? 'talking' : faceState}`} aria-hidden="true">
                     <span className="chat-face-corner tl" /><span className="chat-face-corner tr" /><span className="chat-face-corner bl" /><span className="chat-face-corner br" />
                     <div className="chat-face-stage">
                       <Suspense fallback={null}>
