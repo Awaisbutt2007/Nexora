@@ -543,6 +543,60 @@ function locateHead(data, W, H) {
   }
 }
 
+/* Find the lips inside a detected head. Lips are far more saturated red than
+   skin: (r − g) / r jumps from ~0.15–0.27 on skin to 0.4–0.5 on the lips, in
+   pale and tanned faces alike. We scan the lower face for the band whose ratio
+   rises furthest above the face's own median, so the result is relative to the
+   person's skin tone. Returns { x, y } in pixel space, or null. */
+function findLips(data, W, H, head) {
+  const fw = head.faceW
+  const half = Math.round(fw * 0.45)
+  const xs0 = Math.max(0, head.cx - half)
+  const xs1 = Math.min(W - 1, head.cx + half)
+  const y0 = Math.max(0, Math.round(head.forehead + fw * 0.42))
+  const y1 = Math.min(H - 1, Math.round(head.forehead + fw * 1.45))
+  if (y1 - y0 < 6) return null
+  const ratioAt = (i) => (data[i] - data[i + 1]) / (data[i] + 1)
+  /* per row: best mean ratio over a lip-wide window anywhere near the midline
+     (a sliding window, so a head centre that is a little off still finds them) */
+  const nh = Math.max(3, Math.round(fw * 0.12))
+  const rows = new Float32Array(y1 - y0 + 1)
+  const rowX = new Float32Array(y1 - y0 + 1)
+  const rv = new Float32Array(xs1 - xs0 + 1)
+  const rok = new Uint8Array(xs1 - xs0 + 1)
+  for (let y = y0; y <= y1; y += 1) {
+    for (let x = xs0; x <= xs1; x += 1) {
+      const i = (y * W + x) * 4
+      const ok = lumaOf(data, i) >= 45 && data[i] > data[i + 2]
+      rok[x - xs0] = ok ? 1 : 0
+      rv[x - xs0] = ok ? ratioAt(i) : 0
+    }
+    let bestW = 0
+    let bestWx = head.cx
+    const win = nh * 2 + 1
+    for (let a = 0; a + win <= rv.length; a += 2) {
+      let s = 0
+      let n = 0
+      for (let k = a; k < a + win; k += 1) { s += rv[k]; n += rok[k] }
+      if (n > win * 0.6 && s / n > bestW) { bestW = s / n; bestWx = xs0 + a + nh }
+    }
+    rows[y - y0] = bestW
+    rowX[y - y0] = bestWx
+  }
+  const sorted = Array.from(rows).filter((v) => v > 0).sort((p, q) => p - q)
+  if (sorted.length < 6) return null
+  const median = sorted[Math.floor(sorted.length / 2)]
+  let best = 0
+  let bestY = -1
+  for (let k = 1; k < rows.length - 1; k += 1) {
+    const v = (rows[k - 1] + rows[k] * 2 + rows[k + 1]) / 4 - median
+    if (v > best) { best = v; bestY = y0 + k }
+  }
+  if (bestY < 0 || best < 0.08) return null
+  const x = rowX[bestY - y0]
+  return { x: Math.round(x), y: bestY }
+}
+
 /* Sample particle targets straight from a real photo.
    Background is peeled off with a border flood-fill, then foreground pixels
    become particle targets with brightness-weighted density + fake depth.
@@ -583,9 +637,16 @@ function photoTargets(img, count, { tolerance = 26, worldMax = 5.4, lift = 0.1, 
   if (mouthOut && headDetect && headDetect.faceW) {
     const fw = headDetect.faceW
     mouthX = headDetect.cx
-    mouthY = headDetect.forehead + (headDetect.chin - headDetect.forehead) * 0.73
+    /* Anatomy fallback measured from the hairline only (mouth ≈ 0.76 face widths
+       below it). The detected "chin" is NOT used: when the neck is skin-coloured
+       and joined to the face it runs far down, which put the lips on the neck. */
+    mouthY = headDetect.forehead + fw * 0.76
+    /* Prefer the real lips: the rows in the lower face whose centre strip is
+       clearly redder (r − g) than the cheeks. */
+    const lip = findLips(data, W, H, headDetect)
+    if (lip) { mouthY = lip.y; mouthX = lip.x }
     mouthRX = fw * 0.2
-    mouthRY = fw * 0.115
+    mouthRY = fw * 0.1
   }
   let cx0 = 0
   let cy0 = 0
